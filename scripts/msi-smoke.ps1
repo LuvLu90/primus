@@ -360,14 +360,20 @@ Assert-True ((Get-Content -LiteralPath $marker) -eq 'keep') '卸载后 data 中�
 if ($KeepData) {
   Write-Host "`n· 按 -KeepData 保留 $DataDir"
 } else {
-  # data\users\<SID> 只授予各自用户与 SYSTEM（第 4.3 节），管理员要先取得所有权才能删除其他用户的目录
-  try {
-    Remove-Item -LiteralPath $InstallDir -Recurse -Force -ErrorAction Stop
-  } catch {
-    & takeown.exe /F $InstallDir /R /D Y | Out-Null
-    & icacls.exe $InstallDir /grant '*S-1-5-32-544:(OI)(CI)F' /T /C /Q | Out-Null
-    Remove-Item -LiteralPath $InstallDir -Recurse -Force
+  # data\users\<SID> 只授予各自用户与 SYSTEM（第 4.3 节），管理员要先取得所有权才能删除其他用户的目录。
+  # takeown /R 只能进入已有列目录权限的子目录：每一轮取得所有权并授权后才能看到下一层，所以多轮重试
+  $removed = $false
+  for ($round = 0; $round -lt 8 -and -not $removed; $round++) {
+    try {
+      Remove-Item -LiteralPath $InstallDir -Recurse -Force -ErrorAction Stop
+      $removed = $true
+    } catch {
+      if ($round -eq 0) { Write-Host "  · 直接删除失败（$($_.Exception.Message)），取得所有权后重试" }
+      & takeown.exe /F $InstallDir /R /D Y 2>&1 | Out-Null
+      & icacls.exe $InstallDir /grant '*S-1-5-32-544:(OI)(CI)F' /T /C /Q 2>&1 | Out-Null
+    }
   }
+  if (-not $removed) { Remove-Item -LiteralPath $InstallDir -Recurse -Force }
   Write-Host "`n· 已清理保留的 $InstallDir"
 }
 

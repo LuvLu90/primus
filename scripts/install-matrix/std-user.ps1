@@ -53,6 +53,11 @@ try {
     if ($proc.HasExited) { break }
     Start-Sleep -Milliseconds 500
   }
+  # WebView2 环境异步创建：等 users\<SID>\webview 中出现数据（最多 30 秒）再结束 App
+  $webviewDir = Join-Path $userDir 'webview'
+  $webviewDeadline = (Get-Date).AddSeconds(30)
+  while ($ready -and -not $proc.HasExited -and (Get-Date) -lt $webviewDeadline -and
+    @(Get-ChildItem -LiteralPath $webviewDir -Force -ErrorAction SilentlyContinue).Count -eq 0) { Start-Sleep -Milliseconds 500 }
   Start-Sleep -Seconds 3
   $exitedEarly = $proc.HasExited
   $exitCode = if ($exitedEarly) { $proc.ExitCode } else { $null }
@@ -61,6 +66,8 @@ try {
   foreach ($sub in 'app', 'core', 'core\sessions', 'vault', 'tmp', 'webview') {
     Assert-True (Test-Path -LiteralPath (Join-Path $userDir $sub) -PathType Container) "存在 users\<SID>\$sub"
   }
+  $webviewItems = @(Get-ChildItem -LiteralPath $webviewDir -Force -ErrorAction SilentlyContinue | ForEach-Object Name)
+  Assert-True ($webviewItems.Count -gt 0) "WebView2 用户数据在 users\<SID>\webview（$($webviewItems -join ', ')）"
   Assert-True (Test-Path -LiteralPath (Join-Path $dataDir 'shared\logs') -PathType Container) '存在 data\shared\logs'
 
   # ---- ACL ----

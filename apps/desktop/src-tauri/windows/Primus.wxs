@@ -18,6 +18,7 @@
     <INSTALLFOLDER>\Primus.exe
     <INSTALLFOLDER>\resources\runtime\      node.exe + LICENSE（保留 OpenJS 官方签名）
     <INSTALLFOLDER>\resources\agent-core\   dist/agent-core 整目录（含 extensions\primus-bundle.js）
+    <INSTALLFOLDER>\                        受保护的 DACL：SYSTEM、Administrators 完全控制，Users 只读和执行（装在其他盘也一样）
     <INSTALLFOLDER>\data\                   Users 组可修改，卸载与升级时保留
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
@@ -60,6 +61,16 @@
           <RegistryValue Root="HKLM" Key="Software\Primus" Name="InstallDir" Type="string"
                          Value="[INSTALLFOLDER]" KeyPath="yes" />
         </Component>
+        <!-- 安装目录本身的 ACL（约束 C2：可装到其他盘）：装在 D:\primus 这类自选目录时，目录会继承盘根的 ACL，
+             而非系统盘根默认给 Authenticated Users “修改”，普通用户就能替换 Primus.exe 与 resources 中的程序。
+             这里用 MsiLockPermissionsEx（PermissionEx 的 Sddl）在 CreateFolders 阶段、安装文件之前把目录设为受保护的 DACL，
+             与 Program Files 一致：SYSTEM、Administrators 完全控制，Users 与应用包只读和执行，都 (OI)(CI) 继承到子项。
+             用具体权限位（FA、0x1200a9 = 读取与执行）而不是通用权限，理由同下方 data。data 在此基础上另加 Users “修改”。 -->
+        <Component Id="InstallDirAcl" Guid="14C5A071-4289-451D-8C44-1D656FCB629F">
+          <CreateFolder>
+            <PermissionEx Sddl="D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)(A;OICI;0x1200a9;;;AC)" />
+          </CreateFolder>
+        </Component>
         <Directory Id="RESOURCES" Name="resources">
           <Directory Id="RUNTIMEDIR" Name="runtime" />
           <Directory Id="COREDIR" Name="agent-core" />
@@ -99,6 +110,7 @@
     <Feature Id="Main" Title="乾元 Primus" AllowAbsent="no">
       <ComponentRef Id="MainExe" />
       <ComponentRef Id="InstallDirRegistry" />
+      <ComponentRef Id="InstallDirAcl" />
       <ComponentRef Id="DataDir" />
       <ComponentRef Id="StartMenuShortcut" />
       <!-- 整目录收集（第 3.3.2 节）：不逐个列文件，Core 升级后自动包含新文件 -->

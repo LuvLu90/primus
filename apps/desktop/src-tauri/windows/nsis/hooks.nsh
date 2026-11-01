@@ -8,6 +8,16 @@
 !include LogicLib.nsh
 
 !macro NSIS_HOOK_POSTINSTALL
+  ; 安装目录本身与 Primus.wxs 的 InstallDirAcl 一致：装到 D:\primus 这类自选目录时会继承盘根的 ACL
+  ; （非系统盘根默认给 Authenticated Users “修改”），这里去掉继承，改为 SYSTEM、Administrators 完全控制、
+  ; Users 只读和执行，(OI)(CI) 传播到已安装的文件与子目录（data\users\<SID> 自身受保护，不受影响）
+  nsExec::ExecToLog '"$SYSDIR\icacls.exe" "$INSTDIR" /inheritance:r /grant:r *S-1-5-18:(OI)(CI)F *S-1-5-32-544:(OI)(CI)F *S-1-5-32-545:(OI)(CI)RX *S-1-15-2-1:(OI)(CI)RX'
+  Pop $0
+  ${If} $0 != 0
+    MessageBox MB_ICONSTOP|MB_OK "无法设置安装目录权限（icacls 退出码 $0）：$INSTDIR" /SD IDOK
+    SetErrorLevel 2
+    Abort
+  ${EndIf}
   CreateDirectory "$INSTDIR\data"
   nsExec::ExecToLog '"$SYSDIR\icacls.exe" "$INSTDIR\data" /grant *S-1-5-32-545:(OI)(CI)M'
   Pop $0
