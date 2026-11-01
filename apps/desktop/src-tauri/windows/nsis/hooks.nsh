@@ -16,16 +16,16 @@
   ; 装到 D:\primus 这类自选目录时会继承盘根的 ACL（非系统盘根默认给 Authenticated Users “修改”），
   ; 目录也可能由普通用户预先建好（所有者保有隐式的更改权限、带显式授权，或放了同名程序文件、联接）。
   ; 逻辑在 windows/install-acl.ps1（与 MSI 的 CheckInstallDir / ResetProgramAcl 共用）的 nsis 模式：
-  ; 安装目录及每一级祖先、直接子项都不能是重解析点 → 建目录 → 所有者 Administrators、/reset、去掉继承，
-  ; SYSTEM、Administrators 完全控制，Users 与应用包只读和执行 → 再检查 → 自上而下处理已有的
-  ; Primus.exe、uninstall.exe、resources 树。data 不动（其中 users\<SID> 是受保护的，归各用户所有）。
+  ; 安装目录及每一级祖先、直接子项都不能是重解析点，已存在的祖先普通用户不能改名、删除子项、改权限 → 建目录 →
+  ; 所有者 Administrators、/reset、去掉继承，SYSTEM、Administrators 完全控制，Users 与应用包只读和执行 →
+  ; 再检查并确认已锁好 → 自上而下处理已有的 Primus.exe、uninstall.exe、resources 树（有多个硬链接的文件拒绝）。data 不动（其中 users\<SID> 是受保护的，归各用户所有）。
   ; 路径经命令行末尾的标记 "#|nsis|<目录>|" 传入，不经 cmd.exe；脚本放在 $PLUGINSDIR（仅管理员可写）。
   InitPluginsDir
   File "/oname=$PLUGINSDIR\primus-install-acl.ps1" "${PRIMUS_INSTALL_ACL_PS1}"
   nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\primus-install-acl.ps1" "#|nsis|$INSTDIR|"'
   Pop $0
   ${If} $0 != 0
-    MessageBox MB_ICONSTOP|MB_OK "无法安全地准备安装目录（install-acl.ps1 退出码 $0）：安装目录或其上级可能是联接或符号链接，或无法设置权限。$INSTDIR" /SD IDOK
+    MessageBox MB_ICONSTOP|MB_OK "无法安全地准备安装目录（install-acl.ps1 退出码 $0）：安装目录或其上级可能是联接或符号链接、上级目录普通用户可以改名或修改，或已有的程序文件有多个硬链接，或无法设置权限。请改装到新建的目录或 Program Files。$INSTDIR" /SD IDOK
     SetErrorLevel 2
     Abort
   ${EndIf}

@@ -229,6 +229,53 @@ try {
   Remove-Item -LiteralPath $probeTarget -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+# ---- 0b. 上级目录普通用户可改名、程序文件有多个硬链接时拒绝安装（install-acl.ps1），且不改动外部文件 ----
+Write-Step '上级目录普通用户可改名、预先存在的程序文件有多个硬链接时拒绝安装'
+# C:\ 下新建的目录继承盘根给 Authenticated Users 的“修改”（含删除），这里再给 Users “修改”；装到其子目录须被拒绝
+$openParent = Join-Path $env:SystemDrive 'PrimusOpenParentProbe'
+# 预先建好的安装目录中，Primus.exe 是指向外部文件的硬链接（外部文件 DACL 受保护，不随安装目录的继承变化）
+$linkDir = Join-Path $env:SystemDrive 'PrimusHardlinkProbe'
+$linkTarget = Join-Path $env:SystemDrive 'PrimusHardlinkTarget.exe'
+foreach ($path in $openParent, $linkDir, $linkTarget) { if (Test-Path -LiteralPath $path) { throw "✗ 残留：$path（请先删除）" } }
+$null = New-Item -ItemType Directory -Path $openParent, $linkDir
+& icacls.exe $openParent /grant '*S-1-5-32-545:(OI)(CI)M' | Out-Host
+if ($LASTEXITCODE -ne 0) { throw "✗ icacls /grant $openParent 退出码 $LASTEXITCODE" }
+[IO.File]::WriteAllText($linkTarget, 'primus hardlink probe')
+& icacls.exe $linkTarget /inheritance:d | Out-Host
+if ($LASTEXITCODE -ne 0) { throw "✗ icacls /inheritance:d $linkTarget 退出码 $LASTEXITCODE" }
+$null = New-Item -ItemType HardLink -Path (Join-Path $linkDir 'Primus.exe') -Target $linkTarget
+$linkSddl = (Get-Acl -LiteralPath $linkTarget).Sddl
+try {
+  foreach ($case in @(
+      @{ Name = '上级目录普通用户可改名'; Dir = (Join-Path $openParent 'Primus'); Log = 'open-parent.log'
+        Refusal = 'primus-install-acl: error: parent directory can be renamed or changed by' },
+      @{ Name = '预先存在的 Primus.exe 有多个硬链接'; Dir = $linkDir; Log = 'hardlink.log'
+        Refusal = 'primus-install-acl: error: program file has more than one hard link' })) {
+    $log = Join-Path $LogDir $case.Log
+    $argumentLine = "/i `"$Msi`" INSTALLFOLDER=`"$($case.Dir)`" /qn /norestart /l*v `"$log`""
+    Write-Host "  msiexec $argumentLine"
+    $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList $argumentLine -PassThru
+    $null = $process.Handle
+    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+      Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+      throw "✗ $($case.Name)：msiexec 超过 $TimeoutSeconds 秒未结束（日志 $log）"
+    }
+    $refused = Select-String -LiteralPath $log -SimpleMatch $case.Refusal
+    if ($process.ExitCode -ne 1603 -or -not $refused) {
+      Write-Host "---- $log 中含 primus-install-acl 的行 ----"
+      Select-String -LiteralPath $log -Pattern 'primus-install-acl' | ForEach-Object { Write-Host $_.Line }
+    }
+    Assert-True ($process.ExitCode -eq 1603) "$($case.Name)：安装失败并回滚（退出码 $($process.ExitCode)）"
+    Assert-True ($null -ne $refused) "$($case.Name)：由 install-acl.ps1 拒绝（$($case.Refusal)）"
+    Assert-True ($null -eq (Get-UninstallEntry)) "$($case.Name)：未留下安装记录"
+  }
+  Assert-True ((Get-Acl -LiteralPath $linkTarget).Sddl -eq $linkSddl) '硬链接目标的所有者与 ACL 未被改动'
+  Assert-True ([IO.File]::ReadAllText($linkTarget) -eq 'primus hardlink probe') '硬链接目标的内容未被改动'
+} finally {
+  Remove-Item -LiteralPath $openParent, $linkDir -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $linkTarget -Force -ErrorAction SilentlyContinue
+}
+
 # ---- 1. 安装 ----
 Write-Step "静默安装 $Msi → $InstallDir"
 $installLog = Invoke-Msiexec -Action '/i' -LogName 'install.log' -Properties @("INSTALLFOLDER=`"$InstallDir`"")

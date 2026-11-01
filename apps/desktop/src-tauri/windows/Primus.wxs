@@ -135,16 +135,18 @@
                   Execute="deferred" Impersonate="no" Return="check" />
     <!-- 安装目录可能由普通用户预先建好（约束 C2：可装到其他盘），两步处理，逻辑都在 windows/install-acl.ps1
          （与 NSIS hooks.nsh 的 NSIS_HOOK_PREINSTALL 共用；build-msi.mjs 以 -d InstallAclScript 传入其 Base64），任一步失败即回滚：
-         1. CheckInstallDir（CreateFolders 设 DACL 之前）：安装目录及其每一级祖先、已有的直接子项都不能是重解析点
-            （联接、符号链接），否则下面的 ACL 操作会顺着它改到别处。
-         2. ResetProgramAcl（CreateFolders 设好受保护的 DACL 之后、安装文件之前）：再检查一遍，然后自上而下处理预先存在的
+         1. CheckInstallDir（CreateFolders 之前，install-acl.ps1 的 lock 模式）：安装目录及其每一级祖先、已有的直接子项都不能是
+            重解析点（联接、符号链接），否则下面的 ACL 操作会顺着它改到别处；已存在的祖先须是普通用户不能改名、删除子项、
+            改权限的；然后建好安装目录并设为与 InstallDirAcl 相同的受保护 DACL，再确认它不是重解析点且已锁好。
+            此后普通用户不能再把安装目录或其祖先换成联接，CreateFolders 设同样的 DACL。
+         2. ResetProgramAcl（CreateFolders 之后、安装文件之前）：再检查一遍并确认安装目录已锁好，然后自上而下处理预先存在的
             Primus.exe 与 resources 树：所有者改为 Administrators、清掉显式授权、改为从已锁好的上级继承，锁好一层再看下一层，
-            检查与修改之间普通用户不能插入联接。覆盖安装时未列入 LockPermissions 的文件沿用原有安全描述符，所有者若仍是
+            检查与修改之间普通用户不能插入联接；有多个硬链接的文件拒绝处理。覆盖安装时未列入 LockPermissions 的文件沿用原有安全描述符，所有者若仍是
             该用户，隐含 WRITE_DAC，可改回 DACL 后替换程序。data 不动：其中 users\<SID> 是受保护的，归各用户所有。
          不经 cmd.exe：PowerShell 从自身命令行末尾的注释标记 #|模式|安装目录| 读取路径，% 等字符按字面处理；
          MSI 格式化字符串中的方括号写作 [\[] [\]]。以 SYSTEM 身份运行（Impersonate="no"）。 -->
     <SetProperty Id="CheckInstallDir" Before="CheckInstallDir" Sequence="execute"
-                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command &quot;&amp; ([\[]ScriptBlock[\]]::Create([\[]Text.Encoding[\]]::Unicode.GetString([\[]Convert[\]]::FromBase64String('$(InstallAclScript)')))) #|check|[INSTALLFOLDER]|&quot;" />
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command &quot;&amp; ([\[]ScriptBlock[\]]::Create([\[]Text.Encoding[\]]::Unicode.GetString([\[]Convert[\]]::FromBase64String('$(InstallAclScript)')))) #|lock|[INSTALLFOLDER]|&quot;" />
     <CustomAction Id="CheckInstallDir" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec"
                   Execute="deferred" Impersonate="no" Return="check" />
     <SetProperty Id="ResetProgramAcl" Before="ResetProgramAcl" Sequence="execute"

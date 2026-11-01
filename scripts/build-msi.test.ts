@@ -161,23 +161,47 @@ describe("build-msi", () => {
     expect(code.trimEnd().endsWith("exit 0")).toBe(true);
     // 路径只从命令行标记读取，必须是本地盘符下的规范绝对路径
     expect(code).toContain(
-      "[regex]::Matches([Environment]::CommandLine, '#\\|(check|reset|nsis)\\|([^|\"]+)\\|')",
+      "[regex]::Matches([Environment]::CommandLine, '#\\|(lock|reset|nsis)\\|([^|\"]+)\\|')",
     );
     expect(code).toContain("if ($dir -cne $raw) { throw");
     // 安装目录及每一级祖先、直接子项：重解析点即失败
     // 去掉缩进后函数体内的 } 也在行首，按下一个 function 切分
     const fn = () => /\nfunction ([^\n]*)\{([\s\S]*?)(?=\nfunction |\nAssert-InstallPath\n)/g;
     const body = (name: string) =>
-      [...code.matchAll(fn())].find((m) => m[1].startsWith(`${name} `))?.[2] ?? "";
+      [...code.matchAll(fn())].find(
+        (m) => m[1].startsWith(`${name} `) || m[1].startsWith(`${name}(`),
+      )?.[2] ?? "";
     const assertPath = body("Assert-InstallPath");
     expect(assertPath).toContain("$p = [IO.Path]::GetDirectoryName($p)");
     expect(assertPath).toContain("[IO.Directory]::GetFileSystemEntries($dir)");
     expect(assertPath.match(/Test-Link/g)).toHaveLength(2);
+    // 已存在的祖先普通用户改不动（盘根可有删除权限）；在重解析点检查之后
+    expect(assertPath.indexOf("if (Test-Exists $p) { Assert-SafeAncestor $p }")).toBeGreaterThan(
+      assertPath.indexOf("install dir or one of its parents is a junction"),
+    );
+    const ancestor = body("Assert-SafeAncestor");
+    expect(code).toContain(
+      "$AncestorTrusted = $Trusted + @('S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464', 'S-1-3-0', 'S-1-3-4')",
+    );
+    expect(code).toContain(
+      "$AncestorDenyMask = 0x10000 -bor 0x40000 -bor 0x80000 -bor 0x40 -bor 0x10000000",
+    );
+    for (const line of [
+      "if ($AncestorTrusted -notcontains $owner) { throw",
+      "if (-not [IO.Path]::GetDirectoryName($Path)) { $mask = $mask -band -bnot 0x10000 }",
+      "if (($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { continue }",
+      "if (([int]$rule.FileSystemRights -band $mask) -ne 0) {",
+    ]) {
+      expect(ancestor).toContain(line);
+    }
     // 程序文件：先确认不是重解析点，不合格才 setowner + reset，之后才把子项入栈
     const repair = body("Repair-ProgramFiles");
     expect(repair).toContain("foreach ($name in 'Primus.exe', 'uninstall.exe', 'resources')");
+    expect(repair).toContain("if (Test-Exists $item) { $stack.Push($item) }");
+    expect(body("Get-LinkCount")).toContain("& $Fsutil hardlink list $Path");
     const order = [
       "if (Test-Link $item) { throw",
+      "if (-not $isDir -and (Get-LinkCount $item) -gt 1) { throw",
       "if (-not (Test-Locked $item $isDir)) {",
       "Invoke-Icacls @($item, '/setowner', \"*$Admins\", '/L', '/Q')",
       "Invoke-Icacls @($item, '/reset', '/L', '/Q')",
@@ -197,18 +221,19 @@ describe("build-msi", () => {
     expect(code).toContain(
       `'/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', "*\${Admins}:(OI)(CI)F", '*S-1-5-32-545:(OI)(CI)RX', '*S-1-15-2-1:(OI)(CI)RX'`,
     );
-    const main = code.slice(code.lastIndexOf("\nAssert-InstallPath\nif ($mode -eq 'nsis')"));
+    const main = code.slice(code.lastIndexOf("\nAssert-InstallPath\nif ($mode -ne 'reset')"));
     expect(main).toBe(
       [
         "",
         "Assert-InstallPath",
-        "if ($mode -eq 'nsis') {",
+        "if ($mode -ne 'reset') {",
         "if (-not (Test-Exists $dir)) { $null = [IO.Directory]::CreateDirectory($dir) }",
         "Assert-InstallPath",
         "Lock-InstallDir",
-        "Assert-InstallPath",
         "}",
-        "if ($mode -ne 'check') { Repair-ProgramFiles }",
+        "Assert-InstallPath",
+        'if (-not (Test-Locked $dir $true $true)) { throw "install dir is not locked (owner SYSTEM or Administrators, others read and execute only): $dir" }',
+        "if ($mode -ne 'lock') { Repair-ProgramFiles }",
         '[Console]::Out.WriteLine("primus-install-acl: $mode $dir ok (reset $($script:fixed) items)")',
         "exit 0",
       ].join("\n"),
@@ -440,7 +465,7 @@ describe("build-msi", () => {
     // 不经 cmd.exe（% 不会被展开）：PowerShell 解码嵌入的 install-acl.ps1，路径在命令行末尾的注释标记里；
     // MSI 格式化字符串中的方括号已转义
     for (const [id, mode] of [
-      ["CheckInstallDir", "check"],
+      ["CheckInstallDir", "lock"],
       ["ResetProgramAcl", "reset"],
     ])
       expect(prop(id)).toBe(
