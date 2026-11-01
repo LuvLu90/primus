@@ -1,6 +1,6 @@
 [package]
 name = "primus"
-version = "0.0.2"
+version = "0.0.3"
 edition = "2024"
 rust-version = "1.99"
 description = "乾元（Primus）薄壳"
