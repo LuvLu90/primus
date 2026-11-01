@@ -14,19 +14,25 @@
     - 都有：导入 PFX 到 CurrentUser\My（私钥不可导出），检查有私钥、含代码签名用途、在有效期内，
       并写 PRIMUS_REQUIRE_SIGNING=1（要求 updater 密钥 TAURI_SIGNING_* 同时配置）
   自签名证书（颁发者 = 使用者）把公钥证书加入本机 Root 与 TrustedPublisher，使 signtool verify /pa 能在运行器上
-  建立信任链（只允许 GitHub 托管运行器，用完即销毁）。公钥证书导出为 Primus-signing-cert.cer 供 Release 附件下载。
+  建立信任链（只允许 GitHub 托管运行器，用完即销毁）。公钥证书导出为 Primus-signing-cert-<Arch>.cer（未给 -Arch 时为
+  Primus-signing-cert.cer）供 Release 附件下载：每个架构的构建作业各自生成证书，由生成它的作业导出自己的公钥证书。
   写入 GITHUB_ENV：PRIMUS_SIGN_CERT_SHA1、PRIMUS_SIGN_TIMESTAMP_URL、PRIMUS_RELEASE_SIGNED=true、
   PRIMUS_RELEASE_SELF_SIGNED、PRIMUS_SIGN_CER（导出的公钥证书路径）。
 
 .PARAMETER Version
   本次发布的版本号，写进临时证书的使用者名称（例如 0.0.4）。
 
+.PARAMETER Arch
+  构建架构（x64 / arm64），写进导出的公钥证书文件名，使每个架构的安装包都有对应的证书附件。
+
 .PARAMETER TimestampUrl
   RFC 3161 时间戳服务器，默认 http://timestamp.digicert.com。
 #>
 param(
   [string]$TimestampUrl = "http://timestamp.digicert.com",
-  [string]$Version = ""
+  [string]$Version = "",
+  [ValidateSet("", "x64", "arm64")]
+  [string]$Arch = ""
 )
 $ErrorActionPreference = "Stop"
 if (-not $env:GITHUB_ENV -or -not $env:RUNNER_TEMP) { throw "只能在 GitHub Actions 运行器上运行" }
@@ -35,7 +41,8 @@ $pfxBase64 = $env:PRIMUS_SIGN_PFX_BASE64
 $pfxPassword = $env:PRIMUS_SIGN_PFX_PASSWORD
 if (-not $pfxBase64 -and -not $pfxPassword) {
   # 临时证书：私钥生成在运行器的证书存储里、不可导出，只用于本次发布。时间戳签名在证书过期后仍有效
-  $label = if ($Version) { " $Version" } else { "" }
+  $label = (@($Version, $Arch) | Where-Object { $_ }) -join " "
+  if ($label) { $label = " $label" }
   $cert = @(New-SelfSignedCertificate -Type CodeSigningCert `
       -Subject "CN=Primus$label (self-signed release), O=skaduv" `
       -CertStoreLocation Cert:\CurrentUser\My `
@@ -70,7 +77,7 @@ if ($now -lt $cert.NotBefore -or $now -gt $cert.NotAfter) {
 }
 $selfSigned = $cert.Subject -eq $cert.Issuer
 
-$cer = Join-Path $env:RUNNER_TEMP "Primus-signing-cert.cer"
+$cer = Join-Path $env:RUNNER_TEMP "Primus-signing-cert$(if ($Arch) { "-$Arch" }).cer"
 Export-Certificate -Cert $cert -FilePath $cer | Out-Null
 
 if ($selfSigned) {

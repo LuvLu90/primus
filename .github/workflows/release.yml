@@ -4,7 +4,7 @@
 #   否则为正式版并设为 Latest
 # - workflow_dispatch 输入已有标签（例如 v0.0.1），重新构建该标签并更新对应 Release：同名附件覆盖上传
 #   （失败时回滚到旧附件），不在本次清单中的旧附件（例如早期的 SBOM、.sha256）删除，prerelease / Latest 按上一条规则更正
-# - Release 附件只有安装包：Primus_<ver>_<x64|arm64>_zh-CN.msi 与 Primus_<ver>_<x64|arm64>-setup.exe 共 4 个；
+# - Release 附件只有安装包：Primus_<ver>_<x64|arm64>_zh-CN.msi 与 Primus_<ver>_<x64|arm64>-setup.exe 共 4 个（自签名时另加两个架构的公钥证书 .cer）；
 #   SBOM 与被禁 SDK 检查、安装包检查、静默安装 / 卸载冒烟照常在构建作业中运行，但不作为附件，SHA-256 写在 Release 正文
 # - 两个架构都构建并冒烟成功后才发布（发布作业 needs 整个矩阵）
 # - 工作流本身来自触发它的提交（手动触发时为 main），构建的源码一律 checkout 该标签；
@@ -12,8 +12,9 @@
 #   更早的标签无法用本工作流构建；早于 RPC 契约测试的标签（package.json 无 contract:core:dist）可以构建，
 #   但跳过契约测试一步（RPC 冒烟照常运行）
 # - 代码签名（scripts/import-release-signing.ps1）：默认在构建运行器上临时生成本次发布专用的自签名证书（私钥不可导出、
-#   不保存，不写进仓库也不用 Secret），签 Primus.exe、MSI、setup.exe，公钥证书 Primus-signing-cert.cer 作为第 5 个附件，
-#   正文写明需导入信任（每个版本的证书不同）。以后有正式证书时配置仓库 Secret PRIMUS_SIGN_PFX_BASE64 / PASSWORD，
+#   不保存，不写进仓库也不用 Secret），签 Primus.exe、MSI、setup.exe。两个架构的作业各自生成证书，各自导出公钥证书
+#   Primus-signing-cert-<x64|arm64>.cer 作为附件（共 6 个），正文写明按安装包架构导入对应证书
+#   （每个版本、每个架构的证书都不同）。以后有正式证书时配置仓库 Secret PRIMUS_SIGN_PFX_BASE64 / PASSWORD，
 #   此时同时要求 updater 密钥（TAURI_SIGNING_*），生成并校验 .sig；CA 签发的证书不附 .cer
 name: Release
 
@@ -123,6 +124,7 @@ jobs:
           PRIMUS_SIGN_PFX_BASE64: ${{ secrets.PRIMUS_SIGN_PFX_BASE64 }}
           PRIMUS_SIGN_PFX_PASSWORD: ${{ secrets.PRIMUS_SIGN_PFX_PASSWORD }}
           VERSION: ${{ steps.version.outputs.version }}
+          ARCH: ${{ matrix.arch }}
         run: |
           if (-not (Test-Path -LiteralPath scripts/import-release-signing.ps1)) {
             if ($env:PRIMUS_SIGN_PFX_BASE64 -or $env:PRIMUS_SIGN_PFX_PASSWORD) {
@@ -132,7 +134,7 @@ jobs:
             "signed=false", "selfsigned=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
             exit 0
           }
-          ./scripts/import-release-signing.ps1 -Version $env:VERSION
+          ./scripts/import-release-signing.ps1 -Version $env:VERSION -Arch $env:ARCH
           $signed = (Get-Content -Raw $env:GITHUB_ENV) -match '(?m)^PRIMUS_RELEASE_SIGNED=true\r?$'
           $self = (Get-Content -Raw $env:GITHUB_ENV) -match '(?m)^PRIMUS_RELEASE_SELF_SIGNED=true\r?$'
           "signed=$($signed.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
@@ -196,8 +198,13 @@ jobs:
           $dir = Join-Path $env:RUNNER_TEMP "release-assets-$env:ARCH"
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
           $files = @($env:PRIMUS_MSI, $env:PRIMUS_NSIS)
-          # 自签名证书的公钥证书两个架构相同，只由 x64 作业附上
-          if ($env:PRIMUS_RELEASE_SELF_SIGNED -eq 'true' -and $env:ARCH -eq 'x64') { $files += $env:PRIMUS_SIGN_CER }
+          # 自签名证书由各架构作业各自生成：每个作业附上自己导出的公钥证书 Primus-signing-cert-<arch>.cer
+          if ($env:PRIMUS_RELEASE_SELF_SIGNED -eq 'true') {
+            if ((Split-Path -Leaf $env:PRIMUS_SIGN_CER) -cne "Primus-signing-cert-$env:ARCH.cer") {
+              throw "公钥证书文件名应为 Primus-signing-cert-$env:ARCH.cer，实际 $env:PRIMUS_SIGN_CER"
+            }
+            $files += $env:PRIMUS_SIGN_CER
+          }
           $lines = foreach ($file in $files) {
             Copy-Item -LiteralPath $file -Destination $dir
             $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -244,7 +251,7 @@ jobs:
             "Primus_${VERSION}_x64-setup.exe"
             "Primus_${VERSION}_x64_zh-CN.msi"
           )
-          [[ "$SELF_SIGNED" == "true" ]] && want+=("Primus-signing-cert.cer")
+          [[ "$SELF_SIGNED" == "true" ]] && want+=("Primus-signing-cert-arm64.cer" "Primus-signing-cert-x64.cer")
           expected="$(printf '%s\n' "${want[@]}" | LC_ALL=C sort)"
           actual="$(find . -maxdepth 1 -type f ! -name 'SHA256SUMS-*.txt' -printf '%f\n' | LC_ALL=C sort)"
           if [[ "$actual" != "$expected" ]]; then
@@ -270,11 +277,11 @@ jobs:
             "Primus_${VERSION}_x64-setup.exe"
             "Primus_${VERSION}_arm64-setup.exe"
           )
-          [[ "$SELF_SIGNED" == "true" ]] && names+=("Primus-signing-cert.cer")
+          [[ "$SELF_SIGNED" == "true" ]] && names+=("Primus-signing-cert-x64.cer" "Primus-signing-cert-arm64.cer")
           files=()
           for n in "${names[@]}"; do files+=("assets/${n}"); done
 
-          # 正文的「## 校验」段：四个安装包的 SHA-256
+          # 正文的「## 校验」段：全部附件（安装包与自签名公钥证书）的 SHA-256
           {
             printf '## 校验\n\n| 文件 | SHA-256 |\n| --- | --- |\n'
             for n in "${names[@]}"; do
@@ -289,8 +296,9 @@ jobs:
           {
             printf '## 已知限制\n\n'
             if [[ "$SELF_SIGNED" == "true" ]]; then
-              printf -- '- **自签名证书**：安装包用本版本专用的自签名证书签名（每个版本的证书不同），只在导入了本版本 `Primus-signing-cert.cer` 的电脑上显示为已验证的发布者。'
-              printf '导入方法（管理员 PowerShell）：`Import-Certificate -FilePath .\\Primus-signing-cert.cer -CertStoreLocation Cert:\\LocalMachine\\Root`，'
+              printf -- '- **自签名证书**：x64 与 ARM64 安装包分别用本版本、本架构专用的自签名证书签名（每个版本、每个架构的证书都不同），'
+              printf '只在导入了对应证书的电脑上显示为已验证的发布者：x64 安装包对应 `Primus-signing-cert-x64.cer`，ARM64 安装包对应 `Primus-signing-cert-arm64.cer`。'
+              printf '导入方法（管理员 PowerShell，文件名换成对应架构的证书）：`Import-Certificate -FilePath .\\Primus-signing-cert-x64.cer -CertStoreLocation Cert:\\LocalMachine\\Root`，'
               printf '再对 `Cert:\\LocalMachine\\TrustedPublisher` 执行一次。SmartScreen 按下载信誉判断，导入后首次运行仍可能拦截，需要点「更多信息」→「仍要运行」。\n'
             elif [[ "$SIGNED" == "true" ]]; then
               printf -- '- 安装包已做代码签名；新证书积累 SmartScreen 信誉之前，首次运行仍可能被拦截。\n'
@@ -303,7 +311,7 @@ jobs:
             printf -- '- `%s`、`%s`：MSI 安装包（简体中文，x64 / ARM64）\n' "${names[0]}" "${names[1]}"
             printf -- '- `%s`、`%s`：NSIS 安装程序（简体中文，x64 / ARM64）\n' "${names[2]}" "${names[3]}"
             if [[ "$SELF_SIGNED" == "true" ]]; then
-              printf -- '- `Primus-signing-cert.cer`：自签名代码签名证书（仅公钥），见「已知限制」\n'
+              printf -- '- `%s`、`%s`：自签名代码签名证书（仅公钥，x64 / ARM64 安装包各用其一），见「已知限制」\n' "${names[4]}" "${names[5]}"
             fi
           } > packages.md
 
@@ -412,7 +420,7 @@ jobs:
             "Primus_${VERSION}_x64-setup.exe"
             "Primus_${VERSION}_x64_zh-CN.msi"
           )
-          [[ "$SELF_SIGNED" == "true" ]] && want+=("Primus-signing-cert.cer")
+          [[ "$SELF_SIGNED" == "true" ]] && want+=("Primus-signing-cert-arm64.cer" "Primus-signing-cert-x64.cer")
           expected="$(printf '%s\n' "${want[@]}" | LC_ALL=C sort)"
           [[ "$actual" == "$expected" ]] || { echo "::error::Release 附件与清单不符：${actual}"; exit 1; }
           if [[ "$PRERELEASE" != "true" ]]; then

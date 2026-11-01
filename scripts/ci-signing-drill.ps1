@@ -5,6 +5,8 @@
 #   - 证书：调用 import-release-signing.ps1（与发布流程相同）：New-SelfSignedCertificate 生成到 CurrentUser\My
 #     （私钥不可导出），公钥证书导入 LocalMachine\Root 与 TrustedPublisher，使 signtool verify /pa 在本运行器上
 #     能建立信任链（运行器用完即销毁，因此拒绝在自托管运行器上运行）
+#   - 证书的 PFX 分支：再生成一张可导出的临时证书，导出为带随机口令的 PFX 后经 PRIMUS_SIGN_PFX_BASE64 / PASSWORD
+#     交给导入脚本导回（以后正式证书走这条路），之后的签名用这张证书；PFX 文件立即删除
 #   - updater 密钥：tauri signer generate 写到 RUNNER_TEMP，随机口令
 #   - 写入 GITHUB_ENV：PRIMUS_SIGN_CERT_SHA1、PRIMUS_SIGN_TIMESTAMP_URL（导入脚本写）、TAURI_SIGNING_PRIVATE_KEY_PATH、
 #     TAURI_SIGNING_PRIVATE_KEY_PASSWORD（已打码）、TAURI_SIGNING_PUBLIC_KEY、PRIMUS_REQUIRE_SIGNING=1
@@ -23,6 +25,39 @@ if (-not $env:GITHUB_ENV -or -not $env:RUNNER_TEMP -or $env:RUNNER_ENVIRONMENT -
 # 证书与发布流程共用 import-release-signing.ps1 的无 Secret 路径（临时自签名证书、导入本机信任、写 GITHUB_ENV），
 # 每次 CI 都实际执行一遍发布用的导入脚本，脚本本身的错误不会等到发版才暴露
 & (Join-Path $PSScriptRoot "import-release-signing.ps1") -Version "ci-drill" -TimestampUrl $TimestampUrl
+
+# 再演练导入脚本的 PFX 分支（以后配置正式证书 Secret 时走这条路）：临时生成一张可导出的自签名代码签名证书，导出为带随机口令的
+# PFX，然后从证书存储中删掉原证书，经 PRIMUS_SIGN_PFX_BASE64 / PRIMUS_SIGN_PFX_PASSWORD 交给导入脚本导回。
+# PFX 文件导出后立即删除，环境变量只在本进程内设置、用完即清除，不写进仓库也不传给后续步骤。
+# 导入脚本后写入 GITHUB_ENV 的 PRIMUS_SIGN_CERT_SHA1 生效，演练后续的签名与校验都用这张经 PFX 导入的证书
+$drillCert = New-SelfSignedCertificate -Type CodeSigningCert `
+  -Subject "CN=Primus ci-drill pfx (self-signed), O=skaduv" `
+  -CertStoreLocation Cert:\CurrentUser\My `
+  -KeyAlgorithm RSA -KeyLength 3072 -HashAlgorithm SHA256 `
+  -KeyExportPolicy Exportable `
+  -NotAfter (Get-Date).AddDays(7)
+$pfxPassword = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(24))
+Write-Host "::add-mask::$pfxPassword"
+$pfx = Join-Path $env:RUNNER_TEMP "primus-ci-drill.pfx"
+try {
+  Export-PfxCertificate -Cert $drillCert -FilePath $pfx -Password (ConvertTo-SecureString -String $pfxPassword -AsPlainText -Force) | Out-Null
+  $pfxBase64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($pfx))
+} finally {
+  Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue
+}
+Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($drillCert.Thumbprint)"
+$env:PRIMUS_SIGN_PFX_BASE64 = $pfxBase64
+$env:PRIMUS_SIGN_PFX_PASSWORD = $pfxPassword
+try {
+  & (Join-Path $PSScriptRoot "import-release-signing.ps1") -Version "ci-drill" -TimestampUrl $TimestampUrl
+} finally {
+  Remove-Item Env:\PRIMUS_SIGN_PFX_BASE64, Env:\PRIMUS_SIGN_PFX_PASSWORD -ErrorAction SilentlyContinue
+}
+$imported = Get-ChildItem Cert:\CurrentUser\My | Where-Object { $_.Thumbprint -eq $drillCert.Thumbprint -and $_.HasPrivateKey }
+if (-not $imported) { throw "PFX 分支未把带私钥的证书导回 CurrentUser\My" }
+$sha1 = [regex]::Matches((Get-Content -Raw $env:GITHUB_ENV), '(?m)^PRIMUS_SIGN_CERT_SHA1=(\S+)\r?$') | Select-Object -Last 1
+if (-not $sha1 -or $sha1.Groups[1].Value -ne $drillCert.Thumbprint) { throw "PFX 分支未把证书指纹写入 GITHUB_ENV" }
+Write-Host "PFX 分支演练通过：签名改用经 PFX 导入的证书 $($drillCert.Thumbprint)"
 $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
 $elevated = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 Write-Host "当前进程$(if ($elevated) { '已' } else { '未' })以管理员权限运行（$([Security.Principal.WindowsIdentity]::GetCurrent().Name)）"
