@@ -14,8 +14,9 @@
 # - 代码签名（scripts/import-release-signing.ps1）：默认在构建运行器上临时生成本次发布专用的自签名证书（私钥不可导出、
 #   不保存，不写进仓库也不用 Secret），签 Primus.exe、MSI、setup.exe。两个架构的作业各自生成证书，各自导出公钥证书
 #   Primus-signing-cert-<x64|arm64>.cer 作为附件（共 6 个），正文写明按安装包架构导入对应证书
-#   （每个版本、每个架构的证书都不同）。以后有正式证书时配置仓库 Secret PRIMUS_SIGN_PFX_BASE64 / PASSWORD，
-#   此时同时要求 updater 密钥（TAURI_SIGNING_*），生成并校验 .sig；CA 签发的证书不附 .cer
+#   （临时生成时每个版本、每个架构的证书都不同）。以后有正式证书时配置仓库 Secret PRIMUS_SIGN_PFX_BASE64 / PASSWORD，
+#   此时同时要求 updater 密钥（TAURI_SIGNING_*），生成并校验 .sig；CA 签发的证书不附 .cer；
+#   PFX 中若是自签名证书，两个架构共用这一张，仍附两个（内容相同的）.cer，正文按证书来源说明
 name: Release
 
 on:
@@ -58,6 +59,7 @@ jobs:
       prerelease: ${{ steps.version.outputs.prerelease }}
       signed: ${{ steps.signing.outputs.signed }}
       selfsigned: ${{ steps.signing.outputs.selfsigned }}
+      certsource: ${{ steps.signing.outputs.certsource }}
     steps:
       - name: 校验标签名
         shell: pwsh
@@ -131,7 +133,7 @@ jobs:
               throw "标签 $env:RELEASE_TAG 中缺少 scripts/import-release-signing.ps1：该标签早于发布签名，已配置签名证书 Secret 时不能按未签名重建"
             }
             Write-Host "::notice::标签 $env:RELEASE_TAG 早于发布签名（无 scripts/import-release-signing.ps1），按未签名构建"
-            "signed=false", "selfsigned=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            "signed=false", "selfsigned=false", "certsource=none" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
             exit 0
           }
           ./scripts/import-release-signing.ps1 -Version $env:VERSION -Arch $env:ARCH
@@ -139,6 +141,10 @@ jobs:
           $self = (Get-Content -Raw $env:GITHUB_ENV) -match '(?m)^PRIMUS_RELEASE_SELF_SIGNED=true\r?$'
           "signed=$($signed.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "selfsigned=$($self.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          # 证书来源：generated（本次临时生成，每个架构各一张）或 pfx（Secret 中的同一张证书）
+          $source = [regex]::Matches((Get-Content -Raw $env:GITHUB_ENV), '(?m)^PRIMUS_RELEASE_CERT_SOURCE=(generated|pfx)\r?$') | Select-Object -Last 1
+          if (-not $source) { throw "import-release-signing.ps1 未写入 PRIMUS_RELEASE_CERT_SOURCE" }
+          "certsource=$($source.Groups[1].Value)" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       # 内置 Node 运行时按目标架构下载（scripts/node-runtime.json 锁定 win-x64 / win-arm64 的哈希）
       - name: 构建 Agent Core 并组装 dist/（运行时 win-${{ matrix.arch }}）
@@ -269,6 +275,7 @@ jobs:
           PRERELEASE: ${{ needs.build.outputs.prerelease }}
           SIGNED: ${{ needs.build.outputs.signed }}
           SELF_SIGNED: ${{ needs.build.outputs.selfsigned }}
+          CERT_SOURCE: ${{ needs.build.outputs.certsource }}
         run: |
           set -euo pipefail
           names=(
@@ -295,10 +302,15 @@ jobs:
           # 重跑同一标签后正文与本次附件的签名状态一致
           {
             printf '## 已知限制\n\n'
-            if [[ "$SELF_SIGNED" == "true" ]]; then
+            if [[ "$SELF_SIGNED" == "true" && "$CERT_SOURCE" == "generated" ]]; then
               printf -- '- **自签名证书**：x64 与 ARM64 安装包分别用本版本、本架构专用的自签名证书签名（每个版本、每个架构的证书都不同），'
               printf '只在导入了对应证书的电脑上显示为已验证的发布者：x64 安装包对应 `Primus-signing-cert-x64.cer`，ARM64 安装包对应 `Primus-signing-cert-arm64.cer`。'
               printf '导入方法（管理员 PowerShell，文件名换成对应架构的证书）：`Import-Certificate -FilePath .\\Primus-signing-cert-x64.cer -CertStoreLocation Cert:\\LocalMachine\\Root`，'
+              printf '再对 `Cert:\\LocalMachine\\TrustedPublisher` 执行一次。SmartScreen 按下载信誉判断，导入后首次运行仍可能拦截，需要点「更多信息」→「仍要运行」。\n'
+            elif [[ "$SELF_SIGNED" == "true" ]]; then
+              printf -- '- **自签名证书**：x64 与 ARM64 安装包用项目配置的同一张自签名证书签名（`Primus-signing-cert-x64.cer` 与 `Primus-signing-cert-arm64.cer` 内容相同，导入其中一张即可），'
+              printf '只在导入了该证书的电脑上显示为已验证的发布者。'
+              printf '导入方法（管理员 PowerShell）：`Import-Certificate -FilePath .\\Primus-signing-cert-x64.cer -CertStoreLocation Cert:\\LocalMachine\\Root`，'
               printf '再对 `Cert:\\LocalMachine\\TrustedPublisher` 执行一次。SmartScreen 按下载信誉判断，导入后首次运行仍可能拦截，需要点「更多信息」→「仍要运行」。\n'
             elif [[ "$SIGNED" == "true" ]]; then
               printf -- '- 安装包已做代码签名；新证书积累 SmartScreen 信誉之前，首次运行仍可能被拦截。\n'

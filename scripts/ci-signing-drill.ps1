@@ -25,6 +25,12 @@ if (-not $env:GITHUB_ENV -or -not $env:RUNNER_TEMP -or $env:RUNNER_ENVIRONMENT -
 # 证书与发布流程共用 import-release-signing.ps1 的无 Secret 路径（临时自签名证书、导入本机信任、写 GITHUB_ENV），
 # 每次 CI 都实际执行一遍发布用的导入脚本，脚本本身的错误不会等到发版才暴露
 & (Join-Path $PSScriptRoot "import-release-signing.ps1") -Version "ci-drill" -TimestampUrl $TimestampUrl
+# 发布说明按证书来源描述证书范围（临时生成 = 每个架构各一张；PFX = 两个架构共用）：两条分支都核对写入的来源
+function Assert-CertSource([string]$Expected) {
+  $m = [regex]::Matches((Get-Content -Raw $env:GITHUB_ENV), '(?m)^PRIMUS_RELEASE_CERT_SOURCE=(\S+)\r?$') | Select-Object -Last 1
+  if (-not $m -or $m.Groups[1].Value -cne $Expected) { throw "PRIMUS_RELEASE_CERT_SOURCE 应为 $Expected，实际 $(if ($m) { $m.Groups[1].Value } else { '未写入' })" }
+}
+Assert-CertSource "generated"
 
 # 再演练导入脚本的 PFX 分支（以后配置正式证书 Secret 时走这条路）：临时生成一张可导出的自签名代码签名证书，导出为带随机口令的
 # PFX，然后从证书存储中删掉原证书，经 PRIMUS_SIGN_PFX_BASE64 / PRIMUS_SIGN_PFX_PASSWORD 交给导入脚本导回。
@@ -57,6 +63,7 @@ $imported = Get-ChildItem Cert:\CurrentUser\My | Where-Object { $_.Thumbprint -e
 if (-not $imported) { throw "PFX 分支未把带私钥的证书导回 CurrentUser\My" }
 $sha1 = [regex]::Matches((Get-Content -Raw $env:GITHUB_ENV), '(?m)^PRIMUS_SIGN_CERT_SHA1=(\S+)\r?$') | Select-Object -Last 1
 if (-not $sha1 -or $sha1.Groups[1].Value -ne $drillCert.Thumbprint) { throw "PFX 分支未把证书指纹写入 GITHUB_ENV" }
+Assert-CertSource "pfx"
 Write-Host "PFX 分支演练通过：签名改用经 PFX 导入的证书 $($drillCert.Thumbprint)"
 $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
 $elevated = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
