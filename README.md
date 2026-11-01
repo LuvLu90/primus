@@ -28,7 +28,7 @@ node.exe agent-core/rpc-entry.js + 第一方扩展 primus-bundle.js
 | 前端 | Next.js 16（静态导出）、React 19.3、TypeScript 7、Tailwind 4、Radix UI、zustand 5 | 全部界面；用户操作 → RPC 命令；RPC 事件 → 时间线 |
 | 薄壳 | Tauri 2.12、Rust 1.99.1、tokio、rusqlite、windows-rs | 进程监管、JSONL 转发、数据目录、凭证（DPAPI）、文件监听、托盘、更新 |
 | Agent Core | `agent-core/` 源码构建的 JS 产物 + 内置 Node.js 24 LTS | Agent 循环、模型调用、工具、会话、压缩、技能、MCP |
-| 第一方扩展 | TypeScript，打包为 `primus-bundle.js` | 守卫、上下文、检查点、子 Agent、计划模式等 |
+| 第一方扩展 | TypeScript，打包为 `primus-bundle.js` | 守卫、检查点、子 Agent、计划模式等 |
 
 
 ## 目录结构
@@ -127,7 +127,7 @@ dist/
 | 阶段 | 周期 | 内容 | 验收 |
 |---|---|---|---|
 | P0 打通 | 第 1–4 周 | 工程骨架、Core 引入与构建、RPC 进程监管、单会话对话、数据目录、MSI 可安装 | 干净 Windows 11 上 MSI 安装并完成一次真实对话，数据全部在 `<安装目录>\data` |
-| P1 核心 | 第 5–12 周 | 多会话与索引、工具卡片、确认框、模型配置与 Vault、上下文与压缩、primus-guard、primus-context、检查点回滚、变更视图、设置、Shell 检测 | 10 个真实项目试用；危险操作都会触发确认 |
+| P1 核心 | 第 5–12 周 | 多会话与索引、工具卡片、确认框、账号登录与模型配置下发、Vault、上下文条与压缩（Core 内置）、primus-guard、检查点回滚、变更视图、设置、Shell 检测 | 10 个真实项目试用；危险操作都会触发确认 |
 | P2 完善 | 第 13–18 周 | 子 Agent、计划模式与待办、能力中心、会话树、用量统计、自动更新、诊断包、性能达标 | 内部发布 1.0（Windows） |
 | P3 跨平台 | 第 19–24 周 | macOS、Linux 打包与适配 | 三平台发布 |
 
