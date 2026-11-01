@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 // @ts-expect-error 纯 JS 脚本，无类型声明
@@ -105,73 +105,29 @@ describe("build-nsis", () => {
     // data 目录与 Primus.wxs 一致：Users 组（按 SID）“修改”并继承，不是完全控制
     expect(text).toContain("/grant *S-1-5-32-545:(OI)(CI)M");
     expect(text).not.toMatch(/S-1-5-32-545:\(OI\)\(CI\)F/);
-    // 安装目录本身与 Primus.wxs 的 InstallDirAcl 一致，且在复制文件之前（PREINSTALL）设置：
-    // 所有者改为 Administrators，清掉原有显式授权，去掉继承，Users 只读和执行（装在其他盘也不可改程序文件）
+    // 安装目录与预先存在的程序文件交给 windows/install-acl.ps1 的 nsis 模式（与 MSI 共用，详见 build-msi.test.ts）：
+    // 脚本释放到 $PLUGINSDIR，路径经命令行末尾的标记传入，不经 cmd.exe；退出码非 0 即中止安装
     const pre = /!macro NSIS_HOOK_PREINSTALL([\s\S]*?)!macroend/.exec(text)?.[1] ?? "";
     const steps = [
-      'CreateDirectory "$INSTDIR"',
-      '"$INSTDIR" /setowner *S-1-5-32-544',
-      '"$INSTDIR" /reset',
-      '"$INSTDIR" /inheritance:r /grant:r ',
+      "InitPluginsDir",
+      `File "/oname=$PLUGINSDIR\\primus-install-acl.ps1" "\${__FILEDIR__}\\..\\install-acl.ps1"`,
+      '"$SYSDIR\\WindowsPowerShell\\v1.0\\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\\primus-install-acl.ps1" "#|nsis|$INSTDIR|"',
+      "Pop $0",
+      `\${If} $0 != 0`,
+      "SetErrorLevel 2",
+      "Abort",
     ].map((s) => pre.indexOf(s));
     expect(steps.every((i) => i >= 0)).toBe(true);
     expect([...steps].sort((a, b) => a - b)).toEqual(steps);
-    // 每条 icacls 之后都要取退出码，失败即中止安装
-    expect(pre.match(/nsExec::ExecToLog/g)).toHaveLength(4);
-    expect(pre.match(/Pop \$0/g)).toHaveLength(4);
-    expect(pre.match(/\$\{If\} \$0 != 0/g)).toHaveLength(2);
-    expect(pre.match(/\$\{If\} \$0 == 0/g)).toHaveLength(2);
-    expect(pre.match(/Abort/g)).toHaveLength(3);
-    // 安装目录本身是重解析点（fsutil 返回 0）就中止，且在任何 icacls 之前
-    const fsutil = pre.indexOf('"$SYSDIR\\fsutil.exe" reparsepoint query "$INSTDIR"');
-    expect(fsutil).toBeGreaterThan(steps[0]);
-    expect(fsutil).toBeLessThan(steps[1]);
-    // 改程序文件前先拒绝重解析点（icacls /T 默认跟随）：直接子项与 resources 整棵树
-    const reject =
-      /!macro PRIMUS_REJECT_REPARSE_POINTS DIRARGS WHAT([\s\S]*?)!macroend/.exec(text)?.[1] ?? "";
-    expect(reject).toContain(`"$SYSDIR\\cmd.exe" /d /c dir /b /a:l \${DIRARGS}`);
-    expect(reject).toMatch(
-      /Pop \$0\s+\$\{If\} \$0 != 1\s+MessageBox[^\n]+\s+SetErrorLevel 2\s+Abort/,
-    );
-    const checks = [...pre.matchAll(/!insertmacro PRIMUS_REJECT_REPARSE_POINTS '([^']+)'/g)].map(
-      (m) => m[1],
-    );
-    expect(checks).toEqual(['"$INSTDIR\\*"', '/s "$INSTDIR\\resources\\*"']);
-    // 预先存在的程序文件（普通用户放入的同名文件保有所有者身份）：复制前逐项改所有者并 /reset，data 除外
-    const reset =
-      /!macro PRIMUS_RESET_PROGRAM_ITEM ITEM FLAGS([\s\S]*?)!macroend/.exec(text)?.[1] ?? "";
-    const resetSteps = [
-      `\${FileExists} "$INSTDIR\\\${ITEM}"`,
-      `"$INSTDIR\\\${ITEM}" /setowner *S-1-5-32-544 \${FLAGS}`,
-      "Pop $0",
-      `"$INSTDIR\\\${ITEM}" /reset \${FLAGS}`,
-      `\${If} $0 != 0`,
-      "Abort",
-    ].map((s) => reset.indexOf(s));
-    expect(resetSteps.every((i) => i >= 0)).toBe(true);
-    expect([...resetSteps].sort((a, b) => a - b)).toEqual(resetSteps);
-    expect(reset.match(/Pop \$0/g)).toHaveLength(2);
-    const items = [
-      ...pre.matchAll(/!insertmacro PRIMUS_RESET_PROGRAM_ITEM "([^"]+)" "([^"]*)"/g),
-    ].map((m) => [m[1], m[2]]);
-    expect(items).toEqual([
-      ["Primus.exe", ""],
-      ["uninstall.exe", ""],
-      ["resources", "/T /Q"],
-    ]);
-    // 在安装目录 ACL 设置与重解析点检查之后
-    expect(pre.indexOf("!insertmacro PRIMUS_REJECT_REPARSE_POINTS")).toBeGreaterThan(steps[3]);
-    expect(pre.indexOf("!insertmacro PRIMUS_RESET_PROGRAM_ITEM")).toBeGreaterThan(
-      pre.lastIndexOf("!insertmacro PRIMUS_REJECT_REPARSE_POINTS"),
-    );
-    expect(pre).toMatch(
-      /"\$INSTDIR" \/inheritance:r \/grant:r [^\n]*\*S-1-5-32-545:\(OI\)\(CI\)RX/,
-    );
-    // 安装目录不加 /T：否则会改写 data 子树（data\users\<SID> 是受保护的）
-    expect(pre).not.toMatch(/"\$INSTDIR" [^\n]*\/T/);
+    expect(pre.match(/nsExec::ExecToLog/g)).toHaveLength(1);
+    const preCode = pre
+      .split("\n")
+      .filter((line) => !line.trim().startsWith(";"))
+      .join("\n");
+    expect(preCode).not.toMatch(/cmd\.exe|fsutil|icacls/);
+    expect(existsSync(tauriFile("windows/install-acl.ps1"))).toBe(true);
     // 不显式授予 Authenticated Users、Everyone，Users 不得有写入
     expect(text).not.toMatch(/S-1-5-11|S-1-1-0/);
-    expect(pre).not.toMatch(/S-1-5-32-545:\(OI\)\(CI\)(F|M|W)/);
   });
 
   it("按文件名后缀挑出本次产物，架构不符或数量不对即失败", () => {

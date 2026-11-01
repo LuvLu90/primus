@@ -133,21 +133,22 @@
     <Binary Id="WebView2Setup" SourceFile="$(WebView2Setup)" />
     <CustomAction Id="InstallWebView2" BinaryRef="WebView2Setup" ExeCommand="/silent /install"
                   Execute="deferred" Impersonate="no" Return="check" />
-    <!-- 安装目录可能由普通用户预先建好（约束 C2：可装到其他盘），两步处理，任一步失败即回滚：
-         1. CheckInstallDir（CreateFolders 之前）：安装目录本身是重解析点（联接、符号链接）就拒绝安装，
-            否则下面的 ACL 操作会顺着它改到别处。
-         2. ResetProgramAcl（CreateFolders 设好受保护的 DACL 之后、安装文件之前）：普通用户已不能在安装目录里新建项；
-            先确认安装目录的直接子项与 resources 整棵树里没有重解析点（icacls /T 默认跟随），再把预先存在的
-            Primus.exe 与 resources 树的所有者改为 Administrators、/reset 清掉显式授权，改为从安装目录继承。
-            覆盖安装时未列入 LockPermissions 的文件沿用原有安全描述符，所有者若仍是该用户，隐含 WRITE_DAC，
-            可改回 DACL 后替换程序。不存在的项跳过（全新安装）。data 不动：其中 users\<SID> 是受保护的，归各用户所有。
-         与 NSIS hooks.nsh 的 NSIS_HOOK_PREINSTALL 一致。以 SYSTEM 身份运行（Impersonate="no"）。 -->
+    <!-- 安装目录可能由普通用户预先建好（约束 C2：可装到其他盘），两步处理，逻辑都在 windows/install-acl.ps1
+         （与 NSIS hooks.nsh 的 NSIS_HOOK_PREINSTALL 共用；build-msi.mjs 以 -d InstallAclScript 传入其 Base64），任一步失败即回滚：
+         1. CheckInstallDir（CreateFolders 设 DACL 之前）：安装目录及其每一级祖先、已有的直接子项都不能是重解析点
+            （联接、符号链接），否则下面的 ACL 操作会顺着它改到别处。
+         2. ResetProgramAcl（CreateFolders 设好受保护的 DACL 之后、安装文件之前）：再检查一遍，然后自上而下处理预先存在的
+            Primus.exe 与 resources 树：所有者改为 Administrators、清掉显式授权、改为从已锁好的上级继承，锁好一层再看下一层，
+            检查与修改之间普通用户不能插入联接。覆盖安装时未列入 LockPermissions 的文件沿用原有安全描述符，所有者若仍是
+            该用户，隐含 WRITE_DAC，可改回 DACL 后替换程序。data 不动：其中 users\<SID> 是受保护的，归各用户所有。
+         不经 cmd.exe：PowerShell 从自身命令行末尾的注释标记 #|模式|安装目录| 读取路径，% 等字符按字面处理；
+         MSI 格式化字符串中的方括号写作 [\[] [\]]。以 SYSTEM 身份运行（Impersonate="no"）。 -->
     <SetProperty Id="CheckInstallDir" Before="CheckInstallDir" Sequence="execute"
-                 Value="&quot;[System64Folder]cmd.exe&quot; /d /s /c &quot;&quot;[System64Folder]fsutil.exe&quot; reparsepoint query &quot;[INSTALLFOLDER].&quot; >nul 2>&amp;1 &amp;&amp; exit 1 || exit 0&quot;" />
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command &quot;&amp; ([\[]ScriptBlock[\]]::Create([\[]Text.Encoding[\]]::Unicode.GetString([\[]Convert[\]]::FromBase64String('$(InstallAclScript)')))) #|check|[INSTALLFOLDER]|&quot;" />
     <CustomAction Id="CheckInstallDir" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec"
                   Execute="deferred" Impersonate="no" Return="check" />
     <SetProperty Id="ResetProgramAcl" Before="ResetProgramAcl" Sequence="execute"
-                 Value="&quot;[System64Folder]cmd.exe&quot; /d /s /c &quot;(dir /b /a:l &quot;[INSTALLFOLDER]*&quot; >nul 2>&amp;1 &amp;&amp; exit 1) &amp; (if exist &quot;[INSTALLFOLDER]resources\&quot; (dir /s /b /a:l &quot;[INSTALLFOLDER]resources\*&quot; >nul 2>&amp;1 &amp;&amp; exit 1)) &amp; (if exist &quot;[INSTALLFOLDER]Primus.exe&quot; (&quot;[System64Folder]icacls.exe&quot; &quot;[INSTALLFOLDER]Primus.exe&quot; /setowner *S-1-5-32-544 &amp;&amp; &quot;[System64Folder]icacls.exe&quot; &quot;[INSTALLFOLDER]Primus.exe&quot; /reset || exit 1)) &amp; (if exist &quot;[INSTALLFOLDER]resources\&quot; (&quot;[System64Folder]icacls.exe&quot; &quot;[INSTALLFOLDER]resources&quot; /setowner *S-1-5-32-544 /T /Q &amp;&amp; &quot;[System64Folder]icacls.exe&quot; &quot;[INSTALLFOLDER]resources&quot; /reset /T /Q || exit 1)) &amp; exit 0&quot;" />
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command &quot;&amp; ([\[]ScriptBlock[\]]::Create([\[]Text.Encoding[\]]::Unicode.GetString([\[]Convert[\]]::FromBase64String('$(InstallAclScript)')))) #|reset|[INSTALLFOLDER]|&quot;" />
     <CustomAction Id="ResetProgramAcl" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec"
                   Execute="deferred" Impersonate="no" Return="check" />
     <InstallExecuteSequence>

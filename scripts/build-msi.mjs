@@ -66,6 +66,23 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const tauriDir = join(root, "apps/desktop/src-tauri");
 export const WXS = join(tauriDir, "windows/Primus.wxs");
 export const CULTURE = "zh-CN";
+// 安装目录 ACL 处理脚本（与 NSIS 安装钩子共用），以 -d InstallAclScript 嵌入 Primus.wxs 的 CheckInstallDir / ResetProgramAcl
+export const INSTALL_ACL_PS1 = join(tauriDir, "windows/install-acl.ps1");
+
+/**
+ * install-acl.ps1 → powershell -Command 用的 Base64：去掉 BOM、整行注释与空行（缩短命令行），按 UTF-16LE 编码。
+ * 脚本中不用块注释与 here-string，整行注释可以安全去掉。
+ */
+export function encodeInstallAclScript(source) {
+  const code = source
+    .replace(/^\uFEFF/, "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith("#"))
+    .join("\n");
+  return Buffer.from(code, "utf16le").toString("base64");
+}
+
 export const WIX_EXTENSIONS = ["WixToolset.UI.wixext", "WixToolset.Util.wixext"];
 // 微软 WebView2 文档给出的 Evergreen 引导程序下载地址
 export const WEBVIEW2_BOOTSTRAPPER_URL = "https://go.microsoft.com/fwlink/p/?LinkId=2124703";
@@ -191,6 +208,7 @@ export function wixBuildArgs({
   webview2Setup = WEBVIEW2_BOOTSTRAPPER,
   productVersion,
   out,
+  installAclScript = encodeInstallAclScript(readFileSync(INSTALL_ACL_PS1, "utf8")),
 }) {
   archInfo(arch);
   return [
@@ -215,6 +233,8 @@ export function wixBuildArgs({
     `ShellDir=${shellDir}`,
     "-d",
     `WebView2Setup=${webview2Setup}`,
+    "-d",
+    `InstallAclScript=${installAclScript}`,
     "-o",
     out,
   ];

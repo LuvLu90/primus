@@ -191,6 +191,44 @@ if (Test-Path -LiteralPath $InstallDir) { throw "✗ 安装目录已存在：$In
 $webView2Before = Get-WebView2Version
 Write-Host "WebView2 运行时（安装前）：$(if ($webView2Before) { $webView2Before } else { '未安装' })"
 
+# ---- 0. 安装目录或其上级是联接时拒绝安装（Primus.wxs 的 CheckInstallDir / install-acl.ps1），且不改动联接目标 ----
+Write-Step '安装目录或其上级是联接时拒绝安装'
+$probeLink = Join-Path $env:SystemDrive 'PrimusJunctionProbe'
+$probeTarget = Join-Path $env:SystemDrive 'PrimusJunctionTarget'
+foreach ($path in $probeLink, $probeTarget) { if (Test-Path -LiteralPath $path) { throw "✗ 残留：$path（请先删除）" } }
+$null = New-Item -ItemType Directory -Path $probeTarget
+$null = New-Item -ItemType Junction -Path $probeLink -Target $probeTarget
+$targetSddl = (Get-Acl -LiteralPath $probeTarget).Sddl
+try {
+  foreach ($case in @(
+      @{ Name = '安装目录本身是联接'; Dir = $probeLink; Log = 'junction-self.log' },
+      @{ Name = '上级目录是联接'; Dir = (Join-Path $probeLink 'Primus'); Log = 'junction-parent.log' })) {
+    $log = Join-Path $LogDir $case.Log
+    $argumentLine = "/i `"$Msi`" INSTALLFOLDER=`"$($case.Dir)`" /qn /norestart /l*v `"$log`""
+    Write-Host "  msiexec $argumentLine"
+    $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList $argumentLine -PassThru
+    $null = $process.Handle
+    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+      Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+      throw "✗ $($case.Name)：msiexec 超过 $TimeoutSeconds 秒未结束（日志 $log）"
+    }
+    $refused = Select-String -LiteralPath $log -SimpleMatch 'primus-install-acl: error: install dir or one of its parents is a junction'
+    if ($process.ExitCode -ne 1603 -or -not $refused) {
+      Write-Host "---- $log 中含 primus-install-acl / CheckInstallDir 的行 ----"
+      Select-String -LiteralPath $log -Pattern 'primus-install-acl|CheckInstallDir' | ForEach-Object { Write-Host $_.Line }
+    }
+    Assert-True ($process.ExitCode -eq 1603) "$($case.Name)：安装失败并回滚（退出码 $($process.ExitCode)）"
+    Assert-True ($null -ne $refused) "$($case.Name)：由 CheckInstallDir 拒绝（日志中有 install-acl.ps1 的拒绝信息）"
+    Assert-True ((Get-Acl -LiteralPath $probeTarget).Sddl -eq $targetSddl) "$($case.Name)：联接目标的 ACL 未被改动"
+    Assert-True (@(Get-ChildItem -LiteralPath $probeTarget -Recurse -File -Force).Count -eq 0) "$($case.Name)：联接目标中没有写入文件"
+    Assert-True ($null -eq (Get-UninstallEntry)) "$($case.Name)：未留下安装记录"
+  }
+} finally {
+  # 只删联接本身（不跟随），再删目标
+  if (Test-Path -LiteralPath $probeLink) { [IO.Directory]::Delete($probeLink) }
+  Remove-Item -LiteralPath $probeTarget -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 # ---- 1. 安装 ----
 Write-Step "静默安装 $Msi → $InstallDir"
 $installLog = Invoke-Msiexec -Action '/i' -LogName 'install.log' -Properties @("INSTALLFOLDER=`"$InstallDir`"")

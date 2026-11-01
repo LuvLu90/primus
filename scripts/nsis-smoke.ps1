@@ -164,6 +164,30 @@ if (-not (Test-Administrator)) { throw '✗ 需要以管理员身份运行（按
 if (Get-UninstallEntry) { throw "✗ 本机已安装 $ProductName，请先卸载或在干净环境中运行" }
 if (Test-Path -LiteralPath $InstallDir) { throw "✗ 安装目录已存在：$InstallDir（上次运行的残留？请先删除）" }
 
+# ---- 0. 安装目录或其上级是联接时拒绝安装（hooks.nsh → install-acl.ps1），且不改动联接目标 ----
+Write-Step '安装目录或其上级是联接时拒绝安装'
+$probeLink = Join-Path $env:SystemDrive 'PrimusJunctionProbe'
+$probeTarget = Join-Path $env:SystemDrive 'PrimusJunctionTarget'
+foreach ($path in $probeLink, $probeTarget) { if (Test-Path -LiteralPath $path) { throw "✗ 残留：$path（请先删除）" } }
+$null = New-Item -ItemType Directory -Path $probeTarget
+$null = New-Item -ItemType Junction -Path $probeLink -Target $probeTarget
+$targetSddl = (Get-Acl -LiteralPath $probeTarget).Sddl
+try {
+  foreach ($case in @(
+      @{ Name = '安装目录本身是联接'; Dir = $probeLink },
+      @{ Name = '上级目录是联接'; Dir = (Join-Path $probeLink 'Primus') })) {
+    $code = Invoke-Nsis $Exe "/S /D=$($case.Dir)"
+    Assert-True ($code -ne 0) "$($case.Name)：安装程序中止（退出码 $code）"
+    # Tauri 的模板在钩子之前 SetOutPath，可能经联接建出空目录；不得有文件写入、目标 ACL 不变
+    Assert-True ((Get-Acl -LiteralPath $probeTarget).Sddl -eq $targetSddl) "$($case.Name)：联接目标的 ACL 未被改动"
+    Assert-True (@(Get-ChildItem -LiteralPath $probeTarget -Recurse -File -Force).Count -eq 0) "$($case.Name)：联接目标中没有写入文件"
+    Assert-True ($null -eq (Get-UninstallEntry)) "$($case.Name)：未留下安装记录"
+  }
+} finally {
+  if (Test-Path -LiteralPath $probeLink) { [IO.Directory]::Delete($probeLink) }
+  Remove-Item -LiteralPath $probeTarget -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 # ---- 1. 安装 ----
 Write-Step "静默安装 $Exe → $InstallDir"
 # /D= 必须是最后一个参数且不能加引号（NSIS 约定），路径中的空格原样保留

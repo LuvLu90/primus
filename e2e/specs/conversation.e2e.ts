@@ -128,12 +128,14 @@ describe("对话（安装矩阵）", () => {
           .split("\n")
           .filter((line) => line.trim());
       });
-    await browser.waitUntil(() => newLines().length > 0, {
+    const readResults = () => newLines().flatMap((line) => findReadResults(JSON.parse(line)));
+    // 等到 read 工具结果落盘：会话行逐条写入，先写入的可能是用户消息行，只等“有新行”会过早断言
+    await browser.waitUntil(() => readResults().length > 0, {
       timeout: 15_000,
-      timeoutMsg: `${sessions} 下没有本次对话写入的会话内容`,
+      timeoutMsg: `${sessions} 下没有本次对话写入的 read 工具结果`,
     });
     // read 工具确实读到了文件：本次新增的 read 工具结果 isError 为 false
-    const results = newLines().flatMap((line) => findReadResults(JSON.parse(line)));
+    const results = readResults();
     expect(results.length).toBeGreaterThan(0);
     expect(results.every((r) => r.isError === false)).toBe(true);
     // faux 模型对任何工具结果都回复 MATRIX_REPLY，所以还要确认 read 读到的是测试写入的内容
