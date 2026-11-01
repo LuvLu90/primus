@@ -341,6 +341,25 @@ describe("build-msi", () => {
     expect(dacl).toBe(
       "D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)(A;OICI;0x1200a9;;;AC)",
     );
+    // 预先存在的程序文件：安装文件之后以 SYSTEM 改所有者并 /reset，失败回滚；data 不动
+    expect(wxs).toMatch(
+      /<CustomAction Id="ResetProgramAcl"[^>]*DllEntry="WixQuietExec"[^>]*Execute="deferred" Impersonate="no" Return="check"/,
+    );
+    expect(wxs).toContain(
+      '<Custom Action="ResetProgramAcl" After="InstallFiles" Condition="NOT REMOVE" />',
+    );
+    const resetCmd = (/<SetProperty Id="ResetProgramAcl"[^>]*Value="([^"]+)"/.exec(wxs)?.[1] ?? "")
+      .replaceAll("&quot;", '"')
+      .replaceAll("&amp;", "&");
+    const resetParts = resetCmd.split(" && ");
+    expect(resetParts).toHaveLength(4);
+    expect(resetParts[0]).toMatch(/"\[INSTALLFOLDER\]Primus\.exe" \/setowner \*S-1-5-32-544$/);
+    expect(resetParts[1]).toMatch(/"\[INSTALLFOLDER\]Primus\.exe" \/reset$/);
+    expect(resetParts[2]).toMatch(
+      /"\[INSTALLFOLDER\]resources" \/setowner \*S-1-5-32-544 \/T \/Q$/,
+    );
+    expect(resetParts[3]).toMatch(/"\[INSTALLFOLDER\]resources" \/reset \/T \/Q"$/);
+    expect(resetCmd).not.toContain("data");
     expect(wxs).toContain('Value="com.primus.desktop"');
     const conf = JSON.parse(
       readFileSync(new URL("../apps/desktop/src-tauri/tauri.conf.json", import.meta.url), "utf8"),

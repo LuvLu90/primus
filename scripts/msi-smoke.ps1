@@ -306,6 +306,15 @@ exit 1
 # 原所有者会保有隐式的更改权限，可以改回 DACL 后替换程序文件
 $installOwner = (Get-Acl -LiteralPath $InstallDir).GetOwner([Security.Principal.SecurityIdentifier]).Value
 Assert-True ($installOwner -eq 'S-1-5-32-544') "安装目录所有者为 Administrators（实际 $installOwner）"
+# 程序文件（Primus.wxs 的 ResetProgramAcl）：所有者为 Administrators、无显式授权，全部从安装目录继承
+Assert-True ((Get-Content -LiteralPath $installLog -Raw) -match 'Action ended [\d:]+: ResetProgramAcl\. Return value 1') '安装时执行了 ResetProgramAcl 并成功'
+foreach ($item in @((Join-Path $InstallDir 'Primus.exe'), (Join-Path $InstallDir 'resources'))) {
+  $itemAcl = Get-Acl -LiteralPath $item
+  $itemOwner = $itemAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+  Assert-True ($itemOwner -eq 'S-1-5-32-544') "$item 所有者为 Administrators（实际 $itemOwner）"
+  $explicit = @($itemAcl.Access | Where-Object { -not $_.IsInherited })
+  Assert-True ($explicit.Count -eq 0) "$item 没有显式授权（实际 $($explicit.Count) 条）"
+}
 
 # ---- 4. WebView2（第 3.5 节）----
 Write-Step 'WebView2 检测与引导'

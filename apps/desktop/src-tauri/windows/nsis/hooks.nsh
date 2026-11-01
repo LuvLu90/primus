@@ -7,6 +7,25 @@
 ; data 与其中文件保留（与 MSI 的 Permanent 组件一致）。
 !include LogicLib.nsh
 
+; 安装目录中预先存在的程序文件（目录由普通用户预先建好并放入同名文件）：覆盖安装时文件沿用原有的安全描述符，
+; 所有者仍是该用户，隐含 WRITE_DAC，可改回 DACL 后替换程序。复制文件之前把所有者改为 Administrators，
+; 再 /reset 清掉显式授权、改为从安装目录继承（受保护的 DACL，Users 只读和执行）。不存在则跳过（全新安装）。
+!macro PRIMUS_RESET_PROGRAM_ITEM ITEM FLAGS
+  ${If} ${FileExists} "$INSTDIR\${ITEM}"
+    nsExec::ExecToLog '"$SYSDIR\icacls.exe" "$INSTDIR\${ITEM}" /setowner *S-1-5-32-544 ${FLAGS}'
+    Pop $0
+    ${If} $0 == 0
+      nsExec::ExecToLog '"$SYSDIR\icacls.exe" "$INSTDIR\${ITEM}" /reset ${FLAGS}'
+      Pop $0
+    ${EndIf}
+    ${If} $0 != 0
+      MessageBox MB_ICONSTOP|MB_OK "无法重置已有程序文件的所有者与权限（icacls 退出码 $0）：$INSTDIR\${ITEM}" /SD IDOK
+      SetErrorLevel 2
+      Abort
+    ${EndIf}
+  ${EndIf}
+!macroend
+
 !macro NSIS_HOOK_PREINSTALL
   ; 安装目录本身与 Primus.wxs 的 InstallDirAcl 一致，在复制文件之前设置，已安装的文件从这里继承：
   ; 装到 D:\primus 这类自选目录时会继承盘根的 ACL（非系统盘根默认给 Authenticated Users “修改”），
@@ -32,6 +51,10 @@
     SetErrorLevel 2
     Abort
   ${EndIf}
+  ; 程序文件逐项处理（data 除外：其中 users\<SID> 是受保护的，归各用户所有）
+  !insertmacro PRIMUS_RESET_PROGRAM_ITEM "Primus.exe" ""
+  !insertmacro PRIMUS_RESET_PROGRAM_ITEM "uninstall.exe" ""
+  !insertmacro PRIMUS_RESET_PROGRAM_ITEM "resources" "/T /Q"
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL

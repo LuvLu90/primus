@@ -116,6 +116,35 @@ describe("build-nsis", () => {
     ].map((s) => pre.indexOf(s));
     expect(steps.every((i) => i >= 0)).toBe(true);
     expect([...steps].sort((a, b) => a - b)).toEqual(steps);
+    // 每条 icacls 之后都要取退出码，失败即中止安装
+    expect(pre.match(/nsExec::ExecToLog/g)).toHaveLength(3);
+    expect(pre.match(/Pop \$0/g)).toHaveLength(3);
+    expect(pre.match(/\$\{If\} \$0 != 0/g)).toHaveLength(2);
+    expect(pre.match(/Abort/g)).toHaveLength(2);
+    // 预先存在的程序文件（普通用户放入的同名文件保有所有者身份）：复制前逐项改所有者并 /reset，data 除外
+    const reset =
+      /!macro PRIMUS_RESET_PROGRAM_ITEM ITEM FLAGS([\s\S]*?)!macroend/.exec(text)?.[1] ?? "";
+    const resetSteps = [
+      `\${FileExists} "$INSTDIR\\\${ITEM}"`,
+      `"$INSTDIR\\\${ITEM}" /setowner *S-1-5-32-544 \${FLAGS}`,
+      "Pop $0",
+      `"$INSTDIR\\\${ITEM}" /reset \${FLAGS}`,
+      `\${If} $0 != 0`,
+      "Abort",
+    ].map((s) => reset.indexOf(s));
+    expect(resetSteps.every((i) => i >= 0)).toBe(true);
+    expect([...resetSteps].sort((a, b) => a - b)).toEqual(resetSteps);
+    expect(reset.match(/Pop \$0/g)).toHaveLength(2);
+    const items = [
+      ...pre.matchAll(/!insertmacro PRIMUS_RESET_PROGRAM_ITEM "([^"]+)" "([^"]*)"/g),
+    ].map((m) => [m[1], m[2]]);
+    expect(items).toEqual([
+      ["Primus.exe", ""],
+      ["uninstall.exe", ""],
+      ["resources", "/T /Q"],
+    ]);
+    // 在安装目录 ACL 设置之后
+    expect(pre.indexOf("!insertmacro PRIMUS_RESET_PROGRAM_ITEM")).toBeGreaterThan(steps[3]);
     expect(pre).toMatch(
       /"\$INSTDIR" \/inheritance:r \/grant:r [^\n]*\*S-1-5-32-545:\(OI\)\(CI\)RX/,
     );
