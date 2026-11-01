@@ -11,10 +11,10 @@
 #   共用的 composite action 从工作流自身的提交另行取出。标签中须已有多架构打包脚本（scripts/build-nsis.mjs 等），
 #   更早的标签无法用本工作流构建；早于 RPC 契约测试的标签（package.json 无 contract:core:dist）可以构建，
 #   但跳过契约测试一步（RPC 冒烟照常运行）
-# - 代码签名（scripts/import-release-signing.ps1）：仓库 Secret PRIMUS_SIGN_PFX_BASE64 / PRIMUS_SIGN_PFX_PASSWORD
-#   配置了证书时签 Primus.exe、MSI、setup.exe 并要求 updater 密钥（TAURI_SIGNING_*）同时配置，生成并校验 .sig；
-#   自签名证书（scripts/new-release-signing-keys.ps1 生成）另把公钥证书 Primus-signing-cert.cer 作为第 5 个附件，
-#   正文写明需导入信任。未配置证书时安装包不签名，Release 正文的「已知限制」写明 SmartScreen 拦截
+# - 代码签名（scripts/import-release-signing.ps1）：默认在构建运行器上临时生成本次发布专用的自签名证书（私钥不可导出、
+#   不保存，不写进仓库也不用 Secret），签 Primus.exe、MSI、setup.exe，公钥证书 Primus-signing-cert.cer 作为第 5 个附件，
+#   正文写明需导入信任（每个版本的证书不同）。以后有正式证书时配置仓库 Secret PRIMUS_SIGN_PFX_BASE64 / PASSWORD，
+#   此时同时要求 updater 密钥（TAURI_SIGNING_*），生成并校验 .sig；CA 签发的证书不附 .cer
 name: Release
 
 on:
@@ -113,15 +113,16 @@ jobs:
           wix-version: ${{ steps.version.outputs.wix }}
           cache: "false"
 
-      # 未配置证书时只写 PRIMUS_RELEASE_SIGNED=false；配一半报错。PFX 只在这一步可见
-      - name: 导入代码签名证书（仓库 Secret）
+      # 未配置 Secret 时临时生成自签名证书；配一半报错。PFX 只在这一步可见
+      - name: 准备代码签名证书
         id: signing
         shell: pwsh
         env:
           PRIMUS_SIGN_PFX_BASE64: ${{ secrets.PRIMUS_SIGN_PFX_BASE64 }}
           PRIMUS_SIGN_PFX_PASSWORD: ${{ secrets.PRIMUS_SIGN_PFX_PASSWORD }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          ./scripts/import-release-signing.ps1
+          ./scripts/import-release-signing.ps1 -Version $env:VERSION
           $signed = (Get-Content -Raw $env:GITHUB_ENV) -match '(?m)^PRIMUS_RELEASE_SIGNED=true\r?$'
           $self = (Get-Content -Raw $env:GITHUB_ENV) -match '(?m)^PRIMUS_RELEASE_SELF_SIGNED=true\r?$'
           "signed=$($signed.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
@@ -151,7 +152,7 @@ jobs:
       - name: 被禁 SDK 检查（导入图 + SBOM，严格模式）
         run: node scripts/check-forbidden-sdk.mjs --strict
 
-      # updater 私钥只给这两步；配置了证书时 PRIMUS_REQUIRE_SIGNING=1，私钥缺失即失败
+      # updater 私钥（可选 Secret）只给这两步；配置了 PFX Secret 时 PRIMUS_REQUIRE_SIGNING=1，私钥缺失即失败
       - name: 构建 MSI（tauri build --no-bundle → wix build -arch ${{ matrix.arch }}）
         run: node scripts/build-msi.mjs --arch ${{ matrix.arch }}
         env:
@@ -338,7 +339,7 @@ jobs:
             {
               printf '## 已知限制\n\n'
               if [[ "$SELF_SIGNED" == "true" ]]; then
-                printf -- '- **自签名证书**：安装包用自签名证书签名，只在导入了 `Primus-signing-cert.cer` 的电脑上显示为已验证的发布者。'
+                printf -- '- **自签名证书**：安装包用本版本专用的自签名证书签名（每个版本的证书不同），只在导入了本版本 `Primus-signing-cert.cer` 的电脑上显示为已验证的发布者。'
                 printf '导入方法（管理员 PowerShell）：`Import-Certificate -FilePath .\\Primus-signing-cert.cer -CertStoreLocation Cert:\\LocalMachine\\Root`，'
                 printf '再对 `Cert:\\LocalMachine\\TrustedPublisher` 执行一次。SmartScreen 按下载信誉判断，导入后首次运行仍可能拦截，需要点「更多信息」→「仍要运行」。\n\n'
               elif [[ "$SIGNED" == "true" ]]; then

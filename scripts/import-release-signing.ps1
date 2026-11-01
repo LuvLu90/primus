@@ -1,28 +1,32 @@
 ﻿#requires -Version 7.2
 <#
 .SYNOPSIS
-  发布构建导入代码签名证书（release.yml 使用；技术方案第 3.3.4、22.3 节）。
+  发布构建准备代码签名证书（release.yml 使用；技术方案第 3.3.4、22.3 节）。
 
 .DESCRIPTION
-  从环境变量读取仓库 Secret（由 scripts/new-release-signing-keys.ps1 生成并写入）：
-    PRIMUS_SIGN_PFX_BASE64    代码签名证书 PFX（含私钥）的 Base64
+  证书来源（环境变量，可选的仓库 Secret）：
+    PRIMUS_SIGN_PFX_BASE64    代码签名证书 PFX（含私钥）的 Base64，留给以后的正式 CA 证书
     PRIMUS_SIGN_PFX_PASSWORD  PFX 口令
   三种情况：
-    - 两个都为空：不签名（Release 正文写明“未做代码签名”），写 PRIMUS_RELEASE_SIGNED=false
+    - 两个都为空（当前做法）：在本运行器上临时生成本次发布专用的自签名代码签名证书（私钥不可导出，
+      运行器销毁即消失，不写进仓库、也不存为 Secret）。每次发布的证书都不同；没有 updater 密钥，不生成 .sig
     - 只配一个：配置错误，报错退出
-    - 都有：导入 PFX 到 CurrentUser\My（私钥不可导出），检查有私钥、含“代码签名”用途、在有效期内；
-      自签名证书（颁发者 = 使用者）把公钥证书加入本机 Root 与 TrustedPublisher，使 signtool verify /pa
-      能在运行器上建立信任链（只允许 GitHub 托管运行器，用完即销毁）；导出公钥证书供 Release 附件下载
-  写入 GITHUB_ENV：PRIMUS_SIGN_CERT_SHA1、PRIMUS_SIGN_TIMESTAMP_URL、PRIMUS_REQUIRE_SIGNING=1（要求 updater
-  密钥同时配置，由 build-msi.mjs / build-nsis.mjs 检查）、PRIMUS_RELEASE_SIGNED、PRIMUS_RELEASE_SELF_SIGNED、
-  PRIMUS_SIGN_CER（导出的公钥证书路径，文件名 Primus-signing-cert.cer）。
-  updater 私钥不经本脚本：release.yml 直接把 Secret 作为构建步骤的环境变量。
+    - 都有：导入 PFX 到 CurrentUser\My（私钥不可导出），检查有私钥、含“代码签名”用途、在有效期内，
+      并写 PRIMUS_REQUIRE_SIGNING=1（要求 updater 密钥 TAURI_SIGNING_* 同时配置）
+  自签名证书（颁发者 = 使用者）把公钥证书加入本机 Root 与 TrustedPublisher，使 signtool verify /pa 能在运行器上
+  建立信任链（只允许 GitHub 托管运行器，用完即销毁）。公钥证书导出为 Primus-signing-cert.cer 供 Release 附件下载。
+  写入 GITHUB_ENV：PRIMUS_SIGN_CERT_SHA1、PRIMUS_SIGN_TIMESTAMP_URL、PRIMUS_RELEASE_SIGNED=true、
+  PRIMUS_RELEASE_SELF_SIGNED、PRIMUS_SIGN_CER（导出的公钥证书路径）。
+
+.PARAMETER Version
+  本次发布的版本号，写进临时证书的使用者名称（例如 0.0.4）。
 
 .PARAMETER TimestampUrl
   RFC 3161 时间戳服务器，默认 http://timestamp.digicert.com。
 #>
 param(
-  [string]$TimestampUrl = "http://timestamp.digicert.com"
+  [string]$TimestampUrl = "http://timestamp.digicert.com",
+  [string]$Version = ""
 )
 $ErrorActionPreference = "Stop"
 if (-not $env:GITHUB_ENV -or -not $env:RUNNER_TEMP) { throw "只能在 GitHub Actions 运行器上运行" }
@@ -30,22 +34,28 @@ if (-not $env:GITHUB_ENV -or -not $env:RUNNER_TEMP) { throw "只能在 GitHub Ac
 $pfxBase64 = $env:PRIMUS_SIGN_PFX_BASE64
 $pfxPassword = $env:PRIMUS_SIGN_PFX_PASSWORD
 if (-not $pfxBase64 -and -not $pfxPassword) {
-  Write-Host "::notice::未配置 PRIMUS_SIGN_PFX_BASE64 / PRIMUS_SIGN_PFX_PASSWORD，安装包不做代码签名"
-  @("PRIMUS_RELEASE_SIGNED=false", "PRIMUS_RELEASE_SELF_SIGNED=false") |
-    Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-  return
-}
-if (-not $pfxBase64 -or -not $pfxPassword) {
+  # 临时证书：私钥生成在运行器的证书存储里、不可导出，只用于本次发布。时间戳签名在证书过期后仍有效
+  $label = if ($Version) { " $Version" } else { "" }
+  $cert = @(New-SelfSignedCertificate -Type CodeSigningCert `
+      -Subject "CN=Primus$label (self-signed release), O=skaduv" `
+      -CertStoreLocation Cert:\CurrentUser\My `
+      -KeyAlgorithm RSA -KeyLength 3072 -HashAlgorithm SHA256 `
+      -KeyExportPolicy NonExportable `
+      -NotAfter (Get-Date).AddYears(3))
+  $requireSigning = $false
+  Write-Host "::notice::未配置 PRIMUS_SIGN_PFX_BASE64，使用本次发布临时生成的自签名证书（私钥不可导出，不保存）"
+} elseif (-not $pfxBase64 -or -not $pfxPassword) {
   throw "PRIMUS_SIGN_PFX_BASE64 与 PRIMUS_SIGN_PFX_PASSWORD 必须同时配置"
-}
-
-$pfx = Join-Path $env:RUNNER_TEMP "primus-release-signing.pfx"
-try {
-  [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String(($pfxBase64 -replace '\s', '')))
-  $secure = ConvertTo-SecureString -String $pfxPassword -AsPlainText -Force
-  $cert = Import-PfxCertificate -FilePath $pfx -Password $secure -CertStoreLocation Cert:\CurrentUser\My
-} finally {
-  Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue
+} else {
+  $pfx = Join-Path $env:RUNNER_TEMP "primus-release-signing.pfx"
+  try {
+    [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String(($pfxBase64 -replace '\s', '')))
+    $secure = ConvertTo-SecureString -String $pfxPassword -AsPlainText -Force
+    $cert = Import-PfxCertificate -FilePath $pfx -Password $secure -CertStoreLocation Cert:\CurrentUser\My
+  } finally {
+    Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue
+  }
+  $requireSigning = $true
 }
 $cert = @($cert | Where-Object HasPrivateKey)
 if ($cert.Count -ne 1) { throw "PFX 中应恰有一张带私钥的证书，实际 $($cert.Count) 张" }
@@ -90,7 +100,7 @@ Write-Host "代码签名证书：$($cert.Subject)，指纹 $($cert.Thumbprint)�
 @(
   "PRIMUS_SIGN_CERT_SHA1=$($cert.Thumbprint)",
   "PRIMUS_SIGN_TIMESTAMP_URL=$TimestampUrl",
-  "PRIMUS_REQUIRE_SIGNING=1",
+  "PRIMUS_REQUIRE_SIGNING=$(if ($requireSigning) { '1' } else { '0' })",
   "PRIMUS_RELEASE_SIGNED=true",
   "PRIMUS_RELEASE_SELF_SIGNED=$($selfSigned.ToString().ToLowerInvariant())",
   "PRIMUS_SIGN_CER=$cer"
