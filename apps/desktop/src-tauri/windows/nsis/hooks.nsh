@@ -7,6 +7,10 @@
 ; data 与其中文件保留（与 MSI 的 Permanent 组件一致）。
 !include LogicLib.nsh
 
+; ${__FILEDIR__} 必须在 !include 本文件时展开（此时指向 windows\nsis）；写在宏里会在 installer.nsi 中展开，
+; 指向 target\release\nsis\<arch>。
+!define PRIMUS_INSTALL_ACL_PS1 "${__FILEDIR__}\..\install-acl.ps1"
+
 !macro NSIS_HOOK_PREINSTALL
   ; 安装目录与 Primus.wxs 的 InstallDirAcl 一致，在复制文件之前设置，已安装的文件从这里继承：
   ; 装到 D:\primus 这类自选目录时会继承盘根的 ACL（非系统盘根默认给 Authenticated Users “修改”），
@@ -17,7 +21,7 @@
   ; Primus.exe、uninstall.exe、resources 树。data 不动（其中 users\<SID> 是受保护的，归各用户所有）。
   ; 路径经命令行末尾的标记 "#|nsis|<目录>|" 传入，不经 cmd.exe；脚本放在 $PLUGINSDIR（仅管理员可写）。
   InitPluginsDir
-  File "/oname=$PLUGINSDIR\primus-install-acl.ps1" "${__FILEDIR__}\..\install-acl.ps1"
+  File "/oname=$PLUGINSDIR\primus-install-acl.ps1" "${PRIMUS_INSTALL_ACL_PS1}"
   nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\primus-install-acl.ps1" "#|nsis|$INSTDIR|"'
   Pop $0
   ${If} $0 != 0
