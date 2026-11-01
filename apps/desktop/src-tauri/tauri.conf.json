@@ -36,8 +36,7 @@
     "active": false,
     "targets": ["nsis"],
     "publisher": "乾元 Primus",
-    "homepage": "https://github.com/skaduv/primus",
-    "licenseFile": "windows/License.rtf",
+    "licenseFile": "windows/Privacy.rtf",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -55,6 +54,8 @@
         "displayLanguageSelector": false,
         "installMode": "perMachine",
         "installerIcon": "icons/icon.ico",
+        "headerImage": "windows/art/nsis-header.bmp",
+        "sidebarImage": "windows/art/nsis-sidebar.bmp",
         "installerHooks": "windows/nsis/hooks.nsh"
       }
     }

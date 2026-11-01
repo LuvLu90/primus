@@ -67,13 +67,22 @@ describe("build-nsis", () => {
     expect(conf.bundle.targets).toEqual(["nsis"]);
     // 发布者与 MSI 的 Manufacturer 一致：Tauri 的 NSIS 安装程序据显示名 + 发布者识别已装的 MSI 并提示先卸载
     expect(conf.bundle.publisher).toBe(NSIS_PRODUCT_NAME);
-    expect(conf.bundle.licenseFile).toBe("windows/License.rtf");
+    expect(conf.bundle.licenseFile).toBe("windows/Privacy.rtf");
+    // 按官方产品对外：安装界面与卸载信息里不出现代码仓库地址
+    expect(conf.bundle.homepage).toBeUndefined();
+    const policy = readFileSync(tauriFile(conf.bundle.licenseFile), "latin1");
+    expect(policy.startsWith("{\\rtf1")).toBe(true);
+    expect(policy).not.toMatch(/github|MIT|License/i);
     // resources 不写进 tauri.conf.json：tauri-build 编译时会检查它们存在，开发构建不应依赖 dist/
     expect(conf.bundle.resources).toBeUndefined();
     const nsis = conf.bundle.windows.nsis;
     expect(nsis.languages).toEqual(["SimpChinese"]);
     expect(nsis.displayLanguageSelector).toBe(false);
     expect(nsis.installMode).toBe("perMachine");
+    // 与 MSI 同一套界面图片（Primus.wxs 的 WixUIBannerBmp / WixUIDialogBmp）
+    for (const img of [nsis.headerImage, nsis.sidebarImage]) {
+      expect(readFileSync(tauriFile(img)).subarray(0, 2).toString("latin1")).toBe("BM");
+    }
     expect(conf.bundle.windows.webviewInstallMode).toEqual({
       type: "embedBootstrapper",
       silent: true,
