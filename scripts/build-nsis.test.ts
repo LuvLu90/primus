@@ -80,10 +80,18 @@ describe("build-nsis", () => {
     expect(nsis.displayLanguageSelector).toBe(false);
     expect(nsis.installMode).toBe("perMachine");
     // 与 MSI 同一套界面图片（Primus.wxs 的 WixUIBannerBmp / WixUIDialogBmp）
-    for (const img of [nsis.headerImage, nsis.sidebarImage]) {
+    // 尺寸与色深按 windows/README.md：页眉 150×57、侧边 164×314，均为 24 位
+    const sizes: [string, number, number][] = [
+      [nsis.headerImage, 150, 57],
+      [nsis.sidebarImage, 164, 314],
+    ];
+    for (const [img, w, h] of sizes) {
       const bmp = readFileSync(tauriFile(img));
       expect(bmp.subarray(0, 2).toString("latin1")).toBe("BM");
       expect(bmp.readUInt32LE(2)).toBe(bmp.length); // bfSize 与实际长度一致（文件未截断）
+      expect(bmp.readInt32LE(18)).toBe(w);
+      expect(Math.abs(bmp.readInt32LE(22))).toBe(h);
+      expect(bmp.readUInt16LE(28)).toBe(24);
     }
     expect(conf.bundle.windows.webviewInstallMode).toEqual({
       type: "embedBootstrapper",
@@ -93,14 +101,29 @@ describe("build-nsis", () => {
     // UTF-8 BOM：makensis 才会按 UTF-8 读取中文
     expect([...hooks.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
     const text = hooks.toString("utf8");
-    expect(text).toContain("!macro NSIS_HOOK_POSTINSTALL");
+    expect(text).toContain("!macro NSIS_HOOK_PREINSTALL");
     // data 目录与 Primus.wxs 一致：Users 组（按 SID）“修改”并继承，不是完全控制
     expect(text).toContain("/grant *S-1-5-32-545:(OI)(CI)M");
     expect(text).not.toMatch(/S-1-5-32-545:\(OI\)\(CI\)F/);
-    // 安装目录本身与 Primus.wxs 的 InstallDirAcl 一致：去掉继承，Users 只读和执行（装在其他盘也不可改程序文件）
-    expect(text).toMatch(
+    // 安装目录本身与 Primus.wxs 的 InstallDirAcl 一致，且在复制文件之前（PREINSTALL）设置：
+    // 所有者改为 Administrators，清掉原有显式授权，去掉继承，Users 只读和执行（装在其他盘也不可改程序文件）
+    const pre = /!macro NSIS_HOOK_PREINSTALL([\s\S]*?)!macroend/.exec(text)?.[1] ?? "";
+    const steps = [
+      'CreateDirectory "$INSTDIR"',
+      '"$INSTDIR" /setowner *S-1-5-32-544',
+      '"$INSTDIR" /reset',
+      '"$INSTDIR" /inheritance:r /grant:r ',
+    ].map((s) => pre.indexOf(s));
+    expect(steps.every((i) => i >= 0)).toBe(true);
+    expect([...steps].sort((a, b) => a - b)).toEqual(steps);
+    expect(pre).toMatch(
       /"\$INSTDIR" \/inheritance:r \/grant:r [^\n]*\*S-1-5-32-545:\(OI\)\(CI\)RX/,
     );
+    // 安装目录不加 /T：否则会改写 data 子树（data\users\<SID> 是受保护的）
+    expect(pre).not.toMatch(/"\$INSTDIR" [^\n]*\/T/);
+    // 不显式授予 Authenticated Users、Everyone，Users 不得有写入
+    expect(text).not.toMatch(/S-1-5-11|S-1-1-0/);
+    expect(pre).not.toMatch(/S-1-5-32-545:\(OI\)\(CI\)(F|M|W)/);
   });
 
   it("按文件名后缀挑出本次产物，架构不符或数量不对即失败", () => {

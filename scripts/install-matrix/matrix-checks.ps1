@@ -38,8 +38,9 @@ function ConvertTo-PsLiteral([string] $Value) { return "'" + ($Value -replace "'
 # 直接传 -Command 字符串时其中的 $变量 会在外层被展开；用 -EncodedCommand（Base64）原样传递脚本
 function Invoke-MediumPwsh([string] $Script) {
   $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Script))
-  & gsudo --integrity Medium pwsh -NoProfile -NonInteractive -EncodedCommand $encoded
-  return $LASTEXITCODE
+  # 子进程输出直接写到主机，不进函数的输出流（否则返回值会变成输出行加退出码的数组）
+  & gsudo --integrity Medium pwsh -NoProfile -NonInteractive -EncodedCommand $encoded | Out-Host
+  return [int] $LASTEXITCODE
 }
 function Assert-True([bool] $Condition, [string] $Message) {
   if (-not $Condition) { throw "✗ $Message" }
@@ -166,7 +167,12 @@ try {
   Assert-True (Test-Path -LiteralPath $stdDir) "标准用户的数据在 $stdDir"
 } finally {
   Write-Step '清理：计划任务、临时用户、Faux 服务'
+  Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
   Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue
+  # 先结束标准用户残留的进程（Primus、Core 等），免得其打开的文件让卸载后的清理删不掉
+  Get-Process -IncludeUserName -ErrorAction SilentlyContinue |
+    Where-Object { $_.UserName -and $_.UserName.EndsWith("\$StdUser") } |
+    ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
   Get-LocalUser -Name $StdUser -ErrorAction SilentlyContinue | Remove-LocalUser
   if (-not $faux.HasExited) { Stop-Process -Id $faux.Id -Force -ErrorAction SilentlyContinue }
   $logs = Join-Path $dataDir 'shared\logs'

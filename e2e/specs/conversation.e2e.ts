@@ -48,11 +48,15 @@ function currentSid(): string {
 }
 
 /** 在会话记录的一行中找出 read 工具的结果（带 toolName 与 isError 的对象） */
-function findReadResults(value: unknown): { isError: unknown }[] {
+function findReadResults(value: unknown): { isError: unknown; text: string }[] {
   if (Array.isArray(value)) return value.flatMap(findReadResults);
   if (!value || typeof value !== "object") return [];
   const obj = value as Record<string, unknown>;
-  const own = obj.toolName === "read" && "isError" in obj ? [{ isError: obj.isError }] : [];
+  // text：工具结果的全部内容序列化后的文本，用来确认读到的是测试写入的文件
+  const own =
+    obj.toolName === "read" && "isError" in obj
+      ? [{ isError: obj.isError, text: JSON.stringify(obj.content ?? obj) }]
+      : [];
   return [...own, ...Object.values(obj).flatMap(findReadResults)];
 }
 
@@ -112,6 +116,8 @@ describe("对话（安装矩阵）", () => {
       .flatMap((line) => findReadResults(JSON.parse(line)));
     expect(results.length).toBeGreaterThan(0);
     expect(results.every((r) => r.isError === false)).toBe(true);
+    // faux 模型对任何工具结果都回复 MATRIX_REPLY，所以还要确认 read 读到的是测试写入的内容
+    expect(results.some((r) => r.text.includes("矩阵测试文件"))).toBe(true);
     await expect($(`main[aria-label="${strings.layout.timeline}"]`)).toBeExisting();
   });
 });

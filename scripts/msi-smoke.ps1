@@ -302,6 +302,10 @@ exit 1
 } else {
   Write-Host '  · 未找到 gsudo，跳过中完整性级别写入测试（ACL 检查已通过）'
 }
+# 安装目录所有者为 Administrators（Primus.wxs InstallDirAcl 的 O:BA）：目录若由普通用户预先建好，
+# 原所有者会保有隐式的更改权限，可以改回 DACL 后替换程序文件
+$installOwner = (Get-Acl -LiteralPath $InstallDir).GetOwner([Security.Principal.SecurityIdentifier]).Value
+Assert-True ($installOwner -eq 'S-1-5-32-544') "安装目录所有者为 Administrators（实际 $installOwner）"
 
 # ---- 4. WebView2（第 3.5 节）----
 Write-Step 'WebView2 检测与引导'
@@ -370,16 +374,17 @@ if ($KeepData) {
     } catch {
       if ($round -eq 0) { Write-Host "  · 直接删除失败（$($_.Exception.Message)），取得所有权后重试" }
       & takeown.exe /F $InstallDir /R /D Y 2>&1 | Out-Null
-      # /reset 去掉 users\<SID> 的受保护 DACL，让文件也继承下面给目录的授权（(OI)(CI) 对文件不生效）
-      & icacls.exe $InstallDir /reset /T /C /Q 2>&1 | Out-Null
+      # 只给管理员加显式授权（/T 逐个写到目录与文件上），不用 /reset：清理失败时 users\<SID> 仍是受保护的，
+      # 不会改为继承 data 上 Users 的“修改”
       & icacls.exe $InstallDir /grant '*S-1-5-32-544:(OI)(CI)F' /T /C /Q 2>&1 | Out-Null
     }
   }
   if (-not $removed) {
-    # 兜底：robocopy /B 以备份语义（管理员的备份 / 还原特权）把目录镜像为空，不受各文件 ACL 限制
+    # 兜底：robocopy /B 以备份语义（管理员的备份 / 还原特权）把目录镜像为空，不受各文件 ACL 限制；
+    # /XJ 不进入目录联接（data 可由普通用户写入，避免顺着联接删到安装目录之外）
     $empty = Join-Path ([IO.Path]::GetTempPath()) "primus-msi-smoke-empty-$PID"
     New-Item -ItemType Directory -Force -Path $empty | Out-Null
-    & robocopy.exe $empty $InstallDir /MIR /B /R:0 /W:0 /NFL /NDL /NJH /NJS /NP | Out-Null
+    & robocopy.exe $empty $InstallDir /MIR /B /XJ /R:0 /W:0 /NFL /NDL /NJH /NJS /NP | Out-Null
     Write-Host "  · robocopy /B 清空 $InstallDir（退出码 $LASTEXITCODE）"
     $global:LASTEXITCODE = 0  # robocopy 退出码 1–7 表示成功，免得作业按非零码判失败
     Remove-Item -LiteralPath $empty -Force
