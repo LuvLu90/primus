@@ -5,7 +5,6 @@
 | 模块 | Core 挂点 | 功能 | `primus:*` 数据 / 命令 |
 |---|---|---|---|
 | `guard` | `session_start`、`tool_call`、`tool_result`、`before_agent_start` | 协议白名单、危险操作确认、受保护路径、外部内容标注、权限模式 | `primus:mode`；`/primus-mode <模式>` |
-| `context` | `before_agent_start`、`context`、`tool_result`、`session_before_compact` | 固定项注入、工作区信息、大输出外置、历史瘦身、结构化压缩摘要、交接 | `primus:context`、`primus:pins`；`/primus-pins`、`/primus-handoff` |
 | `checkpoint` | `turn_start`、`tool_call`（write/edit） | 影子仓库快照、回滚、变更清单 | `primus:changes`；`/primus-restore`、`/primus-revert-file` |
 | `subagent` | 自定义工具 `subagent` | 子 Agent 进程管理与结果汇总 | `primus:subagents` |
 | `plan` | `setActiveTools`、自定义工具 `todo` | 计划模式、待办 | `primus:plan`、`primus:todo`；`/primus-plan` |
