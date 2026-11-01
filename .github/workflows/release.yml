@@ -113,7 +113,9 @@ jobs:
           wix-version: ${{ steps.version.outputs.wix }}
           cache: "false"
 
-      # 未配置 Secret 时临时生成自签名证书；配一半报错。PFX 只在这一步可见
+      # 未配置 Secret 时临时生成自签名证书；配一半报错。PFX 只在这一步可见。
+      # 早于发布签名的标签（没有 import-release-signing.ps1，其构建脚本也不认签名配置）重建时按未签名发布；
+      # 但已配置正式证书 Secret 时不允许静默降级为未签名
       - name: 准备代码签名证书
         id: signing
         shell: pwsh
@@ -122,6 +124,14 @@ jobs:
           PRIMUS_SIGN_PFX_PASSWORD: ${{ secrets.PRIMUS_SIGN_PFX_PASSWORD }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
+          if (-not (Test-Path -LiteralPath scripts/import-release-signing.ps1)) {
+            if ($env:PRIMUS_SIGN_PFX_BASE64 -or $env:PRIMUS_SIGN_PFX_PASSWORD) {
+              throw "标签 $env:RELEASE_TAG 中缺少 scripts/import-release-signing.ps1：该标签早于发布签名，已配置签名证书 Secret 时不能按未签名重建"
+            }
+            Write-Host "::notice::标签 $env:RELEASE_TAG 早于发布签名（无 scripts/import-release-signing.ps1），按未签名构建"
+            "signed=false", "selfsigned=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            exit 0
+          }
           ./scripts/import-release-signing.ps1 -Version $env:VERSION
           $signed = (Get-Content -Raw $env:GITHUB_ENV) -match '(?m)^PRIMUS_RELEASE_SIGNED=true\r?$'
           $self = (Get-Content -Raw $env:GITHUB_ENV) -match '(?m)^PRIMUS_RELEASE_SELF_SIGNED=true\r?$'
@@ -274,6 +284,29 @@ jobs:
           } > checksums.md
           if grep -Eq '\| `[0-9a-f]{0,63}` \|' checksums.md; then echo "::error::校验表缺少哈希"; exit 1; fi
 
+          # 正文的「## 已知限制」与「## 安装包」段随签名状态生成：创建时写入，更新已有 Release 时整段替换，
+          # 重跑同一标签后正文与本次附件的签名状态一致
+          {
+            printf '## 已知限制\n\n'
+            if [[ "$SELF_SIGNED" == "true" ]]; then
+              printf -- '- **自签名证书**：安装包用本版本专用的自签名证书签名（每个版本的证书不同），只在导入了本版本 `Primus-signing-cert.cer` 的电脑上显示为已验证的发布者。'
+              printf '导入方法（管理员 PowerShell）：`Import-Certificate -FilePath .\\Primus-signing-cert.cer -CertStoreLocation Cert:\\LocalMachine\\Root`，'
+              printf '再对 `Cert:\\LocalMachine\\TrustedPublisher` 执行一次。SmartScreen 按下载信誉判断，导入后首次运行仍可能拦截，需要点「更多信息」→「仍要运行」。\n'
+            elif [[ "$SIGNED" == "true" ]]; then
+              printf -- '- 安装包已做代码签名；新证书积累 SmartScreen 信誉之前，首次运行仍可能被拦截。\n'
+            else
+              printf -- '- **未做代码签名**：首次运行安装包时 Windows SmartScreen 会拦截，需要点「更多信息」→「仍要运行」。\n'
+            fi
+          } > limits.md
+          {
+            printf '## 安装包\n\n'
+            printf -- '- `%s`、`%s`：MSI 安装包（简体中文，x64 / ARM64）\n' "${names[0]}" "${names[1]}"
+            printf -- '- `%s`、`%s`：NSIS 安装程序（简体中文，x64 / ARM64）\n' "${names[2]}" "${names[3]}"
+            if [[ "$SELF_SIGNED" == "true" ]]; then
+              printf -- '- `Primus-signing-cert.cer`：自签名代码签名证书（仅公钥），见「已知限制」\n'
+            fi
+          } > packages.md
+
           # 只有预发布版本标 prerelease；正式版取消 prerelease 并设为 Latest
           if [[ "$PRERELEASE" == "true" ]]; then
             channel=(--prerelease --latest=false)
@@ -314,10 +347,18 @@ jobs:
               done
               return 1
             }
-            # 正文：替换「## 校验」段（到下一个二级标题或结尾为止），没有则追加；其余正文不动
+            # 正文：替换「## 已知限制」「## 安装包」「## 校验」三段（各到下一个二级标题或结尾为止）；
+            # 前两段没有则加在正文开头，校验段没有则追加；其余正文（自动生成的变更说明等）不动
             retry gh release view "$RELEASE_TAG" --json body --jq .body > body.md \
               || { echo "::error::读取 Release 正文失败"; exit 1; }
-            CHECKSUMS="$(cat checksums.md)" perl -0pi -e '
+            LIMITS="$(cat limits.md)" PACKAGES="$(cat packages.md)" CHECKSUMS="$(cat checksums.md)" perl -0pi -e '
+              my $head = "";
+              for my $pair (["已知限制", $ENV{LIMITS}], ["安装包", $ENV{PACKAGES}]) {
+                my ($title, $text) = @$pair;
+                my $section = "$text\n\n";
+                $head .= $section unless s/^##[ \t]*\Q$title\E[ \t]*\r?\n.*?(?=^##[ \t]|\z)/$section/ms;
+              }
+              $_ = $head . $_ if $head ne "";
               my $section = "$ENV{CHECKSUMS}\n\n";
               if (!s/^##[ \t]*校验[ \t]*\r?\n.*?(?=^##[ \t]|\z)/$section/ms) {
                 s/\s*\z/\n\n$section/;
@@ -337,22 +378,9 @@ jobs:
           else
             echo "Release ${RELEASE_TAG} 不存在：创建（prerelease=${PRERELEASE}）"
             {
-              printf '## 已知限制\n\n'
-              if [[ "$SELF_SIGNED" == "true" ]]; then
-                printf -- '- **自签名证书**：安装包用本版本专用的自签名证书签名（每个版本的证书不同），只在导入了本版本 `Primus-signing-cert.cer` 的电脑上显示为已验证的发布者。'
-                printf '导入方法（管理员 PowerShell）：`Import-Certificate -FilePath .\\Primus-signing-cert.cer -CertStoreLocation Cert:\\LocalMachine\\Root`，'
-                printf '再对 `Cert:\\LocalMachine\\TrustedPublisher` 执行一次。SmartScreen 按下载信誉判断，导入后首次运行仍可能拦截，需要点「更多信息」→「仍要运行」。\n\n'
-              elif [[ "$SIGNED" == "true" ]]; then
-                printf -- '- 安装包已做代码签名；新证书积累 SmartScreen 信誉之前，首次运行仍可能被拦截。\n\n'
-              else
-                printf -- '- **未做代码签名**：首次运行安装包时 Windows SmartScreen 会拦截，需要点「更多信息」→「仍要运行」。\n\n'
-              fi
-              printf '## 安装包\n\n'
-              printf -- '- `%s`、`%s`：MSI 安装包（简体中文，x64 / ARM64）\n' "${names[0]}" "${names[1]}"
-              printf -- '- `%s`、`%s`：NSIS 安装程序（简体中文，x64 / ARM64）\n' "${names[2]}" "${names[3]}"
-              if [[ "$SELF_SIGNED" == "true" ]]; then
-                printf -- '- `Primus-signing-cert.cer`：自签名代码签名证书（仅公钥），见「已知限制」\n'
-              fi
+              cat limits.md
+              printf '\n'
+              cat packages.md
               printf '\n'
               cat checksums.md
             } > notes.md

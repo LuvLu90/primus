@@ -11,7 +11,7 @@
     - 两个都为空（当前做法）：在本运行器上临时生成本次发布专用的自签名代码签名证书（私钥不可导出，
       运行器销毁即消失，不写进仓库、也不存为 Secret）。每次发布的证书都不同；没有 updater 密钥，不生成 .sig
     - 只配一个：配置错误，报错退出
-    - 都有：导入 PFX 到 CurrentUser\My（私钥不可导出），检查有私钥、含“代码签名”用途、在有效期内，
+    - 都有：导入 PFX 到 CurrentUser\My（私钥不可导出），检查有私钥、含代码签名用途、在有效期内，
       并写 PRIMUS_REQUIRE_SIGNING=1（要求 updater 密钥 TAURI_SIGNING_* 同时配置）
   自签名证书（颁发者 = 使用者）把公钥证书加入本机 Root 与 TrustedPublisher，使 signtool verify /pa 能在运行器上
   建立信任链（只允许 GitHub 托管运行器，用完即销毁）。公钥证书导出为 Primus-signing-cert.cer 供 Release 附件下载。
@@ -62,7 +62,7 @@ if ($cert.Count -ne 1) { throw "PFX 中应恰有一张带私钥的证书，实�
 $cert = $cert[0]
 $codeSigning = "1.3.6.1.5.5.7.3.3"
 if (-not ($cert.EnhancedKeyUsageList | Where-Object ObjectId -eq $codeSigning)) {
-  throw "证书不含“代码签名”用途（EKU $codeSigning）：$($cert.Subject)"
+  throw "证书不含'代码签名'用途（EKU $codeSigning）：$($cert.Subject)"
 }
 $now = Get-Date
 if ($now -lt $cert.NotBefore -or $now -gt $cert.NotAfter) {
