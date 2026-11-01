@@ -30,6 +30,13 @@
 .PARAMETER Gsudo
   gsudo.exe 路径，用于中完整性级别写入测试。默认取 PATH 中的 gsudo；找不到时只做 ACL 检查。
 
+.PARAMETER ExtraChecks
+  安装检查与 Core 冒烟之后、卸载之前调用的附加检查脚本（如 scripts/install-matrix/matrix-checks.ps1），
+  以 -InstallDir <安装目录> 及 -ExtraChecksArgs 中的参数调用；抛错即冒烟失败（仍会尝试卸载清理）。
+
+.PARAMETER ExtraChecksArgs
+  传给 -ExtraChecks 脚本的其他参数（哈希表，如 @{ Gui = $true }）。
+
 .PARAMETER KeepInstalled
   只安装与检查，不卸载（虚拟机手工测试时使用）。
 
@@ -46,6 +53,8 @@ param(
   [string] $Node,
   [string] $Gsudo,
   [string] $LogDir = (Join-Path ([IO.Path]::GetTempPath()) 'primus-msi-smoke'),
+  [string] $ExtraChecks,
+  [hashtable] $ExtraChecksArgs = @{},
   [switch] $KeepInstalled,
   [switch] $KeepData
 )
@@ -303,6 +312,19 @@ Write-Step "Core RPC 冒烟（安装目录中的 node.exe + agent-core；驱动�
 & $smokeNode $smokeScript --entry (Join-Path $coreDir 'rpc-entry.js') --node $nodeExe
 Assert-True ($LASTEXITCODE -eq 0) '安装后的 Core 响应 get_state'
 
+if ($ExtraChecks) {
+  Write-Step "附加检查：$ExtraChecks"
+  $extraArgs = @{ InstallDir = $InstallDir } + $ExtraChecksArgs
+  try {
+    & $ExtraChecks @extraArgs
+  } catch {
+    # 附加检查失败也要卸载，免得在虚拟机或运行器上留下安装
+    Write-Host "  ✗ 附加检查失败：$($_.Exception.Message)" -ForegroundColor Red
+    if (-not $KeepInstalled) { Invoke-Msiexec -Action '/x' -LogName 'uninstall-after-failure.log' | Out-Null }
+    throw
+  }
+}
+
 if ($KeepInstalled) {
   Write-Step "按 -KeepInstalled 保留安装（$InstallDir）"
   exit 0
@@ -327,7 +349,14 @@ Assert-True ((Get-Content -LiteralPath $marker) -eq 'keep') '卸载后 data 中�
 if ($KeepData) {
   Write-Host "`n· 按 -KeepData 保留 $DataDir"
 } else {
-  Remove-Item -LiteralPath $InstallDir -Recurse -Force
+  # data\users\<SID> 只授予各自用户与 SYSTEM（第 4.3 节），管理员要先取得所有权才能删除其他用户的目录
+  try {
+    Remove-Item -LiteralPath $InstallDir -Recurse -Force -ErrorAction Stop
+  } catch {
+    & takeown.exe /F $InstallDir /R /D Y | Out-Null
+    & icacls.exe $InstallDir /grant '*S-1-5-32-544:(OI)(CI)F' /T /C /Q | Out-Null
+    Remove-Item -LiteralPath $InstallDir -Recurse -Force
+  }
   Write-Host "`n· 已清理保留的 $InstallDir"
 }
 

@@ -23,7 +23,8 @@
         "shadow": true,
         "transparent": true,
         "windowEffects": { "effects": ["acrylic"] },
-        "label": "main"
+        "label": "main",
+        "create": false
       }
     ],
     "security": {
