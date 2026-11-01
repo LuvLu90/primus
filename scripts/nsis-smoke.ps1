@@ -79,7 +79,13 @@ function Get-UninstallEntry {
 # 运行 NSIS 程序并等待结束；返回退出码
 function Invoke-Nsis([string] $FilePath, [string] $ArgumentLine) {
   Write-Host "  $FilePath $ArgumentLine"
-  $process = Start-Process -FilePath $FilePath -ArgumentList $ArgumentLine -Wait -PassThru
+  # 限时等待，避免步骤无限挂起
+  $process = Start-Process -FilePath $FilePath -ArgumentList $ArgumentLine -PassThru
+  $null = $process.Handle
+  if (-not $process.WaitForExit(300 * 1000)) {
+    Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+    throw "✗ $FilePath 超过 300 秒未结束"
+  }
   return $process.ExitCode
 }
 

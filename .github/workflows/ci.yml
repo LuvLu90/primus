@@ -275,12 +275,14 @@ jobs:
       # 用安装后的 node.exe 跑 RPC 冒烟 → 静默卸载，data 及其中文件保留（GitHub 托管运行器以管理员运行）
       - name: MSI 静默安装 / 卸载冒烟
         shell: pwsh
+        timeout-minutes: 15
         run: ./scripts/msi-smoke.ps1 -Msi $env:PRIMUS_MSI
 
       # NSIS 安装程序同样验收：/S 静默安装 → 布局与 Core 文件哈希、卸载信息、快捷方式 → data 的 ACL（hooks.nsh）
       # 与中完整性级别写入 → 安装后的 node.exe 跑 RPC 冒烟 → uninstall.exe /S 卸载，data 保留
       - name: NSIS 静默安装 / 卸载冒烟
         shell: pwsh
+        timeout-minutes: 15
         run: ./scripts/nsis-smoke.ps1 -Exe $env:PRIMUS_NSIS
 
       # 端到端冒烟（技术方案第 18 章）：tauri-driver 作 WebDriver 服务端，转接与 WebView2 运行时同版本的 msedgedriver
@@ -410,10 +412,12 @@ jobs:
 
       - name: MSI 静默安装 / 卸载冒烟
         shell: pwsh
+        timeout-minutes: 15
         run: ./scripts/msi-smoke.ps1 -Msi $env:PRIMUS_MSI
 
       - name: NSIS 静默安装 / 卸载冒烟
         shell: pwsh
+        timeout-minutes: 15
         run: ./scripts/nsis-smoke.ps1 -Exe $env:PRIMUS_NSIS
 
   # 安装矩阵（开发计划第 4 周 P0 安装测试）：两个架构 × 两个位置（Program Files、D:\primus），

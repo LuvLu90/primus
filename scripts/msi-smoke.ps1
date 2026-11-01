@@ -55,6 +55,7 @@ param(
   [string] $LogDir = (Join-Path ([IO.Path]::GetTempPath()) 'primus-msi-smoke'),
   [string] $ExtraChecks,
   [hashtable] $ExtraChecksArgs = @{},
+  [int] $TimeoutSeconds = 300,
   [switch] $KeepInstalled,
   [switch] $KeepData
 )
@@ -96,7 +97,17 @@ function Invoke-Msiexec([string] $Action, [string] $LogName, [string[]] $Propert
   $log = Join-Path $LogDir $LogName
   $argumentLine = @($Action, "`"$Msi`"") + $Properties + @('/qn', '/norestart', '/l*v', "`"$log`"")
   Write-Host "  msiexec $($argumentLine -join ' ')"
-  $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList ($argumentLine -join ' ') -Wait -PassThru
+  # 不用 -Wait：它会等整棵进程树；改为限时等待，超时打印安装日志末尾后失败，避免步骤无限挂起（ARM64 曾卡住）
+  $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList ($argumentLine -join ' ') -PassThru
+  $null = $process.Handle
+  if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+    if (Test-Path -LiteralPath $log) {
+      Write-Host "---- $log（末尾 120 行）----"
+      Get-Content -LiteralPath $log -Tail 120 | ForEach-Object { Write-Host $_ }
+    }
+    Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+    throw "✗ msiexec $Action 超过 $TimeoutSeconds 秒未结束（日志 $log）"
+  }
   # 0 成功；3010 成功但需重启（ERROR_SUCCESS_REBOOT_REQUIRED）
   if ($process.ExitCode -notin 0, 3010) {
     if (Test-Path -LiteralPath $log) {
