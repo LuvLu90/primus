@@ -28,7 +28,7 @@ node.exe agent-core/rpc-entry.js + 第一方扩展 primus-bundle.js
 | 前端 | Next.js 16（静态导出）、React 19.3、TypeScript 7、Tailwind 4、Radix UI、zustand 5 | 全部界面；用户操作 → RPC 命令；RPC 事件 → 时间线 |
 | 薄壳 | Tauri 2.12、Rust 1.99.1、tokio、rusqlite、windows-rs | 进程监管、JSONL 转发、数据目录、凭证（DPAPI）、文件监听、托盘、更新 |
 | Agent Core | `agent-core/` 源码构建的 JS 产物 + 内置 Node.js 24 LTS | Agent 循环、模型调用、工具、会话、压缩、技能、MCP |
-| 第一方扩展 | TypeScript，打包为 `primus-bundle.js` | 守卫、上下文、检查点、子 Agent、计划模式等 |
+| 第一方扩展 | TypeScript，打包为 `primus-bundle.js` | 守卫、检查点、子 Agent、计划模式等 |
 
 
 ## 目录结构

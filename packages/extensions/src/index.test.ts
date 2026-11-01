@@ -3,9 +3,9 @@ import guard from "./guard/index.ts";
 import extensions from "./index.ts";
 
 describe("primus-bundle 扩展注册表", () => {
-  it("注册全部 6 个第一方扩展且不重复", () => {
-    expect(extensions).toHaveLength(6);
-    expect(new Set(extensions).size).toBe(6);
+  it("注册全部 5 个第一方扩展且不重复", () => {
+    expect(extensions).toHaveLength(5);
+    expect(new Set(extensions).size).toBe(5);
     for (const ext of extensions) expect(typeof ext).toBe("function");
   });
 
