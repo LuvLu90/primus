@@ -17,6 +17,11 @@
 //   - resources：dist/runtime → resources\runtime、dist/agent-core → resources\agent-core（与 MSI 布局一致）。
 //     tauri-build 编译时会检查 resources 是否存在，写进 tauri.conf.json 会让开发构建与 Linux 单测依赖 dist/
 //
+// 代码签名（配置了 PRIMUS_SIGN_CERT_SHA1 与 PRIMUS_SIGN_TIMESTAMP_URL 时，与 build-msi.mjs 同一证书）：
+// Tauri 打包时会改写 Primus.exe（binary patching），build-msi.mjs 签过的签名随之失效，所以签名交给 tauri bundle
+// 本身（临时配置的 bundle.windows.certificateThumbprint / timestampUrl）：它在改写后签 Primus.exe，再签
+// 卸载程序与 setup.exe。打包后用 signtool verify /pa /all 校验 setup.exe 与改写后的 Primus.exe。
+//
 // 输出 out/Primus_<ver>_<arch>-setup.exe 与 .sha256（.sha256 供 CI 校验，不作为 Release 附件）。
 // NSIS 只能在 Windows 上构建；其他平台只能用 --dry-run 查看将要执行的命令。
 //
@@ -45,7 +50,10 @@ import {
   checkExeStamp,
   checkRuntimePlatform,
   EXE_STAMP,
+  resolveSigntool,
   rustHostTriple,
+  signingConfig,
+  signtoolVerifyArgs,
 } from "./build-msi.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -60,8 +68,13 @@ export function nsisFileName(semver, arch = "x64") {
   return `Primus_${semver}_${arch}-setup.exe`;
 }
 
-/** 打包时合并进 tauri.conf.json 的临时配置 */
-export function nsisBundleConfig({ runtimeDir, coreDir }) {
+/**
+ * 打包时合并进 tauri.conf.json 的临时配置。env 中证书指纹与时间戳服务器成对配置时，让 tauri bundle 用同一证书
+ * 签名（RFC 3161 时间戳、SHA-256 摘要，与 build-msi.mjs 的 signtool 参数一致）。
+ */
+export function nsisBundleConfig({ runtimeDir, coreDir }, env = {}) {
+  const sha1 = env.PRIMUS_SIGN_CERT_SHA1;
+  const tsa = env.PRIMUS_SIGN_TIMESTAMP_URL;
   return {
     productName: NSIS_PRODUCT_NAME,
     bundle: {
@@ -69,6 +82,16 @@ export function nsisBundleConfig({ runtimeDir, coreDir }) {
         [runtimeDir]: "resources/runtime/",
         [coreDir]: "resources/agent-core/",
       },
+      ...(sha1 && tsa
+        ? {
+            windows: {
+              certificateThumbprint: sha1,
+              digestAlgorithm: "sha256",
+              timestampUrl: tsa,
+              tsp: true,
+            },
+          }
+        : {}),
     },
   };
 }
@@ -117,6 +140,12 @@ async function main() {
   const bundleDir = join(releaseDir, "bundle/nsis");
   console.log(`乾元 Primus NSIS 安装程序：版本 ${version}，架构 ${arch}`);
 
+  // 签名配置与 build-msi.mjs 同一套规则：配一半、或 PRIMUS_REQUIRE_SIGNING=1 而未配齐时在打包前拒绝
+  const signing = signingConfig();
+  if (signing.problems.length) fail(`签名配置有误：\n  ${signing.problems.join("\n  ")}`);
+  const signtool = signing.authenticode ? resolveSigntool() : null;
+  console.log(`签名：代码签名${signing.authenticode ? `已配置（${signtool}）` : "未配置"}`);
+
   // 0. 前提：build-msi.mjs 以同一版本、同一架构编译的 Primus.exe；Core 产物、第一方扩展与同架构的内置运行时
   if (!dryRun) {
     if (!existsSync(exe)) fail(`未找到 ${exe}，请先运行 pnpm build:msi --arch ${arch}`);
@@ -148,7 +177,7 @@ async function main() {
   if (!dryRun) {
     writeFileSync(
       confFile,
-      `${JSON.stringify(nsisBundleConfig({ runtimeDir, coreDir }), null, 2)}\n`,
+      `${JSON.stringify(nsisBundleConfig({ runtimeDir, coreDir }, process.env), null, 2)}\n`,
     );
     // 清掉上次的产物，下面按文件名恰好匹配一个
     rmSync(bundleDir, { recursive: true, force: true });
@@ -190,7 +219,22 @@ async function main() {
     writeFileSync(`${out}.sha256`, `${digest}  ${basename(out)}\n`);
     console.log(`\n✓ NSIS 安装程序：${out}（来自 ${produced}）`);
     console.log(`  SHA-256：${digest}`);
-  } else {
+  }
+
+  // 3. signtool verify /pa：setup.exe 与改写后重签的 Primus.exe（配置了证书时）
+  if (signing.authenticode) {
+    for (const file of [out, exe]) {
+      console.log(`\n> ${signtool} ${signtoolVerifyArgs(file).join(" ")}`);
+      if (dryRun) continue;
+      const r = spawnSync(signtool, signtoolVerifyArgs(file), { stdio: "inherit" });
+      if (r.error) fail(`无法启动 ${signtool}：${r.error.message}`);
+      if (r.status !== 0) fail(`signtool verify 失败（退出码 ${r.status}）：${file}`);
+    }
+    if (!dryRun) console.log("✓ signtool verify /pa：setup.exe、Primus.exe 均通过");
+  } else if (!dryRun) {
+    console.log("\n· 未配置 PRIMUS_SIGN_CERT_SHA1 / PRIMUS_SIGN_TIMESTAMP_URL，安装程序不签名");
+  }
+  if (dryRun) {
     console.log(`\n✓ （演练）NSIS 安装程序：${out}`);
   }
 }

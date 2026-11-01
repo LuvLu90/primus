@@ -11,7 +11,10 @@
 #   共用的 composite action 从工作流自身的提交另行取出。标签中须已有多架构打包脚本（scripts/build-nsis.mjs 等），
 #   更早的标签无法用本工作流构建；早于 RPC 契约测试的标签（package.json 无 contract:core:dist）可以构建，
 #   但跳过契约测试一步（RPC 冒烟照常运行）
-# - 未配置代码签名证书时安装包不签名，Release 正文的「已知限制」写明 SmartScreen 拦截
+# - 代码签名（scripts/import-release-signing.ps1）：仓库 Secret PRIMUS_SIGN_PFX_BASE64 / PRIMUS_SIGN_PFX_PASSWORD
+#   配置了证书时签 Primus.exe、MSI、setup.exe 并要求 updater 密钥（TAURI_SIGNING_*）同时配置，生成并校验 .sig；
+#   自签名证书（scripts/new-release-signing-keys.ps1 生成）另把公钥证书 Primus-signing-cert.cer 作为第 5 个附件，
+#   正文写明需导入信任。未配置证书时安装包不签名，Release 正文的「已知限制」写明 SmartScreen 拦截
 name: Release
 
 on:
@@ -52,6 +55,8 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       prerelease: ${{ steps.version.outputs.prerelease }}
+      signed: ${{ steps.signing.outputs.signed }}
+      selfsigned: ${{ steps.signing.outputs.selfsigned }}
     steps:
       - name: 校验标签名
         shell: pwsh
@@ -108,6 +113,20 @@ jobs:
           wix-version: ${{ steps.version.outputs.wix }}
           cache: "false"
 
+      # 未配置证书时只写 PRIMUS_RELEASE_SIGNED=false；配一半报错。PFX 只在这一步可见
+      - name: 导入代码签名证书（仓库 Secret）
+        id: signing
+        shell: pwsh
+        env:
+          PRIMUS_SIGN_PFX_BASE64: ${{ secrets.PRIMUS_SIGN_PFX_BASE64 }}
+          PRIMUS_SIGN_PFX_PASSWORD: ${{ secrets.PRIMUS_SIGN_PFX_PASSWORD }}
+        run: |
+          ./scripts/import-release-signing.ps1
+          $signed = (Get-Content -Raw $env:GITHUB_ENV) -match '(?m)^PRIMUS_RELEASE_SIGNED=true\r?$'
+          $self = (Get-Content -Raw $env:GITHUB_ENV) -match '(?m)^PRIMUS_RELEASE_SELF_SIGNED=true\r?$'
+          "signed=$($signed.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "selfsigned=$($self.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
       # 内置 Node 运行时按目标架构下载（scripts/node-runtime.json 锁定 win-x64 / win-arm64 的哈希）
       - name: 构建 Agent Core 并组装 dist/（运行时 win-${{ matrix.arch }}）
         run: node scripts/build-core.mjs --platform win-${{ matrix.arch }}
@@ -132,10 +151,19 @@ jobs:
       - name: 被禁 SDK 检查（导入图 + SBOM，严格模式）
         run: node scripts/check-forbidden-sdk.mjs --strict
 
+      # updater 私钥只给这两步；配置了证书时 PRIMUS_REQUIRE_SIGNING=1，私钥缺失即失败
       - name: 构建 MSI（tauri build --no-bundle → wix build -arch ${{ matrix.arch }}）
         run: node scripts/build-msi.mjs --arch ${{ matrix.arch }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
       - name: 构建 NSIS 安装程序（tauri bundle --bundles nsis）
         run: node scripts/build-nsis.mjs --arch ${{ matrix.arch }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
 
       - name: 检查安装包（文件名、大小、校验、MSI 平台、Primus.exe 架构）
         shell: pwsh
@@ -156,7 +184,10 @@ jobs:
         run: |
           $dir = Join-Path $env:RUNNER_TEMP "release-assets-$env:ARCH"
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          $lines = foreach ($file in @($env:PRIMUS_MSI, $env:PRIMUS_NSIS)) {
+          $files = @($env:PRIMUS_MSI, $env:PRIMUS_NSIS)
+          # 自签名证书的公钥证书两个架构相同，只由 x64 作业附上
+          if ($env:PRIMUS_RELEASE_SELF_SIGNED -eq 'true' -and $env:ARCH -eq 'x64') { $files += $env:PRIMUS_SIGN_CER }
+          $lines = foreach ($file in $files) {
             Copy-Item -LiteralPath $file -Destination $dir
             $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
             "$hash  $(Split-Path -Leaf $file)"
@@ -192,20 +223,24 @@ jobs:
       - name: 核对附件清单与 SHA-256
         env:
           VERSION: ${{ needs.build.outputs.version }}
+          SELF_SIGNED: ${{ needs.build.outputs.selfsigned }}
         run: |
           set -euo pipefail
           cd assets
-          expected="$(printf '%s\n' \
-            "Primus_${VERSION}_arm64-setup.exe" \
-            "Primus_${VERSION}_arm64_zh-CN.msi" \
-            "Primus_${VERSION}_x64-setup.exe" \
-            "Primus_${VERSION}_x64_zh-CN.msi" | LC_ALL=C sort)"
+          want=(
+            "Primus_${VERSION}_arm64-setup.exe"
+            "Primus_${VERSION}_arm64_zh-CN.msi"
+            "Primus_${VERSION}_x64-setup.exe"
+            "Primus_${VERSION}_x64_zh-CN.msi"
+          )
+          [[ "$SELF_SIGNED" == "true" ]] && want+=("Primus-signing-cert.cer")
+          expected="$(printf '%s\n' "${want[@]}" | LC_ALL=C sort)"
           actual="$(find . -maxdepth 1 -type f ! -name 'SHA256SUMS-*.txt' -printf '%f\n' | LC_ALL=C sort)"
           if [[ "$actual" != "$expected" ]]; then
             echo "::error::附件清单不符。期望："; echo "$expected"; echo "实际："; echo "$actual"; exit 1
           fi
           cat SHA256SUMS-x64.txt SHA256SUMS-arm64.txt > ../SHA256SUMS.txt
-          [[ "$(wc -l < ../SHA256SUMS.txt)" -eq 4 ]] || { echo "::error::校验清单应有 4 行"; exit 1; }
+          [[ "$(wc -l < ../SHA256SUMS.txt)" -eq "${#want[@]}" ]] || { echo "::error::校验清单应有 ${#want[@]} 行"; exit 1; }
           sha256sum --check --strict ../SHA256SUMS.txt
 
       - name: 创建 Release 或更新附件
@@ -214,6 +249,8 @@ jobs:
           GH_REPO: ${{ github.repository }}
           VERSION: ${{ needs.build.outputs.version }}
           PRERELEASE: ${{ needs.build.outputs.prerelease }}
+          SIGNED: ${{ needs.build.outputs.signed }}
+          SELF_SIGNED: ${{ needs.build.outputs.selfsigned }}
         run: |
           set -euo pipefail
           names=(
@@ -222,6 +259,7 @@ jobs:
             "Primus_${VERSION}_x64-setup.exe"
             "Primus_${VERSION}_arm64-setup.exe"
           )
+          [[ "$SELF_SIGNED" == "true" ]] && names+=("Primus-signing-cert.cer")
           files=()
           for n in "${names[@]}"; do files+=("assets/${n}"); done
 
@@ -299,10 +337,22 @@ jobs:
             echo "Release ${RELEASE_TAG} 不存在：创建（prerelease=${PRERELEASE}）"
             {
               printf '## 已知限制\n\n'
-              printf -- '- **未做代码签名**：首次运行安装包时 Windows SmartScreen 会拦截，需要点「更多信息」→「仍要运行」。\n\n'
+              if [[ "$SELF_SIGNED" == "true" ]]; then
+                printf -- '- **自签名证书**：安装包用自签名证书签名，只在导入了 `Primus-signing-cert.cer` 的电脑上显示为已验证的发布者。'
+                printf '导入方法（管理员 PowerShell）：`Import-Certificate -FilePath .\\Primus-signing-cert.cer -CertStoreLocation Cert:\\LocalMachine\\Root`，'
+                printf '再对 `Cert:\\LocalMachine\\TrustedPublisher` 执行一次。SmartScreen 按下载信誉判断，导入后首次运行仍可能拦截，需要点「更多信息」→「仍要运行」。\n\n'
+              elif [[ "$SIGNED" == "true" ]]; then
+                printf -- '- 安装包已做代码签名；新证书积累 SmartScreen 信誉之前，首次运行仍可能被拦截。\n\n'
+              else
+                printf -- '- **未做代码签名**：首次运行安装包时 Windows SmartScreen 会拦截，需要点「更多信息」→「仍要运行」。\n\n'
+              fi
               printf '## 安装包\n\n'
               printf -- '- `%s`、`%s`：MSI 安装包（简体中文，x64 / ARM64）\n' "${names[0]}" "${names[1]}"
-              printf -- '- `%s`、`%s`：NSIS 安装程序（简体中文，x64 / ARM64）\n\n' "${names[2]}" "${names[3]}"
+              printf -- '- `%s`、`%s`：NSIS 安装程序（简体中文，x64 / ARM64）\n' "${names[2]}" "${names[3]}"
+              if [[ "$SELF_SIGNED" == "true" ]]; then
+                printf -- '- `Primus-signing-cert.cer`：自签名代码签名证书（仅公钥），见「已知限制」\n'
+              fi
+              printf '\n'
               cat checksums.md
             } > notes.md
             gh release create "$RELEASE_TAG" "${files[@]}" \
@@ -319,6 +369,7 @@ jobs:
           GH_REPO: ${{ github.repository }}
           VERSION: ${{ needs.build.outputs.version }}
           PRERELEASE: ${{ needs.build.outputs.prerelease }}
+          SELF_SIGNED: ${{ needs.build.outputs.selfsigned }}
         run: |
           set -euo pipefail
           gh release view "$RELEASE_TAG" --json isDraft,isPrerelease,assets \
@@ -326,11 +377,14 @@ jobs:
           state="$(gh release view "$RELEASE_TAG" --json isDraft,isPrerelease --jq '"\(.isDraft) \(.isPrerelease)"')"
           [[ "$state" == "false ${PRERELEASE}" ]] || { echo "::error::Release 状态不符（draft prerelease = ${state}）"; exit 1; }
           actual="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | LC_ALL=C sort)"
-          expected="$(printf '%s\n' \
-            "Primus_${VERSION}_arm64-setup.exe" \
-            "Primus_${VERSION}_arm64_zh-CN.msi" \
-            "Primus_${VERSION}_x64-setup.exe" \
-            "Primus_${VERSION}_x64_zh-CN.msi" | LC_ALL=C sort)"
+          want=(
+            "Primus_${VERSION}_arm64-setup.exe"
+            "Primus_${VERSION}_arm64_zh-CN.msi"
+            "Primus_${VERSION}_x64-setup.exe"
+            "Primus_${VERSION}_x64_zh-CN.msi"
+          )
+          [[ "$SELF_SIGNED" == "true" ]] && want+=("Primus-signing-cert.cer")
+          expected="$(printf '%s\n' "${want[@]}" | LC_ALL=C sort)"
           [[ "$actual" == "$expected" ]] || { echo "::error::Release 附件与清单不符：${actual}"; exit 1; }
           if [[ "$PRERELEASE" != "true" ]]; then
             latest="$(gh api "repos/${GH_REPO}/releases/latest" --jq .tag_name)"
