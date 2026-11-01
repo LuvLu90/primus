@@ -307,9 +307,17 @@ exit 1
 $installOwner = (Get-Acl -LiteralPath $InstallDir).GetOwner([Security.Principal.SecurityIdentifier]).Value
 Assert-True ($installOwner -eq 'S-1-5-32-544') "安装目录所有者为 Administrators（实际 $installOwner）"
 # 程序文件（Primus.wxs 的 CheckInstallDir / ResetProgramAcl）：所有者不是普通用户、无显式授权，全部从安装目录继承
+# 中文界面的包会把 Action start/ended 日志行本地化（且按 ANSI 代码页写），只匹配引擎自身不本地化的行：
+# 延迟自定义操作写入安装脚本时记 "Executing op: CustomActionSchedule(Action=<名>,"。
+# 两个操作都是 Return="check"，执行失败会回滚、msiexec 返回 1603，上面已确认退出码为 0，故执行即成功
 $installLogText = Get-Content -LiteralPath $installLog -Raw
 foreach ($ca in 'CheckInstallDir', 'ResetProgramAcl') {
-  Assert-True ($installLogText -match "Action ended [\d:]+: $ca\. Return value 1") "安装时执行了 $ca 并成功"
+  $scheduled = $installLogText -match "Executing op: CustomActionSchedule\(Action=$ca,"
+  if (-not $scheduled) {
+    Write-Host "---- $installLog 中含 $ca 的行 ----"
+    Select-String -LiteralPath $installLog -SimpleMatch $ca | ForEach-Object { Write-Host $_.Line }
+  }
+  Assert-True $scheduled "安装时执行了 $ca 并成功（Return=check，msiexec 退出码 0）"
 }
 foreach ($item in @((Join-Path $InstallDir 'Primus.exe'), (Join-Path $InstallDir 'resources'))) {
   $itemAcl = Get-Acl -LiteralPath $item
