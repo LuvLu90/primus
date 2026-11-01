@@ -63,6 +63,7 @@ try {
   $exitCode = if ($exitedEarly) { $proc.ExitCode } else { $null }
   if (-not $exitedEarly) { & taskkill.exe /PID $proc.Id /T /F | Out-Null }
   Assert-True $ready "Primus.exe 以标准用户启动后建好 $userDir（提前退出：$exitedEarly，退出码 $exitCode）"
+  Assert-True (-not $exitedEarly -or $exitCode -eq 0) "Primus.exe 没有以非零退出码提前退出（退出码 $exitCode）"
   foreach ($sub in 'app', 'core', 'core\sessions', 'vault', 'tmp', 'webview') {
     Assert-True (Test-Path -LiteralPath (Join-Path $userDir $sub) -PathType Container) "存在 users\<SID>\$sub"
   }
@@ -85,7 +86,7 @@ try {
       try { Get-ChildItem -LiteralPath $other -Force -ErrorAction Stop | Out-Null } catch [UnauthorizedAccessException] { $denied = $true } catch { $denied = $_.Exception -is [UnauthorizedAccessException] -or $_.CategoryInfo.Category -eq 'PermissionDenied' }
       Assert-True $denied "读不了其他用户的 users\$OtherSid"
     } else {
-      Write-Host "  · 其他用户的 users\$OtherSid 不存在，跳过隔离检查"
+      Assert-True $false "其他用户的 users\$OtherSid 不存在，无法检查隔离"
     }
   }
   $probe = Join-Path $InstallDir 'std-user-write.txt'

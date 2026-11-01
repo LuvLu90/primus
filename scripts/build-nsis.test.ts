@@ -81,7 +81,9 @@ describe("build-nsis", () => {
     expect(nsis.installMode).toBe("perMachine");
     // 与 MSI 同一套界面图片（Primus.wxs 的 WixUIBannerBmp / WixUIDialogBmp）
     for (const img of [nsis.headerImage, nsis.sidebarImage]) {
-      expect(readFileSync(tauriFile(img)).subarray(0, 2).toString("latin1")).toBe("BM");
+      const bmp = readFileSync(tauriFile(img));
+      expect(bmp.subarray(0, 2).toString("latin1")).toBe("BM");
+      expect(bmp.readUInt32LE(2)).toBe(bmp.length); // bfSize 与实际长度一致（文件未截断）
     }
     expect(conf.bundle.windows.webviewInstallMode).toEqual({
       type: "embedBootstrapper",
@@ -94,7 +96,11 @@ describe("build-nsis", () => {
     expect(text).toContain("!macro NSIS_HOOK_POSTINSTALL");
     // data 目录与 Primus.wxs 一致：Users 组（按 SID）“修改”并继承，不是完全控制
     expect(text).toContain("/grant *S-1-5-32-545:(OI)(CI)M");
-    expect(text).not.toMatch(/:\(OI\)\(CI\)F/);
+    expect(text).not.toMatch(/S-1-5-32-545:\(OI\)\(CI\)F/);
+    // 安装目录本身与 Primus.wxs 的 InstallDirAcl 一致：去掉继承，Users 只读和执行（装在其他盘也不可改程序文件）
+    expect(text).toMatch(
+      /"\$INSTDIR" \/inheritance:r \/grant:r [^\n]*\*S-1-5-32-545:\(OI\)\(CI\)RX/,
+    );
   });
 
   it("按文件名后缀挑出本次产物，架构不符或数量不对即失败", () => {

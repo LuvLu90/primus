@@ -33,6 +33,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 function Write-Step([string] $Message) { Write-Host "`n==> $Message" -ForegroundColor Cyan }
+function ConvertTo-PsLiteral([string] $Value) { return "'" + ($Value -replace "'", "''") + "'" }
 function Assert-True([bool] $Condition, [string] $Message) {
   if (-not $Condition) { throw "✗ $Message" }
   Write-Host "  ✓ $Message"
@@ -60,7 +61,12 @@ $faux = Start-Process -FilePath $node -ArgumentList @((Join-Path $StageScripts '
   -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $OutDir 'faux.log') -RedirectStandardError (Join-Path $OutDir 'faux.err.log')
 $deadline = (Get-Date).AddSeconds(20)
 while (-not (Test-Path -LiteralPath $urlFile) -and (Get-Date) -lt $deadline -and -not $faux.HasExited) { Start-Sleep -Milliseconds 200 }
-Assert-True (Test-Path -LiteralPath $urlFile) 'Faux 模型服务已启动'
+if (-not (Test-Path -LiteralPath $urlFile)) {
+  # 尚未进入下方 try，finally 不会执行：先停掉 node，免得占用文件影响失败后的卸载
+  if (-not $faux.HasExited) { Stop-Process -Id $faux.Id -Force -ErrorAction SilentlyContinue }
+  throw '✗ Faux 模型服务未在 20 秒内写出 faux-url.txt'
+}
+Write-Host '  ✓ Faux 模型服务已启动'
 $fauxUrl = (Get-Content -LiteralPath $urlFile -Raw).Trim()
 Write-Host "  · $fauxUrl"
 
@@ -91,6 +97,17 @@ try {
   }
 
   # ---- 3. 标准用户 ----
+  # 隔离检查需要另一个用户的 users\<SID>：没跑端到端对话（ARM64 格）时，以中完整性级别启动一次安装目录中的
+  # Primus.exe，由 App 自己的数据准备逻辑建好当前用户的目录与 ACL（不手工建目录、设 ACL）
+  $myDir = Join-Path $dataDir "users\$mySid"
+  if (-not (Test-Path -LiteralPath (Join-Path $myDir 'core\sessions'))) {
+    Write-Step '以中完整性级别启动一次 Primus.exe，建好当前用户的 data\users\<SID>（供隔离检查）'
+    $exe = ConvertTo-PsLiteral (Join-Path $InstallDir 'Primus.exe')
+    $wait = ConvertTo-PsLiteral (Join-Path $myDir 'core\sessions')
+    & gsudo --integrity Medium pwsh -NoProfile -Command "`$p = Start-Process -FilePath $exe -PassThru; `$d = (Get-Date).AddSeconds(60); while (-not (Test-Path -LiteralPath $wait) -and -not `$p.HasExited -and (Get-Date) -lt `$d) { Start-Sleep -Milliseconds 500 }; Start-Sleep -Seconds 2; if (-not `$p.HasExited) { & taskkill.exe /PID `$p.Id /T /F | Out-Null }"
+    Assert-True (Test-Path -LiteralPath (Join-Path $myDir 'core\sessions')) "Primus.exe 建好 users\$mySid"
+  }
+
   Write-Step "标准用户 $StdUser：启动 App、ACL 与隔离、Core 对话"
   $chars = [char[]]'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'
   $plain = -join (1..20 | ForEach-Object { $chars[[Security.Cryptography.RandomNumberGenerator]::GetInt32($chars.Length)] }) + '!a1'

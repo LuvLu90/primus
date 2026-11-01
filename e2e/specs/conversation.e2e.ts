@@ -4,12 +4,13 @@
 // 模型配置写进 <安装目录>\data\users\<SID>\core\models.json（薄壳的 core_config 尚未实现，
 // 账号服务下发也未做），Core 在首次发送时才拉起，所以先启动 App、再写配置、再发送。
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { $, $$, browser, expect } from "@wdio/globals";
 import { strings } from "../../apps/desktop/src/lib/strings.ts";
 
 const MATRIX_REPLY = "PRIMUS-MATRIX-OK";
+const MATRIX_TOOL_PATH = "primus-matrix.txt";
 const app = process.env.PRIMUS_E2E_APP;
 const fauxUrl = process.env.PRIMUS_E2E_FAUX_URL;
 
@@ -46,6 +47,15 @@ function currentSid(): string {
   return sid;
 }
 
+/** 在会话记录的一行中找出 read 工具的结果（带 toolName 与 isError 的对象） */
+function findReadResults(value: unknown): { isError: unknown }[] {
+  if (Array.isArray(value)) return value.flatMap(findReadResults);
+  if (!value || typeof value !== "object") return [];
+  const obj = value as Record<string, unknown>;
+  const own = obj.toolName === "read" && "isError" in obj ? [{ isError: obj.isError }] : [];
+  return [...own, ...Object.values(obj).flatMap(findReadResults)];
+}
+
 describe("对话（安装矩阵）", () => {
   let coreDir = "";
 
@@ -63,12 +73,16 @@ describe("对话（安装矩阵）", () => {
       join(coreDir, "models.json"),
       JSON.stringify(fauxModelsJson(fauxUrl ?? ""), null, 2),
     );
+    // 对话的工作目录是 users\<SID>\chat（sessions.rs 的 DEFAULT_WORKSPACE_DIR）：放好 read 要读的文件
+    const chatDir = join(dirname(coreDir), "chat");
+    mkdirSync(chatDir, { recursive: true });
+    writeFileSync(join(chatDir, MATRIX_TOOL_PATH), "矩阵测试文件\n", "utf8");
   });
 
   it("发送消息后收到含 read 工具调用的回复", async () => {
     const input = $(`textarea[aria-label="${strings.chat.inputLabel}"]`);
     await input.waitForDisplayed({ timeout: 30_000 });
-    await input.setValue("读取 primus-matrix.txt 后回复");
+    await input.setValue(`读取 ${MATRIX_TOOL_PATH} 后回复`);
     await $(`button[aria-label="${strings.chat.send}"]`).click();
     await browser.waitUntil(
       async () => {
@@ -90,6 +104,14 @@ describe("对话（安装矩阵）", () => {
         readdirSync(sessions, { recursive: true }).some((f) => String(f).endsWith(".jsonl")),
       { timeout: 15_000, timeoutMsg: `${sessions} 下没有会话文件` },
     );
+    // read 工具确实读到了文件：会话中 read 的工具结果 isError 为 false
+    const results = readdirSync(sessions, { recursive: true })
+      .filter((f) => String(f).endsWith(".jsonl"))
+      .flatMap((f) => readFileSync(join(sessions, String(f)), "utf8").split("\n"))
+      .filter((line) => line.trim())
+      .flatMap((line) => findReadResults(JSON.parse(line)));
+    expect(results.length).toBeGreaterThan(0);
+    expect(results.every((r) => r.isError === false)).toBe(true);
     await expect($(`main[aria-label="${strings.layout.timeline}"]`)).toBeExisting();
   });
 });

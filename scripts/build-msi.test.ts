@@ -331,6 +331,12 @@ describe("build-msi", () => {
       expect(permission).toContain(`${right}="yes"`);
     for (const right of ["GenericAll", "GenericWrite", "ChangePermission", "TakeOwnership"])
       expect(permission).not.toContain(right);
+    // 安装目录本身：受保护的 DACL，Users 只读和执行（装在 D:\primus 等自选目录时不继承盘根的“修改”）
+    expect(wxs).toContain('<ComponentRef Id="InstallDirAcl" />');
+    const sddl = /<PermissionEx Sddl="([^"]+)"/.exec(wxs)?.[1] ?? "";
+    expect(sddl).toMatch(/^D:P/);
+    expect(sddl).toContain("(A;OICI;0x1200a9;;;BU)");
+    expect(sddl).not.toMatch(/\(A;[^;]*;(FA|GA|GW|0x1301bf);;;(BU|AU|WD)\)/);
     expect(wxs).toContain('Value="com.primus.desktop"');
     const conf = JSON.parse(
       readFileSync(new URL("../apps/desktop/src-tauri/tauri.conf.json", import.meta.url), "utf8"),
