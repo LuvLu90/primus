@@ -26,6 +26,18 @@
   ${EndIf}
 !macroend
 
+; 重解析点检查：dir /a:l 只列出重解析点（联接、符号链接），一个都没有时退出码为 1。
+; 其余退出码（找到了、或无法检查）都中止安装：icacls /T 默认跟随重解析点，会改到安装目录之外。
+!macro PRIMUS_REJECT_REPARSE_POINTS DIRARGS WHAT
+  nsExec::ExecToLog '"$SYSDIR\cmd.exe" /d /c dir /b /a:l ${DIRARGS}'
+  Pop $0
+  ${If} $0 != 1
+    MessageBox MB_ICONSTOP|MB_OK "${WHAT}含有联接或符号链接（或无法检查，退出码 $0），为安全起见中止安装：$INSTDIR" /SD IDOK
+    SetErrorLevel 2
+    Abort
+  ${EndIf}
+!macroend
+
 !macro NSIS_HOOK_PREINSTALL
   ; 安装目录本身与 Primus.wxs 的 InstallDirAcl 一致，在复制文件之前设置，已安装的文件从这里继承：
   ; 装到 D:\primus 这类自选目录时会继承盘根的 ACL（非系统盘根默认给 Authenticated Users “修改”），
@@ -33,6 +45,14 @@
   ; 所有者改为 Administrators → /reset 清掉显式授权 → 去掉继承，改为 SYSTEM、Administrators 完全控制、
   ; Users 与应用包只读和执行，(OI)(CI) 传播到子项。不加 /T：升级安装时 data\users\<SID> 是受保护的，不能改写
   CreateDirectory "$INSTDIR"
+  ; 安装目录本身是重解析点就拒绝：下面的 icacls 会顺着它改到别处（fsutil 对非重解析点返回非 0）
+  nsExec::ExecToLog '"$SYSDIR\fsutil.exe" reparsepoint query "$INSTDIR"'
+  Pop $0
+  ${If} $0 == 0
+    MessageBox MB_ICONSTOP|MB_OK "安装目录是联接或符号链接，为安全起见中止安装：$INSTDIR" /SD IDOK
+    SetErrorLevel 2
+    Abort
+  ${EndIf}
   nsExec::ExecToLog '"$SYSDIR\icacls.exe" "$INSTDIR" /setowner *S-1-5-32-544'
   Pop $0
   ${If} $0 != 0
@@ -51,7 +71,12 @@
     SetErrorLevel 2
     Abort
   ${EndIf}
-  ; 程序文件逐项处理（data 除外：其中 users\<SID> 是受保护的，归各用户所有）
+  ; 程序文件逐项处理（data 除外：其中 users\<SID> 是受保护的，归各用户所有）。安装目录此时已是受保护的 DACL，
+  ; 普通用户不能再新建项；先确认直接子项与 resources 整棵树里没有重解析点
+  !insertmacro PRIMUS_REJECT_REPARSE_POINTS '"$INSTDIR\*"' "安装目录"
+  ${If} ${FileExists} "$INSTDIR\resources"
+    !insertmacro PRIMUS_REJECT_REPARSE_POINTS '/s "$INSTDIR\resources\*"' "resources 目录"
+  ${EndIf}
   !insertmacro PRIMUS_RESET_PROGRAM_ITEM "Primus.exe" ""
   !insertmacro PRIMUS_RESET_PROGRAM_ITEM "uninstall.exe" ""
   !insertmacro PRIMUS_RESET_PROGRAM_ITEM "resources" "/T /Q"

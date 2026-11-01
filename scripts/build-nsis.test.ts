@@ -117,10 +117,26 @@ describe("build-nsis", () => {
     expect(steps.every((i) => i >= 0)).toBe(true);
     expect([...steps].sort((a, b) => a - b)).toEqual(steps);
     // 每条 icacls 之后都要取退出码，失败即中止安装
-    expect(pre.match(/nsExec::ExecToLog/g)).toHaveLength(3);
-    expect(pre.match(/Pop \$0/g)).toHaveLength(3);
+    expect(pre.match(/nsExec::ExecToLog/g)).toHaveLength(4);
+    expect(pre.match(/Pop \$0/g)).toHaveLength(4);
     expect(pre.match(/\$\{If\} \$0 != 0/g)).toHaveLength(2);
-    expect(pre.match(/Abort/g)).toHaveLength(2);
+    expect(pre.match(/\$\{If\} \$0 == 0/g)).toHaveLength(2);
+    expect(pre.match(/Abort/g)).toHaveLength(3);
+    // 安装目录本身是重解析点（fsutil 返回 0）就中止，且在任何 icacls 之前
+    const fsutil = pre.indexOf('"$SYSDIR\\fsutil.exe" reparsepoint query "$INSTDIR"');
+    expect(fsutil).toBeGreaterThan(steps[0]);
+    expect(fsutil).toBeLessThan(steps[1]);
+    // 改程序文件前先拒绝重解析点（icacls /T 默认跟随）：直接子项与 resources 整棵树
+    const reject =
+      /!macro PRIMUS_REJECT_REPARSE_POINTS DIRARGS WHAT([\s\S]*?)!macroend/.exec(text)?.[1] ?? "";
+    expect(reject).toContain(`"$SYSDIR\\cmd.exe" /d /c dir /b /a:l \${DIRARGS}`);
+    expect(reject).toMatch(
+      /Pop \$0\s+\$\{If\} \$0 != 1\s+MessageBox[^\n]+\s+SetErrorLevel 2\s+Abort/,
+    );
+    const checks = [...pre.matchAll(/!insertmacro PRIMUS_REJECT_REPARSE_POINTS '([^']+)'/g)].map(
+      (m) => m[1],
+    );
+    expect(checks).toEqual(['"$INSTDIR\\*"', '/s "$INSTDIR\\resources\\*"']);
     // 预先存在的程序文件（普通用户放入的同名文件保有所有者身份）：复制前逐项改所有者并 /reset，data 除外
     const reset =
       /!macro PRIMUS_RESET_PROGRAM_ITEM ITEM FLAGS([\s\S]*?)!macroend/.exec(text)?.[1] ?? "";
@@ -143,8 +159,11 @@ describe("build-nsis", () => {
       ["uninstall.exe", ""],
       ["resources", "/T /Q"],
     ]);
-    // 在安装目录 ACL 设置之后
-    expect(pre.indexOf("!insertmacro PRIMUS_RESET_PROGRAM_ITEM")).toBeGreaterThan(steps[3]);
+    // 在安装目录 ACL 设置与重解析点检查之后
+    expect(pre.indexOf("!insertmacro PRIMUS_REJECT_REPARSE_POINTS")).toBeGreaterThan(steps[3]);
+    expect(pre.indexOf("!insertmacro PRIMUS_RESET_PROGRAM_ITEM")).toBeGreaterThan(
+      pre.lastIndexOf("!insertmacro PRIMUS_REJECT_REPARSE_POINTS"),
+    );
     expect(pre).toMatch(
       /"\$INSTDIR" \/inheritance:r \/grant:r [^\n]*\*S-1-5-32-545:\(OI\)\(CI\)RX/,
     );

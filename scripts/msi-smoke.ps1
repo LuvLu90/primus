@@ -306,12 +306,16 @@ exit 1
 # 原所有者会保有隐式的更改权限，可以改回 DACL 后替换程序文件
 $installOwner = (Get-Acl -LiteralPath $InstallDir).GetOwner([Security.Principal.SecurityIdentifier]).Value
 Assert-True ($installOwner -eq 'S-1-5-32-544') "安装目录所有者为 Administrators（实际 $installOwner）"
-# 程序文件（Primus.wxs 的 ResetProgramAcl）：所有者为 Administrators、无显式授权，全部从安装目录继承
-Assert-True ((Get-Content -LiteralPath $installLog -Raw) -match 'Action ended [\d:]+: ResetProgramAcl\. Return value 1') '安装时执行了 ResetProgramAcl 并成功'
+# 程序文件（Primus.wxs 的 CheckInstallDir / ResetProgramAcl）：所有者不是普通用户、无显式授权，全部从安装目录继承
+$installLogText = Get-Content -LiteralPath $installLog -Raw
+foreach ($ca in 'CheckInstallDir', 'ResetProgramAcl') {
+  Assert-True ($installLogText -match "Action ended [\d:]+: $ca\. Return value 1") "安装时执行了 $ca 并成功"
+}
 foreach ($item in @((Join-Path $InstallDir 'Primus.exe'), (Join-Path $InstallDir 'resources'))) {
   $itemAcl = Get-Acl -LiteralPath $item
   $itemOwner = $itemAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value
-  Assert-True ($itemOwner -eq 'S-1-5-32-544') "$item 所有者为 Administrators（实际 $itemOwner）"
+  # 全新安装时文件由安装服务（SYSTEM）新建，所有者是 Administrators 或 SYSTEM，都不是普通用户
+  Assert-True ($itemOwner -in 'S-1-5-32-544', 'S-1-5-18') "$item 所有者为 Administrators 或 SYSTEM（实际 $itemOwner）"
   $explicit = @($itemAcl.Access | Where-Object { -not $_.IsInherited })
   Assert-True ($explicit.Count -eq 0) "$item 没有显式授权（实际 $($explicit.Count) 条）"
 }
@@ -382,6 +386,13 @@ if ($KeepData) {
       $removed = $true
     } catch {
       if ($round -eq 0) { Write-Host "  · 直接删除失败（$($_.Exception.Message)），取得所有权后重试" }
+      # takeown /R、icacls /T 会顺着重解析点改到安装目录之外（data 可由普通用户写入、可建目录联接）：
+      # 每轮先检查当前已能看到的部分，有就报错退出。pwsh 的 -Recurse 不进入联接；新一层在上一轮授权后才可见，
+      # 所以每轮在 takeown 之前都检查一次
+      $links = @(Get-ChildItem -LiteralPath $InstallDir -Recurse -Force -Attributes ReparsePoint -ErrorAction SilentlyContinue)
+      if ($links.Count -gt 0) {
+        throw "✗ $InstallDir 下有重解析点，拒绝取得所有权与改权限：$(($links | Select-Object -First 5 | ForEach-Object FullName) -join '; ')"
+      }
       & takeown.exe /F $InstallDir /R /D Y 2>&1 | Out-Null
       # 只给管理员加显式授权（/T 逐个写到目录与文件上），不用 /reset：清理失败时 users\<SID> 仍是受保护的，
       # 不会改为继承 data 上 Users 的“修改”

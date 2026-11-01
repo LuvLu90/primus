@@ -341,25 +341,43 @@ describe("build-msi", () => {
     expect(dacl).toBe(
       "D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)(A;OICI;0x1200a9;;;AC)",
     );
-    // 预先存在的程序文件：安装文件之后以 SYSTEM 改所有者并 /reset，失败回滚；data 不动
-    expect(wxs).toMatch(
-      /<CustomAction Id="ResetProgramAcl"[^>]*DllEntry="WixQuietExec"[^>]*Execute="deferred" Impersonate="no" Return="check"/,
+    // 预先存在的程序文件（安装目录可能由普通用户预先建好）：以 SYSTEM 运行，失败回滚；data 不动
+    for (const id of ["CheckInstallDir", "ResetProgramAcl"])
+      expect(wxs).toMatch(
+        new RegExp(
+          `<CustomAction Id="${id}"[^>]*DllEntry="WixQuietExec"[^>]*Execute="deferred" Impersonate="no" Return="check"`,
+        ),
+      );
+    // 安装目录本身的重解析点检查在 CreateFolders（设 DACL）之前；改程序文件在设好 DACL 之后、安装文件之前
+    expect(wxs).toContain(
+      '<Custom Action="CheckInstallDir" Before="CreateFolders" Condition="NOT REMOVE" />',
     );
     expect(wxs).toContain(
-      '<Custom Action="ResetProgramAcl" After="InstallFiles" Condition="NOT REMOVE" />',
+      '<Custom Action="ResetProgramAcl" Before="InstallFiles" Condition="NOT REMOVE" />',
     );
-    const resetCmd = (/<SetProperty Id="ResetProgramAcl"[^>]*Value="([^"]+)"/.exec(wxs)?.[1] ?? "")
-      .replaceAll("&quot;", '"')
-      .replaceAll("&amp;", "&");
-    const resetParts = resetCmd.split(" && ");
-    expect(resetParts).toHaveLength(4);
-    expect(resetParts[0]).toMatch(/"\[INSTALLFOLDER\]Primus\.exe" \/setowner \*S-1-5-32-544$/);
-    expect(resetParts[1]).toMatch(/"\[INSTALLFOLDER\]Primus\.exe" \/reset$/);
+    const prop = (id: string) =>
+      (new RegExp(`<SetProperty Id="${id}"[^>]*Value="([^"]+)"`).exec(wxs)?.[1] ?? "")
+        .replaceAll("&quot;", '"')
+        .replaceAll("&amp;", "&");
+    expect(prop("CheckInstallDir")).toMatch(
+      /fsutil\.exe" reparsepoint query "\[INSTALLFOLDER\]\." >nul 2>&1 && exit 1 \|\| exit 0"$/,
+    );
+    const resetParts = prop("ResetProgramAcl").split(" & ");
+    expect(resetParts).toHaveLength(5);
+    // 先拒绝重解析点（icacls /T 默认跟随）：直接子项、resources 整棵树
+    expect(resetParts[0]).toMatch(/\(dir \/b \/a:l "\[INSTALLFOLDER\]\*" >nul 2>&1 && exit 1\)$/);
+    expect(resetParts[1]).toContain(
+      '(dir /s /b /a:l "[INSTALLFOLDER]resources\\*" >nul 2>&1 && exit 1)',
+    );
+    // 再改所有者、/reset，任一步失败退出码非 0
     expect(resetParts[2]).toMatch(
-      /"\[INSTALLFOLDER\]resources" \/setowner \*S-1-5-32-544 \/T \/Q$/,
+      /"\[INSTALLFOLDER\]Primus\.exe" \/setowner \*S-1-5-32-544 && "[^"]+icacls\.exe" "\[INSTALLFOLDER\]Primus\.exe" \/reset \|\| exit 1\)\)$/,
     );
-    expect(resetParts[3]).toMatch(/"\[INSTALLFOLDER\]resources" \/reset \/T \/Q"$/);
-    expect(resetCmd).not.toContain("data");
+    expect(resetParts[3]).toMatch(
+      /"\[INSTALLFOLDER\]resources" \/setowner \*S-1-5-32-544 \/T \/Q && "[^"]+icacls\.exe" "\[INSTALLFOLDER\]resources" \/reset \/T \/Q \|\| exit 1\)\)$/,
+    );
+    expect(resetParts[4]).toBe('exit 0"');
+    expect(prop("ResetProgramAcl")).not.toContain("data");
     expect(wxs).toContain('Value="com.primus.desktop"');
     const conf = JSON.parse(
       readFileSync(new URL("../apps/desktop/src-tauri/tauri.conf.json", import.meta.url), "utf8"),

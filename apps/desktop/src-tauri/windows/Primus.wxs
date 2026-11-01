@@ -133,17 +133,26 @@
     <Binary Id="WebView2Setup" SourceFile="$(WebView2Setup)" />
     <CustomAction Id="InstallWebView2" BinaryRef="WebView2Setup" ExeCommand="/silent /install"
                   Execute="deferred" Impersonate="no" Return="check" />
-    <!-- 安装目录中预先存在的程序文件（目录由普通用户预先建好并放入 Primus.exe 等同名文件）：覆盖时未列入
-         LockPermissions 的文件沿用原有安全描述符，所有者仍是该用户，隐含 WRITE_DAC，可改回 DACL 后替换程序。
-         安装文件之后以 SYSTEM 身份把 Primus.exe 与 resources 整棵树的所有者改为 Administrators，
-         再 /reset 清掉显式授权、从 INSTALLFOLDER 继承受保护的 DACL（与 NSIS hooks.nsh 的 PRIMUS_RESET_PROGRAM_ITEM 一致）。
-         data 不动：其中 users\<SID> 是受保护的，归各用户所有。任一步失败即回滚。 -->
+    <!-- 安装目录可能由普通用户预先建好（约束 C2：可装到其他盘），两步处理，任一步失败即回滚：
+         1. CheckInstallDir（CreateFolders 之前）：安装目录本身是重解析点（联接、符号链接）就拒绝安装，
+            否则下面的 ACL 操作会顺着它改到别处。
+         2. ResetProgramAcl（CreateFolders 设好受保护的 DACL 之后、安装文件之前）：普通用户已不能在安装目录里新建项；
+            先确认安装目录的直接子项与 resources 整棵树里没有重解析点（icacls /T 默认跟随），再把预先存在的
+            Primus.exe 与 resources 树的所有者改为 Administrators、/reset 清掉显式授权，改为从安装目录继承。
+            覆盖安装时未列入 LockPermissions 的文件沿用原有安全描述符，所有者若仍是该用户，隐含 WRITE_DAC，
+            可改回 DACL 后替换程序。不存在的项跳过（全新安装）。data 不动：其中 users\<SID> 是受保护的，归各用户所有。
+         与 NSIS hooks.nsh 的 NSIS_HOOK_PREINSTALL 一致。以 SYSTEM 身份运行（Impersonate="no"）。 -->
+    <SetProperty Id="CheckInstallDir" Before="CheckInstallDir" Sequence="execute"
+                 Value="&quot;[System64Folder]cmd.exe&quot; /d /s /c &quot;&quot;[System64Folder]fsutil.exe&quot; reparsepoint query &quot;[INSTALLFOLDER].&quot; >nul 2>&amp;1 &amp;&amp; exit 1 || exit 0&quot;" />
+    <CustomAction Id="CheckInstallDir" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec"
+                  Execute="deferred" Impersonate="no" Return="check" />
     <SetProperty Id="ResetProgramAcl" Before="ResetProgramAcl" Sequence="execute"
-                 Value="&quot;[System64Folder]cmd.exe&quot; /d /s /c &quot;&quot;[System64Folder]icacls.exe&quot; &quot;[INSTALLFOLDER]Primus.exe&quot; /setowner *S-1-5-32-544 &amp;&amp; &quot;[System64Folder]icacls.exe&quot; &quot;[INSTALLFOLDER]Primus.exe&quot; /reset &amp;&amp; &quot;[System64Folder]icacls.exe&quot; &quot;[INSTALLFOLDER]resources&quot; /setowner *S-1-5-32-544 /T /Q &amp;&amp; &quot;[System64Folder]icacls.exe&quot; &quot;[INSTALLFOLDER]resources&quot; /reset /T /Q&quot;" />
+                 Value="&quot;[System64Folder]cmd.exe&quot; /d /s /c &quot;(dir /b /a:l &quot;[INSTALLFOLDER]*&quot; >nul 2>&amp;1 &amp;&amp; exit 1) &amp; (if exist &quot;[INSTALLFOLDER]resources\&quot; (dir /s /b /a:l &quot;[INSTALLFOLDER]resources\*&quot; >nul 2>&amp;1 &amp;&amp; exit 1)) &amp; (if exist &quot;[INSTALLFOLDER]Primus.exe&quot; (&quot;[System64Folder]icacls.exe&quot; &quot;[INSTALLFOLDER]Primus.exe&quot; /setowner *S-1-5-32-544 &amp;&amp; &quot;[System64Folder]icacls.exe&quot; &quot;[INSTALLFOLDER]Primus.exe&quot; /reset || exit 1)) &amp; (if exist &quot;[INSTALLFOLDER]resources\&quot; (&quot;[System64Folder]icacls.exe&quot; &quot;[INSTALLFOLDER]resources&quot; /setowner *S-1-5-32-544 /T /Q &amp;&amp; &quot;[System64Folder]icacls.exe&quot; &quot;[INSTALLFOLDER]resources&quot; /reset /T /Q || exit 1)) &amp; exit 0&quot;" />
     <CustomAction Id="ResetProgramAcl" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec"
                   Execute="deferred" Impersonate="no" Return="check" />
     <InstallExecuteSequence>
-      <Custom Action="ResetProgramAcl" After="InstallFiles" Condition="NOT REMOVE" />
+      <Custom Action="CheckInstallDir" Before="CreateFolders" Condition="NOT REMOVE" />
+      <Custom Action="ResetProgramAcl" Before="InstallFiles" Condition="NOT REMOVE" />
       <Custom Action="InstallWebView2" Before="InstallFinalize" Condition="WEBVIEW2_MISSING AND NOT REMOVE" />
     </InstallExecuteSequence>
 

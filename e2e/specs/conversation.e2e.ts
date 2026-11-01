@@ -4,7 +4,7 @@
 // 模型配置写进 <安装目录>\data\users\<SID>\core\models.json（薄壳的 core_config 尚未实现，
 // 账号服务下发也未做），Core 在首次发送时才拉起，所以先启动 App、再写配置、再发送。
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { $, $$, browser, expect } from "@wdio/globals";
 import { strings } from "../../apps/desktop/src/lib/strings.ts";
@@ -60,8 +60,22 @@ function findReadResults(value: unknown): { isError: unknown; text: string }[] {
   return [...own, ...Object.values(obj).flatMap(findReadResults)];
 }
 
+/** 会话目录下每个 .jsonl 的字节长度（相对路径 → 长度），目录不存在时为空 */
+function sessionSizes(sessions: string): Map<string, number> {
+  if (!existsSync(sessions)) return new Map();
+  return new Map(
+    readdirSync(sessions, { recursive: true })
+      .map(String)
+      .filter((f) => f.endsWith(".jsonl"))
+      .map((f) => [f, statSync(join(sessions, f)).size]),
+  );
+}
+
 describe("对话（安装矩阵）", () => {
   let coreDir = "";
+  // 发送前已有的会话内容（-KeepData 重跑时会保留旧会话，也可能恢复旧会话并在原文件末尾追加）：
+  // 断言只看此后新增的行，新文件从 0 字节读起
+  let sizesBeforeSend = new Map<string, number>();
 
   before(function () {
     if (!app || !fauxUrl) this.skip();
@@ -87,6 +101,7 @@ describe("对话（安装矩阵）", () => {
     const input = $(`textarea[aria-label="${strings.chat.inputLabel}"]`);
     await input.waitForDisplayed({ timeout: 30_000 });
     await input.setValue(`读取 ${MATRIX_TOOL_PATH} 后回复`);
+    sizesBeforeSend = sessionSizes(join(coreDir, "sessions"));
     await $(`button[aria-label="${strings.chat.send}"]`).click();
     await browser.waitUntil(
       async () => {
@@ -102,18 +117,23 @@ describe("对话（安装矩阵）", () => {
 
   it("会话文件写在 <安装目录>\\data 下", async () => {
     const sessions = join(coreDir, "sessions");
-    await browser.waitUntil(
-      () =>
-        existsSync(sessions) &&
-        readdirSync(sessions, { recursive: true }).some((f) => String(f).endsWith(".jsonl")),
-      { timeout: 15_000, timeoutMsg: `${sessions} 下没有会话文件` },
-    );
-    // read 工具确实读到了文件：会话中 read 的工具结果 isError 为 false
-    const results = readdirSync(sessions, { recursive: true })
-      .filter((f) => String(f).endsWith(".jsonl"))
-      .flatMap((f) => readFileSync(join(sessions, String(f)), "utf8").split("\n"))
-      .filter((line) => line.trim())
-      .flatMap((line) => findReadResults(JSON.parse(line)));
+    // 只取本次发送后新增的行
+    const newLines = () =>
+      [...sessionSizes(sessions)].flatMap(([f, size]) => {
+        const from = sizesBeforeSend.get(f) ?? 0;
+        if (size <= from) return [];
+        return readFileSync(join(sessions, f))
+          .subarray(from)
+          .toString("utf8")
+          .split("\n")
+          .filter((line) => line.trim());
+      });
+    await browser.waitUntil(() => newLines().length > 0, {
+      timeout: 15_000,
+      timeoutMsg: `${sessions} 下没有本次对话写入的会话内容`,
+    });
+    // read 工具确实读到了文件：本次新增的 read 工具结果 isError 为 false
+    const results = newLines().flatMap((line) => findReadResults(JSON.parse(line)));
     expect(results.length).toBeGreaterThan(0);
     expect(results.every((r) => r.isError === false)).toBe(true);
     // faux 模型对任何工具结果都回复 MATRIX_REPLY，所以还要确认 read 读到的是测试写入的内容
