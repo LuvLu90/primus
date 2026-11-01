@@ -519,15 +519,14 @@ jobs:
           $msi = Get-ChildItem out -Filter "Primus_*_${{ matrix.arch }}_zh-CN.msi" | Select-Object -First 1
           if (-not $msi) { throw "未找到 ${{ matrix.arch }} 的 MSI" }
           $extra = @{ Gui = ($env:PRIMUS_MATRIX_GUI -eq 'true') }
-          ./scripts/msi-smoke.ps1 -Msi $msi.FullName -InstallDir $env:PRIMUS_MATRIX_DIR -LogDir (Join-Path $env:RUNNER_TEMP "primus-msi-smoke") -ExtraChecks ./scripts/install-matrix/matrix-checks.ps1 -ExtraChecksArgs $extra
+          ./scripts/msi-smoke.ps1 -Msi $msi.FullName -InstallDir $env:PRIMUS_MATRIX_DIR -LogDir 'C:\PrimusMatrix\out\msi-smoke' -ExtraChecks ./scripts/install-matrix/matrix-checks.ps1 -ExtraChecksArgs $extra
 
       - name: 上传矩阵日志
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7.0.2
         with:
           name: install-matrix-${{ matrix.arch }}-${{ matrix.location }}
-          path: |
-            C:\PrimusMatrix\out
-            ${{ runner.temp }}\primus-msi-smoke
+          # 只给一个路径：多个路径会按公共上级目录计算根目录，与工作区不在同一根下（D:\a 对 C:\PrimusMatrix）时上传报错
+          path: C:\PrimusMatrix\out
           retention-days: 14
           if-no-files-found: ignore

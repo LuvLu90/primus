@@ -370,10 +370,21 @@ if ($KeepData) {
     } catch {
       if ($round -eq 0) { Write-Host "  · 直接删除失败（$($_.Exception.Message)），取得所有权后重试" }
       & takeown.exe /F $InstallDir /R /D Y 2>&1 | Out-Null
+      # /reset 去掉 users\<SID> 的受保护 DACL，让文件也继承下面给目录的授权（(OI)(CI) 对文件不生效）
+      & icacls.exe $InstallDir /reset /T /C /Q 2>&1 | Out-Null
       & icacls.exe $InstallDir /grant '*S-1-5-32-544:(OI)(CI)F' /T /C /Q 2>&1 | Out-Null
     }
   }
-  if (-not $removed) { Remove-Item -LiteralPath $InstallDir -Recurse -Force }
+  if (-not $removed) {
+    # 兜底：robocopy /B 以备份语义（管理员的备份 / 还原特权）把目录镜像为空，不受各文件 ACL 限制
+    $empty = Join-Path ([IO.Path]::GetTempPath()) "primus-msi-smoke-empty-$PID"
+    New-Item -ItemType Directory -Force -Path $empty | Out-Null
+    & robocopy.exe $empty $InstallDir /MIR /B /R:0 /W:0 /NFL /NDL /NJH /NJS /NP | Out-Null
+    Write-Host "  · robocopy /B 清空 $InstallDir（退出码 $LASTEXITCODE）"
+    $global:LASTEXITCODE = 0  # robocopy 退出码 1–7 表示成功，免得作业按非零码判失败
+    Remove-Item -LiteralPath $empty -Force
+    Remove-Item -LiteralPath $InstallDir -Recurse -Force
+  }
   Write-Host "`n· 已清理保留的 $InstallDir"
 }
 

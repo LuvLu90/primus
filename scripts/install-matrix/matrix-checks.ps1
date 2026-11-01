@@ -34,6 +34,13 @@ Set-StrictMode -Version Latest
 
 function Write-Step([string] $Message) { Write-Host "`n==> $Message" -ForegroundColor Cyan }
 function ConvertTo-PsLiteral([string] $Value) { return "'" + ($Value -replace "'", "''") + "'" }
+# 以中完整性级别运行一段 PowerShell。gsudo 在 PowerShell 中调用时会再经一层 PowerShell 解析命令行，
+# 直接传 -Command 字符串时其中的 $变量 会在外层被展开；用 -EncodedCommand（Base64）原样传递脚本
+function Invoke-MediumPwsh([string] $Script) {
+  $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Script))
+  & gsudo --integrity Medium pwsh -NoProfile -NonInteractive -EncodedCommand $encoded
+  return $LASTEXITCODE
+}
 function Assert-True([bool] $Condition, [string] $Message) {
   if (-not $Condition) { throw "✗ $Message" }
   Write-Host "  ✓ $Message"
@@ -80,8 +87,7 @@ try {
     $env:NO_PROXY = '127.0.0.1,localhost'
     Push-Location $e2eDir
     try {
-      & gsudo --integrity Medium pwsh -NoProfile -Command "./node_modules/.bin/wdio.cmd run wdio.conf.ts --spec ./specs/conversation.e2e.ts; exit `$LASTEXITCODE"
-      $e2eCode = $LASTEXITCODE
+      $e2eCode = Invoke-MediumPwsh './node_modules/.bin/wdio.cmd run wdio.conf.ts --spec ./specs/conversation.e2e.ts; exit $LASTEXITCODE'
     } finally {
       Pop-Location
     }
@@ -104,7 +110,8 @@ try {
     Write-Step '以中完整性级别启动一次 Primus.exe，建好当前用户的 data\users\<SID>（供隔离检查）'
     $exe = ConvertTo-PsLiteral (Join-Path $InstallDir 'Primus.exe')
     $wait = ConvertTo-PsLiteral (Join-Path $myDir 'core\sessions')
-    & gsudo --integrity Medium pwsh -NoProfile -Command "`$p = Start-Process -FilePath $exe -PassThru; `$d = (Get-Date).AddSeconds(60); while (-not (Test-Path -LiteralPath $wait) -and -not `$p.HasExited -and (Get-Date) -lt `$d) { Start-Sleep -Milliseconds 500 }; Start-Sleep -Seconds 2; if (-not `$p.HasExited) { & taskkill.exe /PID `$p.Id /T /F | Out-Null }"
+    $launchCode = Invoke-MediumPwsh "`$p = Start-Process -FilePath $exe -PassThru; `$d = (Get-Date).AddSeconds(60); while (-not (Test-Path -LiteralPath $wait) -and -not `$p.HasExited -and (Get-Date) -lt `$d) { Start-Sleep -Milliseconds 500 }; Start-Sleep -Seconds 2; if (-not `$p.HasExited) { & taskkill.exe /PID `$p.Id /T /F | Out-Null }; exit 0"
+    Write-Host "  · 中完整性级别启动脚本退出码 $launchCode"
     Assert-True (Test-Path -LiteralPath (Join-Path $myDir 'core\sessions')) "Primus.exe 建好 users\$mySid"
   }
 
