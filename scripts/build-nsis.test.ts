@@ -110,7 +110,7 @@ describe("build-nsis", () => {
     const pre = /!macro NSIS_HOOK_PREINSTALL([\s\S]*?)!macroend/.exec(text)?.[1] ?? "";
     const steps = [
       "InitPluginsDir",
-      `File "/oname=$PLUGINSDIR\\primus-install-acl.ps1" "\${__FILEDIR__}\\..\\install-acl.ps1"`,
+      `File "/oname=$PLUGINSDIR\\primus-install-acl.ps1" "\${PRIMUS_INSTALL_ACL_PS1}"`,
       '"$SYSDIR\\WindowsPowerShell\\v1.0\\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\\primus-install-acl.ps1" "#|nsis|$INSTDIR|"',
       "Pop $0",
       `\${If} $0 != 0`,
@@ -118,6 +118,18 @@ describe("build-nsis", () => {
       "Abort",
     ].map((s) => pre.indexOf(s));
     expect(steps.every((i) => i >= 0)).toBe(true);
+    // 脚本路径在 !include 本文件时（宏外的顶层）由 \${__FILEDIR__} 确定；写在宏里会在 installer.nsi 中展开，
+    // 指向 target\\release\\nsis\\<arch>，makensis 找不到脚本
+    const topLevel = text.replace(/!macro[\s\S]*?!macroend/g, "");
+    expect(topLevel).toContain(
+      `!define PRIMUS_INSTALL_ACL_PS1 "\${__FILEDIR__}\\..\\install-acl.ps1"`,
+    );
+    const macroCode = (text.match(/!macro[\s\S]*?!macroend/g) ?? [])
+      .join("\n")
+      .split("\n")
+      .filter((line) => !line.trim().startsWith(";"))
+      .join("\n");
+    expect(macroCode).not.toContain("__FILEDIR__");
     expect([...steps].sort((a, b) => a - b)).toEqual(steps);
     expect(pre.match(/nsExec::ExecToLog/g)).toHaveLength(1);
     const preCode = pre
