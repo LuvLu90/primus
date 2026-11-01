@@ -42,6 +42,24 @@ describe("build-nsis", () => {
     });
   });
 
+  it("配置了证书时临时配置让 tauri bundle 用同一证书签名，配一半不签", () => {
+    const dirs = { runtimeDir: "C:/r/dist/runtime", coreDir: "C:/r/dist/agent-core" };
+    const signed = nsisBundleConfig(dirs, {
+      PRIMUS_SIGN_CERT_SHA1: "ABCDEF",
+      PRIMUS_SIGN_TIMESTAMP_URL: "http://ts.example",
+    });
+    expect(signed.bundle.windows).toEqual({
+      certificateThumbprint: "ABCDEF",
+      digestAlgorithm: "sha256",
+      timestampUrl: "http://ts.example",
+      tsp: true,
+    });
+    expect(signed.bundle.resources).toEqual(nsisBundleConfig(dirs).bundle.resources);
+    expect(nsisBundleConfig(dirs, { PRIMUS_SIGN_CERT_SHA1: "ABCDEF" }).bundle).not.toHaveProperty(
+      "windows",
+    );
+  });
+
   it("tauri.conf.json 的 NSIS 设置（第 3.4 节）", () => {
     const conf = JSON.parse(readFileSync(tauriFile("tauri.conf.json"), "utf8"));
     // tauri build 不打包（MSI 由 WiX 构建），NSIS 只经 tauri bundle 生成
@@ -104,4 +122,42 @@ describe("build-nsis", () => {
     );
     expect(cross.stdout).toContain(`Primus_${conf.version}_${other}-setup.exe`);
   });
+
+  it.skipIf(process.platform === "win32")(
+    "签名配置：配一半拒绝，配齐时 --dry-run 列出 signtool verify",
+    () => {
+      const clean = { ...process.env };
+      for (const k of Object.keys(clean))
+        if (
+          k.startsWith("PRIMUS_SIGN") ||
+          k.startsWith("TAURI_SIGNING") ||
+          k === "PRIMUS_REQUIRE_SIGNING"
+        )
+          delete clean[k];
+      const half = spawnSync(process.execPath, [SCRIPT, "--dry-run", "--arch", HOST_ARCH], {
+        encoding: "utf8",
+        env: { ...clean, PRIMUS_SIGN_CERT_SHA1: "ABCDEF" },
+      });
+      expect(half.status).toBe(1);
+      expect(half.stderr).toContain("必须同时配置");
+      const required = spawnSync(process.execPath, [SCRIPT, "--dry-run", "--arch", HOST_ARCH], {
+        encoding: "utf8",
+        env: { ...clean, PRIMUS_REQUIRE_SIGNING: "1" },
+      });
+      expect(required.status).toBe(1);
+      expect(required.stderr).toContain("PRIMUS_REQUIRE_SIGNING=1");
+      const full = spawnSync(process.execPath, [SCRIPT, "--dry-run", "--arch", HOST_ARCH], {
+        encoding: "utf8",
+        env: {
+          ...clean,
+          PRIMUS_SIGN_CERT_SHA1: "ABCDEF",
+          PRIMUS_SIGN_TIMESTAMP_URL: "http://ts.example",
+          PRIMUS_SIGNTOOL: "signtool-test",
+        },
+      });
+      expect(full.status).toBe(0);
+      expect(full.stdout).toMatch(/signtool-test verify \/pa \/all \S*-setup\.exe/);
+      expect(full.stdout).toMatch(/signtool-test verify \/pa \/all \S*Primus\.exe/);
+    },
+  );
 });

@@ -2,11 +2,13 @@
 # PR 与日常推送拿不到。为了让每次 CI 都完整走一遍签名流程（签 Primus.exe → 签 MSI → tauri signer 生成 .sig
 # → 校验 .sig → signtool verify /pa 三个文件），这里临时生成一次性的自签名代码签名证书和 updater 密钥：
 #
-#   - 证书：New-SelfSignedCertificate 生成到 CurrentUser\My（私钥不可导出、2 天后过期），公钥证书导入
-#     LocalMachine\Root 与 TrustedPublisher，使 signtool verify /pa 在本运行器上能建立信任链
-#     （GitHub 托管运行器以管理员运行，导入不弹窗；运行器用完即销毁，因此脚本拒绝在自托管运行器上运行）
+#   - 证书：调用 import-release-signing.ps1（与发布流程相同）：New-SelfSignedCertificate 生成到 CurrentUser\My
+#     （私钥不可导出），公钥证书导入 LocalMachine\Root 与 TrustedPublisher，使 signtool verify /pa 在本运行器上
+#     能建立信任链（运行器用完即销毁，因此拒绝在自托管运行器上运行）
+#   - 证书的 PFX 分支：再生成一张可导出的临时证书，导出为带随机口令的 PFX 后经 PRIMUS_SIGN_PFX_BASE64 / PASSWORD
+#     交给导入脚本导回（以后正式证书走这条路），之后的签名用这张证书；PFX 文件立即删除
 #   - updater 密钥：tauri signer generate 写到 RUNNER_TEMP，随机口令
-#   - 写入 GITHUB_ENV：PRIMUS_SIGN_CERT_SHA1、PRIMUS_SIGN_TIMESTAMP_URL、TAURI_SIGNING_PRIVATE_KEY_PATH、
+#   - 写入 GITHUB_ENV：PRIMUS_SIGN_CERT_SHA1、PRIMUS_SIGN_TIMESTAMP_URL（导入脚本写）、TAURI_SIGNING_PRIVATE_KEY_PATH、
 #     TAURI_SIGNING_PRIVATE_KEY_PASSWORD（已打码）、TAURI_SIGNING_PUBLIC_KEY、PRIMUS_REQUIRE_SIGNING=1
 #
 # 这样产出的安装包只在本运行器上受信任，不能对外分发；发布流程改用密钥库中的正式证书与私钥。
@@ -20,41 +22,52 @@ if (-not $env:GITHUB_ENV -or -not $env:RUNNER_TEMP -or $env:RUNNER_ENVIRONMENT -
   throw "只能在 GitHub 托管运行器上运行（会改动本机受信任根证书；RUNNER_ENVIRONMENT=$env:RUNNER_ENVIRONMENT）"
 }
 
-$cert = New-SelfSignedCertificate -Type CodeSigningCert `
-  -Subject "CN=Primus CI Signing Drill, O=Primus CI" `
+# 证书与发布流程共用 import-release-signing.ps1 的无 Secret 路径（临时自签名证书、导入本机信任、写 GITHUB_ENV），
+# 每次 CI 都实际执行一遍发布用的导入脚本，脚本本身的错误不会等到发版才暴露
+& (Join-Path $PSScriptRoot "import-release-signing.ps1") -Version "ci-drill" -TimestampUrl $TimestampUrl
+# 发布说明按证书来源描述证书范围（临时生成 = 每个架构各一张；PFX = 两个架构共用）：两条分支都核对写入的来源
+function Assert-CertSource([string]$Expected) {
+  $m = [regex]::Matches((Get-Content -Raw $env:GITHUB_ENV), '(?m)^PRIMUS_RELEASE_CERT_SOURCE=(\S+)\r?$') | Select-Object -Last 1
+  if (-not $m -or $m.Groups[1].Value -cne $Expected) { throw "PRIMUS_RELEASE_CERT_SOURCE 应为 $Expected，实际 $(if ($m) { $m.Groups[1].Value } else { '未写入' })" }
+}
+Assert-CertSource "generated"
+
+# 再演练导入脚本的 PFX 分支（以后配置正式证书 Secret 时走这条路）：临时生成一张可导出的自签名代码签名证书，导出为带随机口令的
+# PFX，然后从证书存储中删掉原证书，经 PRIMUS_SIGN_PFX_BASE64 / PRIMUS_SIGN_PFX_PASSWORD 交给导入脚本导回。
+# PFX 文件导出后立即删除，环境变量只在本进程内设置、用完即清除，不写进仓库也不传给后续步骤。
+# 导入脚本后写入 GITHUB_ENV 的 PRIMUS_SIGN_CERT_SHA1 生效，演练后续的签名与校验都用这张经 PFX 导入的证书
+$drillCert = New-SelfSignedCertificate -Type CodeSigningCert `
+  -Subject "CN=Primus ci-drill pfx (self-signed), O=skaduv" `
   -CertStoreLocation Cert:\CurrentUser\My `
   -KeyAlgorithm RSA -KeyLength 3072 -HashAlgorithm SHA256 `
-  -KeyExportPolicy NonExportable `
-  -NotAfter (Get-Date).AddDays(2)
-$cer = Join-Path $env:RUNNER_TEMP "primus-ci-signing-drill.cer"
-Export-Certificate -Cert $cert -FilePath $cer | Out-Null
-# 运行器镜像不同，写本机证书存储的权限也不同（windows-11-arm 的 VS2026 镜像上 Import-Certificate 写
-# LocalMachine\Root 报 E_ACCESSDENIED）：依次尝试 Import-Certificate → certutil -addstore → 以 RunAs 提升的
-# certutil（UAC 对管理员自动批准时不弹窗），全部失败才报错，并打印当前令牌是否提升以便排查。
+  -KeyExportPolicy Exportable `
+  -NotAfter (Get-Date).AddDays(7)
+$pfxPassword = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(24))
+Write-Host "::add-mask::$pfxPassword"
+$pfx = Join-Path $env:RUNNER_TEMP "primus-ci-drill.pfx"
+try {
+  Export-PfxCertificate -Cert $drillCert -FilePath $pfx -Password (ConvertTo-SecureString -String $pfxPassword -AsPlainText -Force) | Out-Null
+  $pfxBase64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($pfx))
+} finally {
+  Remove-Item -LiteralPath $pfx -Force -ErrorAction SilentlyContinue
+}
+Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($drillCert.Thumbprint)"
+$env:PRIMUS_SIGN_PFX_BASE64 = $pfxBase64
+$env:PRIMUS_SIGN_PFX_PASSWORD = $pfxPassword
+try {
+  & (Join-Path $PSScriptRoot "import-release-signing.ps1") -Version "ci-drill" -TimestampUrl $TimestampUrl
+} finally {
+  Remove-Item Env:\PRIMUS_SIGN_PFX_BASE64, Env:\PRIMUS_SIGN_PFX_PASSWORD -ErrorAction SilentlyContinue
+}
+$imported = Get-ChildItem Cert:\CurrentUser\My | Where-Object { $_.Thumbprint -eq $drillCert.Thumbprint -and $_.HasPrivateKey }
+if (-not $imported) { throw "PFX 分支未把带私钥的证书导回 CurrentUser\My" }
+$sha1 = [regex]::Matches((Get-Content -Raw $env:GITHUB_ENV), '(?m)^PRIMUS_SIGN_CERT_SHA1=(\S+)\r?$') | Select-Object -Last 1
+if (-not $sha1 -or $sha1.Groups[1].Value -ne $drillCert.Thumbprint) { throw "PFX 分支未把证书指纹写入 GITHUB_ENV" }
+Assert-CertSource "pfx"
+Write-Host "PFX 分支演练通过：签名改用经 PFX 导入的证书 $($drillCert.Thumbprint)"
 $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
 $elevated = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 Write-Host "当前进程$(if ($elevated) { '已' } else { '未' })以管理员权限运行（$([Security.Principal.WindowsIdentity]::GetCurrent().Name)）"
-function Add-MachineTrust([string]$Store) {
-  try {
-    Import-Certificate -FilePath $cer -CertStoreLocation "Cert:\LocalMachine\$Store" -ErrorAction Stop | Out-Null
-    return
-  } catch {
-    Write-Host "Import-Certificate 写 LocalMachine\$Store 失败：$($_.Exception.Message)，改用 certutil"
-  }
-  & certutil.exe -f -addstore $Store $cer | Out-Host
-  if ($LASTEXITCODE -eq 0) { return }
-  Write-Host "certutil -addstore $Store 失败（退出码 $LASTEXITCODE），改用提升后的 certutil"
-  $p = Start-Process -FilePath certutil.exe -ArgumentList @("-f", "-addstore", $Store, "`"$cer`"") -Verb RunAs -Wait -PassThru -WindowStyle Hidden
-  if ($p.ExitCode -ne 0) { throw "无法把演练证书加入 LocalMachine\$Store（提升后的 certutil 退出码 $($p.ExitCode)）" }
-}
-Add-MachineTrust "Root"
-Add-MachineTrust "TrustedPublisher"
-foreach ($store in "Root", "TrustedPublisher") {
-  if (-not (Get-ChildItem "Cert:\LocalMachine\$store" | Where-Object Thumbprint -eq $cert.Thumbprint)) {
-    throw "演练证书未出现在 LocalMachine\$store 中"
-  }
-}
-Write-Host "演练证书：$($cert.Subject)，指纹 $($cert.Thumbprint)，有效期至 $($cert.NotAfter)"
 
 $key = Join-Path $env:RUNNER_TEMP "primus-ci-updater.key"
 $password = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(24))
@@ -64,9 +77,8 @@ if ($LASTEXITCODE -ne 0) { throw "tauri signer generate 失败（退出码 $LAST
 if (-not (Test-Path -LiteralPath "$key.pub")) { throw "未生成 updater 公钥：$key.pub" }
 $pubkey = (Get-Content -LiteralPath "$key.pub" -Raw).Trim()
 
+# 写在导入脚本的 PRIMUS_REQUIRE_SIGNING=0 之后，后写的生效：演练要求 updater 密钥同时生效
 @(
-  "PRIMUS_SIGN_CERT_SHA1=$($cert.Thumbprint)",
-  "PRIMUS_SIGN_TIMESTAMP_URL=$TimestampUrl",
   "TAURI_SIGNING_PRIVATE_KEY_PATH=$key",
   "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$password",
   "TAURI_SIGNING_PUBLIC_KEY=$pubkey",
