@@ -31,6 +31,7 @@ pub fn run() {
     let Some(data_paths) = paths::prepare_or_guide() else {
         std::process::exit(1);
     };
+    platform::configure_webview_data_dir(&data_paths.webview_dir());
 
     // Core 进程监管：所有 Core 进程放进同一个 Job Object，主进程被强杀时由系统统一回收（第 2.2 节）
     let supervisor = paths::exe_dir()

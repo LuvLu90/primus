@@ -1,7 +1,7 @@
 // WebdriverIO + tauri-driver 端到端配置（技术方案第 18 章）。
 // 只在 Windows 上运行：tauri-driver 包装 msedgedriver 驱动 WebView2。
 // 先 `pnpm build` 产出 release 版 Primus.exe，再 `pnpm test:e2e`。
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, execFileSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { createConnection } from "node:net";
 import { homedir } from "node:os";
@@ -12,7 +12,7 @@ declare global {
   namespace WebdriverIO {
     interface Capabilities {
       /** tauri-driver 的扩展能力：要启动的 Tauri 程序路径 */
-      "tauri:options"?: { application: string };
+      "tauri:options"?: { application: string; webviewOptions?: { userDataFolder: string } };
     }
   }
 }
@@ -25,6 +25,16 @@ const DRIVER_PORT = 4444;
 const application = resolve(
   process.env.PRIMUS_E2E_APP ?? join(here, "../apps/desktop/src-tauri/target/release/Primus.exe"),
 );
+
+// release 应用固定使用此目录；让驱动在同一目录查找 DevToolsActivePort，不能依赖其 scoped_dir 覆盖。
+// 覆盖被拒绝的行为由安装矩阵中的标准用户启动检查覆盖。
+function webviewOptions(): { userDataFolder: string } | undefined {
+  if (process.platform !== "win32") return undefined;
+  const output = execFileSync("whoami.exe", ["/user", "/fo", "csv", "/nh"], { encoding: "utf8" });
+  const sid = /S-1-5-21-(?:\d+-){3}\d+/.exec(output)?.[0];
+  if (!sid) throw new Error("无法获取端到端测试用户 SID");
+  return { userDataFolder: join(dirname(application), "data", "users", sid, "webview") };
+}
 
 const tauriDriverBin = join(
   homedir(),
@@ -71,7 +81,7 @@ export const config: WebdriverIO.Config = {
   maxInstances: 1,
   capabilities: [
     {
-      "tauri:options": { application },
+      "tauri:options": { application, webviewOptions: webviewOptions() },
     },
   ],
   logLevel: "warn",

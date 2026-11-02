@@ -31,6 +31,8 @@ function Assert-True([bool] $Condition, [string] $Message) {
   if (-not $Condition) { throw "✗ $Message" }
   Write-Host "  ✓ $Message"
 }
+$policyKey = 'HKCU:\Software\Policies\Microsoft\Edge\WebView2\UserDataFolder'
+$policyCreated = $false
 
 try {
   $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -45,7 +47,15 @@ try {
   $mainExe = Join-Path $InstallDir 'Primus.exe'
 
   # ---- 启动 App，等数据目录就绪 ----
-  $proc = Start-Process -FilePath $mainExe -WorkingDirectory $InstallDir -PassThru
+  # 故意注入 data 外目录；App 必须覆盖它，而不是让 WebView2 使用继承值。
+  $overrideDir = Join-Path $OutDir 'webview-override-must-not-exist'
+  Assert-True (-not (Test-Path -LiteralPath $overrideDir)) 'WebView2 覆盖探针目录尚不存在'
+  # 专用临时用户下增加 UserDataFolder 策略，覆盖“只清除环境变量仍会落到注册表指定目录”的情况。
+  Assert-True (-not (Test-Path -LiteralPath $policyKey)) '临时用户没有已有 WebView2 数据目录策略'
+  $null = New-Item -Path $policyKey -Force
+  $policyCreated = $true
+  $null = New-ItemProperty -LiteralPath $policyKey -Name 'Primus.exe' -Value $overrideDir -PropertyType String
+  $proc = Start-Process -FilePath $mainExe -WorkingDirectory $InstallDir -PassThru -WindowStyle Hidden -Environment @{ WEBVIEW2_USER_DATA_FOLDER = $overrideDir }
   $deadline = (Get-Date).AddSeconds(60)
   $ready = $false
   while ((Get-Date) -lt $deadline) {
@@ -69,6 +79,7 @@ try {
   }
   $webviewItems = @(Get-ChildItem -LiteralPath $webviewDir -Force -ErrorAction SilentlyContinue | ForEach-Object Name)
   Assert-True ($webviewItems.Count -gt 0) "WebView2 用户数据在 users\<SID>\webview（$($webviewItems -join ', ')）"
+  Assert-True (-not (Test-Path -LiteralPath $overrideDir)) '继承的 WebView2 覆盖目录未被创建'
   Assert-True (Test-Path -LiteralPath (Join-Path $dataDir 'shared\logs') -PathType Container) '存在 data\shared\logs'
 
   # ---- ACL ----
@@ -113,6 +124,7 @@ try {
   $result.error = $_.Exception.Message
   Write-Host $result.error
 } finally {
+  if ($policyCreated) { Remove-Item -LiteralPath $policyKey -Force }
   $result | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $OutDir 'std-user-result.json') -Encoding utf8
   Stop-Transcript | Out-Null
 }

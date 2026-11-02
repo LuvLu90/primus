@@ -192,7 +192,7 @@ try {
 Write-Step '上级目录普通用户可改名、预先存在的程序文件有多个硬链接时拒绝安装'
 # C:\ 下新建的目录继承盘根给 Authenticated Users 的“修改”（含删除），这里再给 Users “修改”；装到其子目录须被拒绝
 $openParent = Join-Path $env:SystemDrive 'PrimusOpenParentProbe'
-# 预先建好的安装目录中，Primus.exe 是指向外部文件的硬链接（外部文件 DACL 受保护，不随安装目录的继承变化）
+# 硬链接目标保留继承：目录 ACL 传播也不得改变外部目标，不能用受保护 DACL 掩盖缺陷
 $linkDir = Join-Path $env:SystemDrive 'PrimusHardlinkProbe'
 $linkTarget = Join-Path $env:SystemDrive 'PrimusHardlinkTarget.exe'
 foreach ($path in $openParent, $linkDir, $linkTarget) { if (Test-Path -LiteralPath $path) { throw "✗ 残留：$path（请先删除）" } }
@@ -200,8 +200,6 @@ $null = New-Item -ItemType Directory -Path $openParent, $linkDir
 & icacls.exe $openParent /grant '*S-1-5-32-545:(OI)(CI)M' | Out-Host
 if ($LASTEXITCODE -ne 0) { throw "✗ icacls /grant $openParent 退出码 $LASTEXITCODE" }
 [IO.File]::WriteAllText($linkTarget, 'primus hardlink probe')
-& icacls.exe $linkTarget /inheritance:d | Out-Host
-if ($LASTEXITCODE -ne 0) { throw "✗ icacls /inheritance:d $linkTarget 退出码 $LASTEXITCODE" }
 $null = New-Item -ItemType HardLink -Path (Join-Path $linkDir 'Primus.exe') -Target $linkTarget
 $linkSddl = (Get-Acl -LiteralPath $linkTarget).Sddl
 try {

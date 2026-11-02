@@ -7,9 +7,9 @@
 # 祖先目录还必须是普通用户改不动的：所有者为 SYSTEM、Administrators 或 TrustedInstaller，其他主体没有
 # 删除（盘根除外）、删除子项、更改权限、取得所有权，否则普通用户可在检查之后把安装目录或某一级祖先改名，
 # 在原路径放上联接。安装目录本身锁好之后再确认一遍（不是重解析点、已锁好）：锁好之前若被换成联接，
-# 带 /L 的 icacls 改的是联接本身，复查即失败；复查通过后普通用户不能再改名或替换安装目录及其祖先。
-# 程序文件自上而下处理：先把目录锁好（所有者 Administrators、清掉显式授权、改为从已锁好的上级继承），
-# 普通用户就不能再往里新建项，再检查并处理其子项，检查与修改之间不会被插入联接；有多个硬链接的文件
+# OPEN_REPARSE_POINT 句柄与复查拒绝联接；复查通过后普通用户不能再改名或替换安装目录及其祖先。
+# 程序目录自上而下用 SetKernelObjectSecurity 只锁定对象本身（不向子项传播），并保持不共享删除的句柄。
+# 普通用户不能再往里新建项，再检查并固定其子项；全树检查完成之前不做任何会传播到子项的 ACL 操作。有多个硬链接的文件
 # 拒绝处理（改它的所有者与 ACL 会改到安装目录之外的同一文件）。
 #
 # 调用：命令行中带标记 #|<模式>|<安装目录>|，从 [Environment]::CommandLine 读取，不经 cmd.exe，
@@ -18,11 +18,9 @@
 #        （build-msi.mjs 去掉整行注释与空行后按 UTF-16LE 编码，-d InstallAclScript 传给 wix）
 #   NSIS：powershell.exe -File <本脚本> "#|nsis|$INSTDIR|"
 # 模式：
-#   lock   检查安装路径，建目录，把安装目录设为受保护 DACL（与 Primus.wxs InstallDirAcl 一致），再检查并确认已锁好
-#          （MSI CreateFolders 之前）
-#   reset  检查安装路径并确认安装目录已锁好，自上而下处理已存在的 Primus.exe、uninstall.exe、resources 树
-#          （MSI 设好受保护 DACL 之后、安装文件之前）
-#   nsis   lock 后 reset
+#   lock / nsis   检查安装路径，建目录，冻结安装目录，冻结并扫描程序树，最后修复程序文件 ACL
+#                 （MSI CreateFolders / NSIS 复制文件之前）；lock 也必须完成扫描，不能等 MSI 的 reset 阶段
+#   reset         确认安装目录已锁好，再次冻结、扫描并修复程序树（MSI 安装文件之前）
 # 检查安装路径：安装目录及每一级祖先不是重解析点，已存在的祖先普通用户改不动，目录已存在时直接子项不是重解析点。
 # data 不动：其中 users\<SID> 是受保护的，归各用户所有。任何失败退出码 1，安装回滚或中止，已改的 ACL 不还原：
 # 被改的只是安装目录本身与其中同名的程序文件，保持锁定比还原成普通用户可改的状态更安全。
@@ -53,6 +51,46 @@ $ReadOnlyMask = [int]0x1200a9 -bor [int]0x20000000 -bor [int]::MinValue
 $Icacls = Join-Path ([Environment]::SystemDirectory) 'icacls.exe'
 $Fsutil = Join-Path ([Environment]::SystemDirectory) 'fsutil.exe'
 $script:fixed = 0
+$script:held = New-Object 'System.Collections.Generic.List[System.IDisposable]'
+
+# SetKernelObjectSecurity 不进行 SetNamedSecurityInfo / icacls 的自动继承传播。
+# 用 OPEN_REPARSE_POINT 打开、拒绝共享写入与删除：已有写入/删除句柄时失败，绝不继续按路径修复。
+# C# 普通多行字符串（不能改为 here-string，MSI 构建会去掉整行注释与空行）。
+Add-Type -TypeDefinition 'using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+public static class PrimusInstallHandle {
+[DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+public static extern SafeFileHandle CreateFile(string p, uint a, uint s, IntPtr sa, uint c, uint f, IntPtr t);
+[DllImport("advapi32.dll", SetLastError=true)]
+public static extern bool SetKernelObjectSecurity(SafeFileHandle h, uint i, byte[] sd);
+public static SafeFileHandle Open(string p) {
+var h = CreateFile(p, 0xE0081, 1, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero);
+if (h.IsInvalid) { int e = Marshal.GetLastWin32Error(); h.Dispose(); throw new Win32Exception(e); }
+return h;
+}
+}'
+
+function Hold-Item([string] $Path) {
+  $handle = [PrimusInstallHandle]::Open($Path)
+  $script:held.Add($handle)
+  if (Test-Link $Path) { throw "program files contain a junction or symbolic link: $Path" }
+  return $handle
+}
+
+# 目录所有者与 DACL 一次设置，只作用于该目录，不触碰任何尚未检查的子文件（包括硬链接目标）。
+function Freeze-Directory([string] $Path) {
+  $handle = Hold-Item $Path
+  if (-not [IO.Directory]::Exists($Path)) { throw "expected a directory: $Path" }
+  $sddl = 'O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)(A;OICI;0x1200a9;;;AC)'
+  $sd = New-Object Security.AccessControl.RawSecurityDescriptor($sddl)
+  $bytes = New-Object byte[] $sd.BinaryLength
+  $sd.GetBinaryForm($bytes, 0)
+  if (-not [PrimusInstallHandle]::SetKernelObjectSecurity($handle, [uint32]2147483653, $bytes)) {
+    throw "cannot freeze directory: $Path (win32 $([Runtime.InteropServices.Marshal]::GetLastWin32Error()))"
+  }
+}
 
 function Test-Exists([string] $Path) { [IO.Directory]::Exists($Path) -or [IO.File]::Exists($Path) }
 
@@ -150,12 +188,29 @@ function Repair-ProgramFiles {
   }
 }
 
-# 与 Primus.wxs InstallDirAcl 的 O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)(A;OICI;0x1200a9;;;AC) 一致。
-# 不加 /T：升级安装时 data\users\<SID> 是受保护的，不能改写
+# 冻结目录再枚举；先固定文件句柄再查链接数。句柄保持至整个脚本退出，扫描与修复之间不能替换路径。
+function Freeze-ProgramTree {
+  $stack = New-Object 'System.Collections.Generic.Stack[string]'
+  foreach ($child in [IO.Directory]::GetFileSystemEntries($dir)) {
+    if (Test-Link $child) { throw "program files contain a junction or symbolic link: $child" }
+    if (-not [IO.Directory]::Exists($child) -or [IO.Path]::GetFileName($child) -eq 'resources') { $stack.Push($child) }
+  }
+  while ($stack.Count -gt 0) {
+    $item = $stack.Pop()
+    if (Test-Link $item) { throw "program files contain a junction or symbolic link: $item" }
+    if ([IO.Directory]::Exists($item)) {
+      Freeze-Directory $item
+      foreach ($child in [IO.Directory]::GetFileSystemEntries($item)) { $stack.Push($child) }
+    } else {
+      $null = Hold-Item $item
+      if ((Get-LinkCount $item) -gt 1) { throw "program file has more than one hard link: $item" }
+    }
+  }
+}
+
+# 与 Primus.wxs InstallDirAcl 一致，但设置过程不向子项传播，不能在扫描前使用 icacls /reset 或 /grant。
 function Lock-InstallDir {
-  Invoke-Icacls @($dir, '/setowner', "*$Admins", '/L', '/Q')
-  Invoke-Icacls @($dir, '/reset', '/L', '/Q')
-  Invoke-Icacls @($dir, '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', "*${Admins}:(OI)(CI)F", '*S-1-5-32-545:(OI)(CI)RX', '*S-1-15-2-1:(OI)(CI)RX', '/L', '/Q')
+  Freeze-Directory $dir
 }
 
 Assert-InstallPath
@@ -166,6 +221,8 @@ if ($mode -ne 'reset') {
 }
 Assert-InstallPath
 if (-not (Test-Locked $dir $true $true)) { throw "install dir is not locked (owner SYSTEM or Administrators, others read and execute only): $dir" }
-if ($mode -ne 'lock') { Repair-ProgramFiles }
+Freeze-ProgramTree
+Repair-ProgramFiles
+foreach ($handle in $script:held) { $handle.Dispose() }
 [Console]::Out.WriteLine("primus-install-acl: $mode $dir ok (reset $($script:fixed) items)")
 exit 0

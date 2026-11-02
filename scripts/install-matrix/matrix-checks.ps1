@@ -95,8 +95,8 @@ try {
     Assert-True ($e2eCode -eq 0) "端到端对话通过（wdio 退出码 $e2eCode）"
     $myDir = Join-Path $dataDir "users\$mySid"
     Assert-True (@(Get-ChildItem -LiteralPath (Join-Path $myDir 'core\sessions') -Recurse -Filter *.jsonl -ErrorAction SilentlyContinue).Count -gt 0) "会话文件在 users\$mySid\core\sessions"
-    # 不在这里检查 users\<SID>\webview：msedgedriver 启动 WebView2 应用时用 WEBVIEW2_USER_DATA_FOLDER 指定临时目录
-    # （scoped_dir），环境变量优先于应用设置的 data_directory。WebView2 数据位置由下方标准用户（正常启动）检查。
+    # 驱动使用与 App 相同的实际数据目录；错误覆盖场景由下方标准用户检查。
+    Assert-True (@(Get-ChildItem -LiteralPath (Join-Path $myDir 'webview') -Force -ErrorAction SilentlyContinue).Count -gt 0) 'WebView2 数据在当前用户的 webview 目录'
     foreach ($base in $env:APPDATA, $env:LOCALAPPDATA) {
       $leak = Join-Path $base 'com.primus.desktop'
       Assert-True (-not (Test-Path -LiteralPath $leak)) "没有 $leak（约束 C2）"

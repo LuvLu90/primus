@@ -209,17 +209,27 @@ describe("build-msi", () => {
     ].map((s) => repair.indexOf(s));
     expect(order.every((i) => i >= 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
-    expect(code).not.toContain("data");
+    // 冻结使用不会传播的句柄 API；固定句柄后才扫描硬链接，所有句柄直到修复结束才释放。
+    const freeze = body("Freeze-Directory");
+    expect(freeze.indexOf("Hold-Item $Path")).toBeLessThan(
+      freeze.indexOf("SetKernelObjectSecurity"),
+    );
+    expect(code).toContain("CreateFile(p, 0xE0081, 1, IntPtr.Zero, 3, 0x02200000");
+    const scan = body("Freeze-ProgramTree");
+    expect(scan.indexOf("Freeze-Directory $item")).toBeLessThan(
+      scan.indexOf("GetFileSystemEntries($item)"),
+    );
+    expect(scan.indexOf("Hold-Item $item")).toBeLessThan(scan.indexOf("Get-LinkCount $item"));
     // 每次 icacls 都带 /L（不跟随链接）、不带 /T
     const icacls = [...code.matchAll(/Invoke-Icacls @\(([^\n]*)\)$/gm)].map((m) => m[1]);
-    expect(icacls).toHaveLength(5);
+    expect(icacls).toHaveLength(2);
     for (const call of icacls) {
       expect(call).toContain("'/L', '/Q'");
       expect(call).not.toContain("/T");
     }
     // nsis 模式的安装目录 ACL 与 Primus.wxs InstallDirAcl 一致
     expect(code).toContain(
-      `'/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', "*\${Admins}:(OI)(CI)F", '*S-1-5-32-545:(OI)(CI)RX', '*S-1-15-2-1:(OI)(CI)RX'`,
+      "O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)(A;OICI;0x1200a9;;;AC)",
     );
     const main = code.slice(code.lastIndexOf("\nAssert-InstallPath\nif ($mode -ne 'reset')"));
     expect(main).toBe(
@@ -233,11 +243,20 @@ describe("build-msi", () => {
         "}",
         "Assert-InstallPath",
         'if (-not (Test-Locked $dir $true $true)) { throw "install dir is not locked (owner SYSTEM or Administrators, others read and execute only): $dir" }',
-        "if ($mode -ne 'lock') { Repair-ProgramFiles }",
+        "Freeze-ProgramTree",
+        "Repair-ProgramFiles",
+        "foreach ($handle in $script:held) { $handle.Dispose() }",
         '[Console]::Out.WriteLine("primus-install-acl: $mode $dir ok (reset $($script:fixed) items)")',
         "exit 0",
       ].join("\n"),
     );
+    // Windows CreateProcess 的命令行上限为 32767 UTF-16 字符，为安装路径和调用包装预留空间。
+    expect(encodeInstallAclScript(source).length).toBeLessThan(30000);
+    for (const script of ["msi-smoke.ps1", "nsis-smoke.ps1"]) {
+      const smoke = readFileSync(new URL(script, import.meta.url), "utf8");
+      expect(smoke).not.toContain("$linkTarget /inheritance:d");
+      expect(smoke).toContain("(Get-Acl -LiteralPath $linkTarget).Sddl -eq $linkSddl");
+    }
   });
 
   it("wix build 参数与技术方案第 3.3.1 节一致", () => {

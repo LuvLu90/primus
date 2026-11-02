@@ -15,6 +15,18 @@ pub(crate) const REINSTALL_URL: &str = "https://github.com/skaduv/primus/release
 /// 修复引导的标题。
 const GUIDE_TITLE: &str = "乾元 Primus：数据目录不可写";
 
+/// WebView2 的环境变量优先于 builder 参数与 UserDataFolder 注册表策略。
+/// 启动时固定为已准备好的用户目录，不能只清除继承的覆盖值。
+pub(crate) fn configure_webview_data_dir(path: &Path) {
+    #[cfg(windows)]
+    // SAFETY: Windows 上修改进程环境是线程安全的；仅在创建 WebView2 前调用。
+    unsafe {
+        std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", path);
+    }
+    #[cfg(not(windows))]
+    let _ = path;
+}
+
 /// 修复引导正文（第 3.7 节）。`repairable` 为 false 时不提供“以管理员身份修复”。
 pub(crate) fn guide_text(detail: &str, repairable: bool) -> String {
     if repairable {
@@ -839,6 +851,31 @@ pub fn set_window_bounds(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn webview_data_dir_overrides_inherited_environment() {
+        const CHILD: &str = "PRIMUS_TEST_WEBVIEW_ENV";
+        if std::env::var_os(CHILD).is_some() {
+            let expected = Path::new(r"C:\Primus\data\users\test\webview");
+            configure_webview_data_dir(expected);
+            assert_eq!(
+                std::env::var_os("WEBVIEW2_USER_DATA_FOLDER").unwrap(),
+                expected
+            );
+            return;
+        }
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "platform::tests::webview_data_dir_overrides_inherited_environment",
+            ])
+            .env(CHILD, "1")
+            .env("WEBVIEW2_USER_DATA_FOLDER", r"C:\outside-data\webview")
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
 
     #[test]
     fn guide_text_offers_admin_repair_only_when_repairable() {
