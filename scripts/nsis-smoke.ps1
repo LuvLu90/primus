@@ -48,6 +48,7 @@ Set-StrictMode -Version Latest
 
 $ProductName = '乾元 Primus'
 $RepoRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'install-acl-fixtures.ps1')
 $Exe = (Resolve-Path -LiteralPath $Exe).Path
 $InstallDir = [IO.Path]::GetFullPath($InstallDir.TrimEnd('\'))
 $DataDir = Join-Path $InstallDir 'data'
@@ -212,10 +213,7 @@ if ($LASTEXITCODE -ne 0) { throw '无法准备不可信目录探针' }
 [IO.File]::WriteAllText((Join-Path $untrustedDir 'keep.txt'), 'preserve untrusted data')
 $untrustedSddl = (Get-Acl -LiteralPath $untrustedDir).Sddl
 $null = New-Item -ItemType Directory -Path $openParent, $linkDir
-& icacls.exe $linkDir /setowner '*S-1-5-32-544' | Out-Host
-if ($LASTEXITCODE -ne 0) { throw '无法设置硬链接探针目录所有者' }
-& icacls.exe $linkDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX' | Out-Host
-if ($LASTEXITCODE -ne 0) { throw '无法准备可信硬链接探针目录' }
+Set-TrustedInstallDirectoryAcl $linkDir
 & icacls.exe $openParent /grant '*S-1-5-32-545:(OI)(CI)M' | Out-Host
 if ($LASTEXITCODE -ne 0) { throw "✗ icacls /grant $openParent 退出码 $LASTEXITCODE" }
 [IO.File]::WriteAllText($linkTarget, 'primus hardlink probe')
@@ -240,7 +238,9 @@ try {
   Remove-Item -LiteralPath $linkTarget -Force -ErrorAction SilentlyContinue
 }
 
-# ---- 1. 安装 ----
+# ---- 1. 安装到可信的已有目录（不能把所有已有目录一律拒绝）----
+$null = New-Item -ItemType Directory -Path $InstallDir
+Set-TrustedInstallDirectoryAcl $InstallDir
 Write-Step "静默安装 $Exe → $InstallDir"
 # /D= 必须是最后一个参数且不能加引号（NSIS 约定），路径中的空格原样保留
 $code = Invoke-Nsis $Exe "/S /D=$InstallDir"

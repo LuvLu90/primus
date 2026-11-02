@@ -147,6 +147,10 @@ jobs:
         timeout-minutes: 3
         run: pnpm exec vitest run scripts/install-acl-native.test.ts scripts/install-matrix.test.ts
 
+      - name: 安装 ACL 提权回归（可信夹具与空目录替换）
+        timeout-minutes: 3
+        run: powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/install-acl-elevated.test.ps1
+
       - name: 构建前端（静态导出，供 Tauri 嵌入）
         run: pnpm --filter @primus/desktop build
 
@@ -347,6 +351,10 @@ jobs:
       - name: 安装 ACL 原生回归（继承硬链接与句柄固定）
         timeout-minutes: 3
         run: pnpm exec vitest run scripts/install-acl-native.test.ts scripts/install-matrix.test.ts
+
+      - name: 安装 ACL 提权回归（可信夹具与空目录替换）
+        timeout-minutes: 3
+        run: powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/install-acl-elevated.test.ps1
 
       # 内置运行时按架构下载 win-arm64 的 node.exe（哈希锁定在 scripts/node-runtime.json），并在本机原生运行冒烟
       - name: 构建 Agent Core 并组装 dist/（运行时 win-arm64）

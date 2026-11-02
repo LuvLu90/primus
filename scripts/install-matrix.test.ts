@@ -11,6 +11,15 @@ describe("installation matrix security regressions", () => {
       'throw "gsudo 便携包中没有 $env:GSUDO_ARCH_DIR 版本；安装矩阵需要它以中完整性级别运行"',
     );
     expect(matrix).not.toContain("跳过中完整性级别写入测试");
+    const gsudoStart = matrix.indexOf("      - name: 安装 gsudo");
+    const gsudoRun = matrix.indexOf("        run: |", gsudoStart);
+    expect(gsudoStart).toBeGreaterThanOrEqual(0);
+    expect(gsudoRun).toBeGreaterThan(gsudoStart);
+    expect(matrix.slice(gsudoStart, gsudoRun)).not.toMatch(/^\s+if:/m);
+    expect(matrix).toContain(
+      'Invoke-WebRequest -Uri "https://github.com/gerardog/gsudo/releases/download/v$env:GSUDO_VERSION/gsudo.portable.zip"',
+    );
+    expect(matrix).toContain("$bin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8");
     const script = readFileSync(
       new URL("./install-matrix/matrix-checks.ps1", import.meta.url),
       "utf8",

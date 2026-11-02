@@ -67,6 +67,7 @@ $ProductName = '乾元 Primus'
 $AppUserModelId = 'com.primus.desktop'
 $WebView2Guid = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
 $RepoRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'install-acl-fixtures.ps1')
 $Msi = (Resolve-Path -LiteralPath $Msi).Path
 $InstallDir = [IO.Path]::GetFullPath($InstallDir.TrimEnd('\'))
 $DataDir = Join-Path $InstallDir 'data'
@@ -244,10 +245,8 @@ if ($LASTEXITCODE -ne 0) { throw '无法准备不可信目录探针' }
 [IO.File]::WriteAllText((Join-Path $untrustedDir 'keep.txt'), 'preserve untrusted data')
 $untrustedSddl = (Get-Acl -LiteralPath $untrustedDir).Sddl
 $null = New-Item -ItemType Directory -Path $openParent, $linkDir
-& icacls.exe $linkDir /setowner '*S-1-5-32-544' | Out-Host
-if ($LASTEXITCODE -ne 0) { throw '无法设置硬链接探针目录所有者' }
-& icacls.exe $linkDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX' | Out-Host
-if ($LASTEXITCODE -ne 0) { throw '无法准备可信硬链接探针目录' }
+# 完整替换 DACL，不能残留 ARM64 运行器创建目录时的显式用户授权。
+Set-TrustedInstallDirectoryAcl $linkDir
 & icacls.exe $openParent /grant '*S-1-5-32-545:(OI)(CI)M' | Out-Host
 if ($LASTEXITCODE -ne 0) { throw "✗ icacls /grant $openParent 退出码 $LASTEXITCODE" }
 [IO.File]::WriteAllText($linkTarget, 'primus hardlink probe')
