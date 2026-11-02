@@ -23,5 +23,29 @@ describe("installation matrix security regressions", () => {
     expect(script).toContain("-Environment @{ WEBVIEW2_USER_DATA_FOLDER = $overrideDir }");
     expect(script).toContain("Assert-True ($webviewItems.Count -gt 0)");
     expect(script).toContain("Assert-True (-not (Test-Path -LiteralPath $overrideDir))");
+    expect(script).not.toContain("New-ItemProperty");
+    expect(script).toContain("Get-ItemPropertyValue -LiteralPath $policyKey -Name 'Primus.exe'");
+    const admin = readFileSync(
+      new URL("./install-matrix/matrix-checks.ps1", import.meta.url),
+      "utf8",
+    );
+    expect(admin).toContain("HKLM:\\Software\\Policies\\Microsoft\\Edge\\WebView2\\UserDataFolder");
+    expect(admin).toContain("$existingPolicy.GetValueNames() -contains 'Primus.exe'");
+    expect(admin).toContain(
+      "if ($policyApplied) { Remove-ItemProperty -LiteralPath $policyKey -Name 'Primus.exe' }",
+    );
+  });
+
+  it("uses a new isolated secondary volume without changing the runner's existing disk", () => {
+    const script = readFileSync(
+      new URL("./install-matrix/prepare-location.ps1", import.meta.url),
+      "utf8",
+    );
+    expect(script).toContain("if (Test-Path -LiteralPath $vhd) { throw");
+    expect(script).toContain("-not (Get-PSDrive -Name $_ -ErrorAction SilentlyContinue)");
+    expect(script).toContain('"assign letter=$letter"');
+    expect(script).toContain(`$dir = "\${letter}:\\primus"`);
+    expect(script).not.toContain("icacls");
+    expect(script).not.toContain("if (Test-FixedDrive 'D')");
   });
 });

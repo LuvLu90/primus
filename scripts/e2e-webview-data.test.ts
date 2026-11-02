@@ -27,5 +27,11 @@ describe("E2E WebView2 data directory", () => {
     expect(e2eDataRoot("E:\\primus\\target\\debug\\Primus.exe", "E:\\primus")).toBe(
       "E:\\primus\\.dev-data",
     );
+    expect(
+      e2eDataRoot("E:\\primus\\target\\aarch64-pc-windows-msvc\\debug\\Primus.exe", "E:\\primus"),
+    ).toBe("E:\\primus\\.dev-data");
+    expect(e2eDataRoot("D:\\debug\\Primus\\Primus.exe", "E:\\primus")).toBe(
+      "D:\\debug\\Primus\\data",
+    );
   });
 });

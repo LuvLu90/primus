@@ -55,6 +55,8 @@ $node = Join-Path $InstallDir 'resources\runtime\node.exe'
 $mySid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $StdUser = 'primus-matrix-std'
 $TaskName = 'PrimusMatrixStdUser'
+$policyKey = 'HKLM:\Software\Policies\Microsoft\Edge\WebView2\UserDataFolder'
+$policyApplied = $false
 
 # ---- 1. 准备脚本与 Faux 模型服务 ----
 Write-Step "准备 $Stage 与 Faux 模型服务"
@@ -127,6 +129,14 @@ try {
   $inAdmins = @(Get-LocalGroupMember -SID 'S-1-5-32-544' | Where-Object { $_.SID.Value -eq $stdSid })
   Assert-True ($inAdmins.Count -eq 0) "$StdUser（$stdSid）不在管理员组"
 
+  # Policies 是管理员配置：不要让标准用户测试靠提权或放宽注册表 ACL 才能运行。
+  # 只设置本测试的 Primus.exe 值；已有值时拒绝覆盖，finally 只删除自己创建的值。
+  $existingPolicy = Get-Item -LiteralPath $policyKey -ErrorAction SilentlyContinue
+  if ($existingPolicy -and $existingPolicy.GetValueNames() -contains 'Primus.exe') { throw '已有 Primus.exe WebView2 策略，拒绝覆盖' }
+  if (-not $existingPolicy) { $null = New-Item -Path $policyKey -Force }
+  $null = New-ItemProperty -LiteralPath $policyKey -Name 'Primus.exe' -Value (Join-Path $OutDir 'webview-override-must-not-exist') -PropertyType String
+  $policyApplied = $true
+
   # 计划任务以密码登录需要“作为批处理作业登录”（SeBatchLogonRight），Users 组默认没有
   $inf = Join-Path $env:TEMP 'primus-matrix-secpol.inf'
   $db = Join-Path $env:TEMP 'primus-matrix-secpol.sdb'
@@ -177,6 +187,7 @@ try {
   if (-not $faux.HasExited) { Stop-Process -Id $faux.Id -Force -ErrorAction SilentlyContinue }
   $logs = Join-Path $dataDir 'shared\logs'
   if (Test-Path -LiteralPath $logs) { Copy-Item -LiteralPath $logs -Destination (Join-Path $OutDir 'data-logs') -Recurse -Force -ErrorAction SilentlyContinue }
+  if ($policyApplied) { Remove-ItemProperty -LiteralPath $policyKey -Name 'Primus.exe' }
 }
 
 Write-Host "`n✓ 安装矩阵附加检查通过（$InstallDir）" -ForegroundColor Green

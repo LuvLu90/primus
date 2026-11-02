@@ -428,7 +428,7 @@ jobs:
         timeout-minutes: 15
         run: ./scripts/nsis-smoke.ps1 -Exe $env:PRIMUS_NSIS
 
-  # 安装矩阵（开发计划第 4 周 P0 安装测试）：两个架构 × 两个位置（Program Files、D:\primus），
+  # 安装矩阵（开发计划第 4 周 P0 安装测试）：两个架构 × 两个位置（Program Files、隔离非系统卷，优先 D），
   # 用上面两个作业刚构建的 MSI。每格：静默安装与布局检查（msi-smoke.ps1）→ 附加检查（install-matrix/matrix-checks.ps1：
   # x64 用端到端测试对安装后的 Primus.exe 完成一次含工具调用的对话；新建标准用户启动 App、核对 ACL 与隔离、
   # 用安装后的运行时完成一次 Core 对话；数据都在 <安装目录>\data）→ 静默卸载，data 保留。

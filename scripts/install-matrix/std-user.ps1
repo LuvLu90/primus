@@ -31,8 +31,6 @@ function Assert-True([bool] $Condition, [string] $Message) {
   if (-not $Condition) { throw "✗ $Message" }
   Write-Host "  ✓ $Message"
 }
-$policyKey = 'HKCU:\Software\Policies\Microsoft\Edge\WebView2\UserDataFolder'
-$policyCreated = $false
 
 try {
   $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -50,11 +48,9 @@ try {
   # 故意注入 data 外目录；App 必须覆盖它，而不是让 WebView2 使用继承值。
   $overrideDir = Join-Path $OutDir 'webview-override-must-not-exist'
   Assert-True (-not (Test-Path -LiteralPath $overrideDir)) 'WebView2 覆盖探针目录尚不存在'
-  # 专用临时用户下增加 UserDataFolder 策略，覆盖“只清除环境变量仍会落到注册表指定目录”的情况。
-  Assert-True (-not (Test-Path -LiteralPath $policyKey)) '临时用户没有已有 WebView2 数据目录策略'
-  $null = New-Item -Path $policyKey -Force
-  $policyCreated = $true
-  $null = New-ItemProperty -LiteralPath $policyKey -Name 'Primus.exe' -Value $overrideDir -PropertyType String
+  # 策略由管理员准备，标准用户不能写 Policies。确认策略确实存在，避免空跑覆盖测试。
+  $policyKey = 'HKLM:\Software\Policies\Microsoft\Edge\WebView2\UserDataFolder'
+  Assert-True ((Get-ItemPropertyValue -LiteralPath $policyKey -Name 'Primus.exe') -eq $overrideDir) '管理员已设置 WebView2 数据目录覆盖策略'
   $proc = Start-Process -FilePath $mainExe -WorkingDirectory $InstallDir -PassThru -WindowStyle Hidden -Environment @{ WEBVIEW2_USER_DATA_FOLDER = $overrideDir }
   $deadline = (Get-Date).AddSeconds(60)
   $ready = $false
@@ -124,7 +120,6 @@ try {
   $result.error = $_.Exception.Message
   Write-Host $result.error
 } finally {
-  if ($policyCreated) { Remove-Item -LiteralPath $policyKey -Force }
   $result | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $OutDir 'std-user-result.json') -Encoding utf8
   Stop-Transcript | Out-Null
 }

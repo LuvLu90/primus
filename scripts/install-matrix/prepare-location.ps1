@@ -5,7 +5,7 @@
 
 .DESCRIPTION
   programfiles  默认目录 C:\Program Files\Primus
-  d-drive       D:\primus；没有固定磁盘 D: 时用 diskpart 建一个 4 GB 的动态 VHDX，格式化为 NTFS 并挂到 D:
+  d-drive       新建 4 GB 动态 VHDX（NTFS）；优先 D:，已有 D: 时使用其他空闲盘符，绝不修改现有卷
   输出安装目录；在 GitHub Actions 中同时写入 PRIMUS_MATRIX_DIR。需要管理员权限（d-drive 建盘时）。
 #>
 [CmdletBinding()]
@@ -24,28 +24,30 @@ function Test-FixedDrive([string] $Letter) {
 switch ($Location) {
   'programfiles' { $dir = Join-Path $env:ProgramFiles 'Primus' }
   'd-drive' {
-    if (Test-FixedDrive 'D') {
-      Write-Host '· 已有固定磁盘 D:（NTFS）'
-    } else {
-      if (Get-PSDrive -Name D -ErrorAction SilentlyContinue) { throw "D: 已被占用但不是 NTFS 固定磁盘，无法用于测试" }
-      $vhd = 'C:\primus-matrix-d.vhdx'
-      $script = Join-Path $env:TEMP 'primus-matrix-diskpart.txt'
-      @(
-        "create vdisk file=`"$vhd`" maximum=4096 type=expandable",
-        "select vdisk file=`"$vhd`"",
-        'attach vdisk',
-        'create partition primary',
-        'format fs=ntfs quick label=PrimusD',
-        'assign letter=D'
-      ) | Set-Content -LiteralPath $script -Encoding ascii
-      & diskpart.exe /s $script | ForEach-Object { Write-Host "  $_" }
-      if ($LASTEXITCODE -ne 0) { throw "diskpart 退出码 $LASTEXITCODE" }
-      $deadline = (Get-Date).AddSeconds(30)
-      while (-not (Test-FixedDrive 'D') -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
-      if (-not (Test-FixedDrive 'D')) { throw '挂载的 VHDX 未出现为 NTFS 固定磁盘 D:' }
-      Write-Host "· 已建 D:（$vhd）"
-    }
-    $dir = 'D:\primus'
+    # 托管运行器的现有 D: 可归 NETWORK SERVICE 所有且承载 checkout，不能改变其所有者/ACL。
+    # 只格式化自己新建的 VHDX；盘符占用时换空闲字母，安装器的祖先安全检查保持不变。
+    $letter = @('D','E','F','G','H','I','J','K','L','M','N','O','P','Q','R','S','T','U','V','W','X','Y','Z') |
+      Where-Object { -not (Get-PSDrive -Name $_ -ErrorAction SilentlyContinue) -and -not (Get-Volume -DriveLetter $_ -ErrorAction SilentlyContinue) } |
+      Select-Object -First 1
+    if (-not $letter) { throw '没有可用盘符，无法创建隔离的安装测试卷' }
+    $vhd = 'C:\primus-matrix-d.vhdx'
+    if (Test-Path -LiteralPath $vhd) { throw "测试 VHDX 已存在，拒绝覆盖：$vhd" }
+    $script = Join-Path $env:TEMP 'primus-matrix-diskpart.txt'
+    @(
+      "create vdisk file=`"$vhd`" maximum=4096 type=expandable",
+      "select vdisk file=`"$vhd`"",
+      'attach vdisk',
+      'create partition primary',
+      'format fs=ntfs quick label=PrimusD',
+      "assign letter=$letter"
+    ) | Set-Content -LiteralPath $script -Encoding ascii
+    & diskpart.exe /s $script | ForEach-Object { Write-Host "  $_" }
+    if ($LASTEXITCODE -ne 0) { throw "diskpart 退出码 $LASTEXITCODE" }
+    $deadline = (Get-Date).AddSeconds(30)
+    while (-not (Test-FixedDrive $letter) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
+    if (-not (Test-FixedDrive $letter)) { throw "挂载的 VHDX 未出现为 NTFS 固定磁盘 ${letter}:" }
+    Write-Host "· 已建隔离测试卷 ${letter}:（$vhd）"
+    $dir = "${letter}:\primus"
   }
 }
 

@@ -9,7 +9,8 @@ export function sidFromWhoami(output: string): string {
 
 /** E2E 显式传 --data-dir：debug 用仓库 .dev-data，其余用被测程序同目录 data。 */
 export function e2eDataRoot(application: string, repo: string): string {
-  return application.split(/[\\/]/).some((part) => part.toLowerCase() === "debug")
+  const normalized = application.replaceAll("/", "\\");
+  return /\\target\\(?:[^\\]+\\)?debug\\[^\\]+\.exe$/i.test(normalized)
     ? win32.join(repo, ".dev-data")
     : win32.join(win32.dirname(application), "data");
 }

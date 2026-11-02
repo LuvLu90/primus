@@ -7,6 +7,7 @@ import { createConnection } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { terminateStartedProcess } from "./process-lifecycle.ts";
 import { e2eAppArgs, e2eDataRoot, sidFromWhoami } from "./webview-data.ts";
 
 declare global {
@@ -62,16 +63,13 @@ async function prepareAppData(): Promise<void> {
       await new Promise((r) => setTimeout(r, 100));
     }
   } finally {
-    if (child.pid && child.exitCode === null) {
-      execFileSync("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], {
+    await terminateStartedProcess(child, (pid) => {
+      execFileSync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], {
         windowsHide: true,
         stdio: "ignore",
+        timeout: 10_000,
       });
-      await new Promise<void>((done) => {
-        if (child.exitCode !== null) done();
-        else child.once("exit", () => done());
-      });
-    }
+    });
   }
 }
 
