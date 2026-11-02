@@ -36,14 +36,43 @@ export interface SessionHandle {
 
 export type BatchListener = (batch: CoreBatch) => void;
 
-export interface ProviderConfig {
+/** 账号信息（第 9.7 节）。`builtin` 为内置测试账号（临时方案），接入账号服务后为 `service` */
+export interface AccountInfo {
   id: string;
-  /** 两协议：Anthropic Messages / OpenAI 兼容 */
-  protocol: "anthropic" | "openai";
-  baseUrl: string;
-  name?: string;
-  /** 只在保存时传入，薄壳写入 Vault 后不再回传 */
-  apiKey?: string;
+  name: string;
+  kind: "builtin" | "service";
+}
+
+/** `auth_status` 的返回值 */
+export interface AuthStatus {
+  loggedIn: boolean;
+  account: AccountInfo | null;
+  /** 是否可以发起登录 / 登出；内置账号阶段为 false */
+  loginAvailable: boolean;
+}
+
+/** 可选模型（第 9.5 节下拉框显示的字段）；`key` 为 `provider/modelId` */
+export interface ModelSummary {
+  key: string;
+  provider: string;
+  id: string;
+  name: string;
+  api: "openai-responses" | "anthropic-messages";
+  reasoning: boolean;
+  image: boolean;
+  contextWindow: number;
+  maxTokens: number;
+}
+
+/** `models_get` / `models_refresh` / `models_set_default` 的返回值 */
+export interface ModelsInfo {
+  version: number | null;
+  models: ModelSummary[];
+  defaultModel: string | null;
+  compactionModel: string | null;
+  titleModel: string | null;
+  /** 模型配置未能生效的原因；null 表示可以对话 */
+  error: string | null;
 }
 
 export interface FsEntry {
@@ -85,9 +114,17 @@ export interface Platform {
   settingsGet(): Promise<Record<string, unknown>>;
   settingsSet(patch: Record<string, unknown>): Promise<void>;
 
-  providerSave(config: ProviderConfig): Promise<void>;
-  providerDelete(id: string): Promise<void>;
-  providerTest(config: ProviderConfig): Promise<{ ok: boolean; message?: string }>;
+  /** 账号状态；内置账号阶段恒为已登录 */
+  authStatus(): Promise<AuthStatus>;
+  /** 系统浏览器登录；内置账号阶段以 code `notAvailable` 拒绝 */
+  authLogin(): Promise<AuthStatus>;
+  /** 登出；内置账号阶段以 code `notAvailable` 拒绝 */
+  authLogout(): Promise<void>;
+  modelsGet(): Promise<ModelsInfo>;
+  /** 重新获取并写入模型配置 */
+  modelsRefresh(): Promise<ModelsInfo>;
+  /** 改选默认模型（`provider/modelId`），新会话生效 */
+  modelsSetDefault(model: string): Promise<ModelsInfo>;
 
   shellDetect(): Promise<unknown>;
   fsTree(workspace: string, path: string): Promise<FsEntry[]>;
@@ -108,6 +145,9 @@ export interface Platform {
   updateInstall(): Promise<void>;
   logWrite(level: LogLevel, message: string): Promise<void>;
 }
+
+/** 账号命令错误码：功能尚未开放（内置账号阶段的登录 / 登出） */
+export const AUTH_NOT_AVAILABLE = "notAvailable";
 
 /** 会话命令错误码：会话的内核未运行（重启失败、因进程上限被淘汰或已自行退出），需重启内核 */
 export const CORE_NOT_RUNNING = "coreNotRunning";
@@ -149,9 +189,12 @@ export const COMMANDS = {
   coreRestart: "core_restart",
   settingsGet: "settings_get",
   settingsSet: "settings_set",
-  providerSave: "provider_save",
-  providerDelete: "provider_delete",
-  providerTest: "provider_test",
+  authStatus: "auth_status",
+  authLogin: "auth_login",
+  authLogout: "auth_logout",
+  modelsGet: "models_get",
+  modelsRefresh: "models_refresh",
+  modelsSetDefault: "models_set_default",
   shellDetect: "shell_detect",
   fsTree: "fs_tree",
   fsRead: "fs_read",

@@ -3,6 +3,8 @@
 use tauri::State;
 use tauri::ipc::Channel;
 
+use crate::account::{AuthError, AuthStatus};
+use crate::core_config::{ModelConfigState, ModelsInfo};
 use crate::paths::DataPaths;
 use crate::rpc_bridge::{BridgeError, CoreBatch};
 use crate::sessions::{AppSessions, SessionError};
@@ -109,6 +111,45 @@ pub(crate) fn core_restart(
     sessions
         .restart(&supervisor, &session_key)
         .map_err(Into::into)
+}
+
+/// 账号状态（第 9.7 节）。内置账号阶段恒为已登录。
+#[tauri::command]
+pub(crate) fn auth_status() -> AuthStatus {
+    crate::account::status()
+}
+
+/// 系统浏览器登录（PKCE）。内置账号阶段返回 `notAvailable`。
+#[tauri::command]
+pub(crate) fn auth_login() -> Result<AuthStatus, AuthError> {
+    crate::account::login()
+}
+
+/// 登出。内置账号阶段返回 `notAvailable`。
+#[tauri::command]
+pub(crate) fn auth_logout() -> Result<(), AuthError> {
+    crate::account::logout()
+}
+
+/// 可用模型列表、默认值与配置状态（第 9.2、9.5 节）。
+#[tauri::command]
+pub(crate) fn models_get(models: State<'_, ModelConfigState>) -> ModelsInfo {
+    models.info()
+}
+
+/// 重新获取并写入模型配置；内置阶段为按内置配置重写 `models.json` 与保险库中的令牌。
+#[tauri::command(async)]
+pub(crate) fn models_refresh(models: State<'_, ModelConfigState>) -> ModelsInfo {
+    models.refresh()
+}
+
+/// 设置页改选默认模型（`provider/modelId`，只能选列表中的模型；新拉起的 Core 进程生效）。
+#[tauri::command]
+pub(crate) fn models_set_default(
+    models: State<'_, ModelConfigState>,
+    model: String,
+) -> Result<ModelsInfo, String> {
+    models.set_default(&model)
 }
 
 #[cfg(test)]

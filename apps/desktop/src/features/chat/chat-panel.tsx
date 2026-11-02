@@ -31,7 +31,7 @@ import {
 } from "@/components/ui/glass-popover";
 import { GlassSurface } from "@/components/ui/glass-surface";
 import { getPlatform, isTauriRuntime } from "@/lib/platform";
-import type { WorkspaceInfo } from "@/lib/platform/types";
+import type { ModelsInfo, WorkspaceInfo } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
@@ -326,9 +326,39 @@ function useElementHeight<T extends HTMLElement>() {
   return [ref, height] as const;
 }
 
+/**
+ * 模型配置是否可用于对话（首次引导与第 9.8 节）：没有任何已生效的模型配置时不能发送，
+ * 输入框上方提示并提供“重试”（调用 `models_refresh`）。读取失败（如浏览器预览缺少该接口）时不拦截。
+ */
+function useModelConfigGate() {
+  const [info, setInfo] = useState<ModelsInfo | null>(null);
+  const [retrying, setRetrying] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    getPlatform()
+      .then((p) => p.modelsGet())
+      .then((i) => !cancelled && setInfo(i))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const unavailable = info !== null && info.error !== null && info.models.length === 0;
+  const retry = () => {
+    setRetrying(true);
+    getPlatform()
+      .then((p) => p.modelsRefresh())
+      .then(setInfo)
+      .catch(() => {})
+      .finally(() => setRetrying(false));
+  };
+  return { unavailable, reason: info?.error ?? null, retrying, retry };
+}
+
 export function ChatPanel() {
   const { state, error, unresponsive, coreStopped, send, abort, restarting, restart } =
     useChatSession();
+  const modelConfig = useModelConfigGate();
   const [draft, setDraft] = useState("");
   const [preview, setPreview] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -398,6 +428,7 @@ export function ChatPanel() {
       (!text && attachments.length === 0) ||
       state.running ||
       unresponsive ||
+      modelConfig.unavailable ||
       submittingRef.current
     )
       return;
@@ -513,6 +544,25 @@ export function ChatPanel() {
             current={workspace}
             onPicked={setWorkspace}
           />
+          {modelConfig.unavailable && (
+            <div
+              role="alert"
+              className="mb-2 flex items-center gap-3 rounded-xl bg-surface px-3 py-2 text-xs ring-1 ring-danger/40"
+            >
+              <div className="flex-1">
+                <p className="text-danger">{t.modelConfigUnavailable}</p>
+                {modelConfig.reason && <p className="text-muted">{modelConfig.reason}</p>}
+              </div>
+              <button
+                type="button"
+                onClick={modelConfig.retry}
+                disabled={modelConfig.retrying}
+                className="rounded-full bg-hover px-3 py-1 font-medium disabled:opacity-50"
+              >
+                {t.retryModelConfig}
+              </button>
+            </div>
+          )}
           {/* 中央已是玻璃，输入框保持实色白底（深色为实色面），保证输入区清晰 */}
           <div className="relative rounded-[24px] bg-surface shadow-[0_12px_40px_-12px_rgb(0_0_0/0.35)] ring-1 ring-border transition-shadow focus-within:shadow-[0_14px_44px_-12px_rgb(0_0_0/0.4)]">
             <form onSubmit={submit} className="flex flex-col gap-2 px-3.5 pt-3.5 pb-3">
@@ -642,7 +692,10 @@ export function ChatPanel() {
                     type="submit"
                     aria-label={t.send}
                     disabled={
-                      submitting || unresponsive || (!draft.trim() && attachments.length === 0)
+                      submitting ||
+                      unresponsive ||
+                      modelConfig.unavailable ||
+                      (!draft.trim() && attachments.length === 0)
                     }
                     className="grid size-8 place-items-center rounded-full bg-fg text-surface transition-[opacity,transform] active:scale-95 disabled:opacity-20 disabled:active:scale-100"
                   >

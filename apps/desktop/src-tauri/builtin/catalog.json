@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "providers": {
+    "primus-messages": {
+      "name": "乾元 · Anthropic Messages",
+      "baseUrl": "https://34.4.106.122:8318",
+      "api": "anthropic-messages",
+      "models": [
+        {
+          "id": "claude-opus-5-5-high",
+          "name": "Claude Opus 5.5（High）",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 1000000,
+          "maxTokens": 128000,
+          "thinkingLevelMap": {
+            "off": null,
+            "xhigh": "xhigh",
+            "max": "max"
+          },
+          "compat": {
+            "forceAdaptiveThinking": true,
+            "supportsTemperature": false
+          }
+        },
+        {
+          "id": "claude-sonnet-5-5-high",
+          "name": "Claude Sonnet 5.5（High）",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 1000000,
+          "maxTokens": 128000,
+          "thinkingLevelMap": {
+            "xhigh": "xhigh",
+            "max": "max"
+          },
+          "compat": {
+            "forceAdaptiveThinking": true,
+            "supportsTemperature": false
+          }
+        }
+      ]
+    },
+    "primus-responses": {
+      "name": "乾元 · OpenAI Responses",
+      "baseUrl": "https://34.4.106.122:8318/v1",
+      "api": "openai-responses",
+      "models": [
+        {
+          "id": "gemini-4-argon-high",
+          "name": "Gemini 4 Argon（High）",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 1048576,
+          "maxTokens": 65536
+        },
+        {
+          "id": "gemini-3.5-flash-lite",
+          "name": "Gemini 3.5 Flash-Lite",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 1048576,
+          "maxTokens": 65536
+        }
+      ]
+    }
+  },
+  "defaults": {
+    "model": "primus-messages/claude-opus-5-5-high",
+    "compactionModel": "primus-responses/gemini-3.5-flash-lite",
+    "titleModel": "primus-responses/gemini-3.5-flash-lite"
+  }
+}
