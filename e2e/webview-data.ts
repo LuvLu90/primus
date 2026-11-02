@@ -13,3 +13,8 @@ export function e2eDataRoot(application: string, repo: string): string {
     ? win32.join(repo, ".dev-data")
     : win32.join(win32.dirname(application), "data");
 }
+
+/** EdgeDriver 会把 args 重写为开关，值必须与名称放在同一个 name=value 参数中。 */
+export function e2eAppArgs(dataRoot: string): string[] {
+  return [`--data-dir=${dataRoot}`];
+}

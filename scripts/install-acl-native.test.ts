@@ -27,17 +27,19 @@ it.skipIf(process.platform !== "win32")(
         ],
         {
           encoding: "utf8",
-          timeout: 30000,
+          // Keep ARM64 startup diagnostics bounded; a timeout is a failure, never a skipped test.
+          timeout: 120_000,
           env: Object.fromEntries(
             Object.entries(process.env).filter(([key]) => key.toUpperCase() !== "PSMODULEPATH"),
           ),
         },
       );
+      expect(result.error, `${result.stdout}\n${result.stderr}`).toBeUndefined();
       expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
       expect(result.stdout).toContain("native freeze does not propagate");
     } finally {
       rmSync(scratch, { recursive: true, force: true });
     }
   },
-  40000,
+  130_000,
 );

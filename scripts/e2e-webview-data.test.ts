@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { e2eDataRoot, sidFromWhoami } from "../e2e/webview-data";
+import { e2eAppArgs, e2eDataRoot, sidFromWhoami } from "../e2e/webview-data";
 
 describe("E2E WebView2 data directory", () => {
+  it("keeps the data directory in a single EdgeDriver name=value argument", () => {
+    expect(e2eAppArgs("C:\\Program Files\\Primus\\data")).toEqual([
+      "--data-dir=C:\\Program Files\\Primus\\data",
+    ]);
+  });
   it.each(["S-1-5-21-123-456-789-1001", "S-1-12-1-123-456-789-1001", "S-1-5-18"])(
     "accepts %s",
     (sid) => {

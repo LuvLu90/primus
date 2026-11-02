@@ -1,10 +1,12 @@
 param([Parameter(Mandatory)][string] $Scratch)
 $ErrorActionPreference = 'Stop'
+Write-Output 'native ACL regression: PowerShell started'
 # Test the exact embedded P/Invoke helper without running the elevated installer entry point.
 $source = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../apps/desktop/src-tauri/windows/install-acl.ps1') -Raw
 $native = [regex]::Match($source, "(?s)Add-Type -TypeDefinition '(.+?)'\r?\n")
 if (-not $native.Success) { throw 'native helper missing' }
 Add-Type -TypeDefinition $native.Groups[1].Value
+Write-Output 'native ACL regression: helper compiled'
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 & icacls.exe $Scratch /grant "*${sid}:(OI)(CI)F" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'scratch permissions could not be prepared' }
@@ -17,6 +19,7 @@ $null = New-Item -ItemType HardLink -Path $link -Target $target
 $before = (Get-Acl -LiteralPath $target).Sddl
 if ((Get-Acl -LiteralPath $target).AreAccessRulesProtected) { throw 'target must inherit' }
 $handle = [PrimusInstallHandle]::Open($root)
+Write-Output 'native ACL regression: probe handles ready'
 try {
   # Non-admin test: retain the current user's full control so the scratch directory is removable.
   $sd = New-Object Security.AccessControl.RawSecurityDescriptor("O:${sid}D:PAI(A;OICI;FA;;;$sid)(A;OICI;FR;;;BU)")

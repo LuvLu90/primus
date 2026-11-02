@@ -7,7 +7,7 @@ import { createConnection } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { e2eDataRoot, sidFromWhoami } from "./webview-data.ts";
+import { e2eAppArgs, e2eDataRoot, sidFromWhoami } from "./webview-data.ts";
 
 declare global {
   namespace WebdriverIO {
@@ -31,7 +31,7 @@ const application = resolve(
   process.env.PRIMUS_E2E_APP ?? join(here, "../apps/desktop/src-tauri/target/release/Primus.exe"),
 );
 const dataRoot = e2eDataRoot(application, resolve(here, ".."));
-const appArgs = ["--data-dir", dataRoot];
+const appArgs = e2eAppArgs(dataRoot);
 
 // release 应用固定使用此目录；让驱动在同一目录查找 DevToolsActivePort，不能依赖其 scoped_dir 覆盖。
 // 覆盖被拒绝的行为由安装矩阵中的标准用户启动检查覆盖。
