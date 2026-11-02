@@ -29,9 +29,17 @@ try {
   if ($rootAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid) { throw 'directory owner was not set' }
   if (-not $rootAcl.AreAccessRulesProtected) { throw 'directory DACL is not protected' }
   $actualDacl = $rootAcl.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access)
-  # Kernel API does not set the auto-inherited bookkeeping flag; Get-Acl may canonicalize equal allow ACEs.
-  $aces = @([regex]::Matches($actualDacl, '\([^)]+\)') | ForEach-Object Value | Sort-Object)
-  $expectedAces = @("(A;OICI;FA;;;$sid)", '(A;OICI;FR;;;BU)' | Sort-Object)
+  # Compare binary ACEs: SDDL can render the runner's RID-500 SID as LA, and reorder allow ACEs.
+  function Get-AceSet($Acl) {
+    @($Acl | ForEach-Object {
+      $aceBytes = New-Object byte[] $_.BinaryLength
+      $_.GetBinaryForm($aceBytes, 0)
+      [Convert]::ToBase64String($aceBytes)
+    } | Sort-Object)
+  }
+  $actualSd = [Security.AccessControl.RawSecurityDescriptor]::new($rootAcl.GetSecurityDescriptorBinaryForm(), 0)
+  $aces = Get-AceSet $actualSd.DiscretionaryAcl
+  $expectedAces = Get-AceSet $sd.DiscretionaryAcl
   if (($aces -join '') -ne ($expectedAces -join '')) { throw "directory DACL does not match requested ACEs: $actualDacl" }
   if ((Get-Acl -LiteralPath $target).Sddl -ne $before) { throw 'directory freeze propagated to external hard link' }
   $renamed = $false
