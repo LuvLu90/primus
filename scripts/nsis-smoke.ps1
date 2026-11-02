@@ -78,6 +78,7 @@ function Get-UninstallEntry {
 
 # 运行 NSIS 程序并等待结束；返回退出码
 function Invoke-Nsis([string] $FilePath, [string] $ArgumentLine) {
+  $script:LastInstallAclOutput = ''
   Write-Host "  $FilePath $ArgumentLine"
   # 限时等待，避免步骤无限挂起
   $diagnosticDir = Join-Path $RepoRoot '.dev-data\nsis-smoke'
@@ -90,7 +91,8 @@ function Invoke-Nsis([string] $FilePath, [string] $ArgumentLine) {
     throw "✗ $FilePath 超过 300 秒未结束"
   }
   if ((Get-Item -LiteralPath $diagnosticFile).Length -gt 0) {
-    [Text.Encoding]::Unicode.GetString([IO.File]::ReadAllBytes($diagnosticFile)) | Write-Host
+    $script:LastInstallAclOutput = [Text.Encoding]::Unicode.GetString([IO.File]::ReadAllBytes($diagnosticFile))
+    $script:LastInstallAclOutput | Write-Host
   }
   return $process.ExitCode
 }
@@ -184,6 +186,7 @@ try {
       @{ Name = '上级目录是联接'; Dir = (Join-Path $probeLink 'Primus') })) {
     $code = Invoke-Nsis $Exe "/S /D=$($case.Dir)"
     Assert-True ($code -eq 2) "$($case.Name)：安装程序以钩子中止码 2 退出（实际退出码 $code）"
+    Assert-True ($script:LastInstallAclOutput.Contains('primus-install-acl: error: install dir or one of its parents is a junction or symbolic link')) "$($case.Name)：确由重解析点检查拒绝"
     # Tauri 的模板在钩子之前 SetOutPath，可能经联接建出空目录；不得有文件写入、目标 ACL 不变
     Assert-True ((Get-Acl -LiteralPath $probeTarget).Sddl -eq $targetSddl) "$($case.Name)：联接目标的 ACL 未被改动"
     Assert-True (@(Get-ChildItem -LiteralPath $probeTarget -Recurse -File -Force).Count -eq 0) "$($case.Name)：联接目标中没有写入文件"
@@ -220,11 +223,12 @@ $null = New-Item -ItemType HardLink -Path (Join-Path $linkDir 'Primus.exe') -Tar
 $linkSddl = (Get-Acl -LiteralPath $linkTarget).Sddl
 try {
   foreach ($case in @(
-      @{ Name = '上级目录普通用户可改名'; Dir = (Join-Path $openParent 'Primus') },
-      @{ Name = '非空普通用户可写目录'; Dir = $untrustedDir },
-      @{ Name = '预先存在的 Primus.exe 有多个硬链接'; Dir = $linkDir })) {
+      @{ Name = '上级目录普通用户可改名'; Dir = (Join-Path $openParent 'Primus'); Refusal = 'parent directory can be renamed or changed by' },
+      @{ Name = '非空普通用户可写目录'; Dir = $untrustedDir; Refusal = 'existing program item is not trusted' },
+      @{ Name = '预先存在的 Primus.exe 有多个硬链接'; Dir = $linkDir; Refusal = 'program file has more than one hard link' })) {
     $code = Invoke-Nsis $Exe "/S /D=$($case.Dir)"
     Assert-True ($code -eq 2) "$($case.Name)：安装程序以钩子中止码 2 退出（实际退出码 $code）"
+    Assert-True ($script:LastInstallAclOutput.Contains("primus-install-acl: error: $($case.Refusal)")) "$($case.Name)：确由预期的 ACL 检查拒绝"
     Assert-True ($null -eq (Get-UninstallEntry)) "$($case.Name)：未留下安装记录"
   }
   Assert-True ((Get-Acl -LiteralPath $linkTarget).Sddl -eq $linkSddl) '硬链接目标的所有者与 ACL 未被改动'

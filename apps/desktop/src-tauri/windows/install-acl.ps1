@@ -58,7 +58,8 @@ $script:held = New-Object 'System.Collections.Generic.List[System.IDisposable]'
 # SetKernelObjectSecurity 不进行 SetNamedSecurityInfo / icacls 的自动继承传播。
 # 用 OPEN_REPARSE_POINT 打开、拒绝共享数据写入与删除；这不是 ACL 锁，不阻止已有 WRITE_DAC 句柄。
 # C# 普通多行字符串（不能改为 here-string，MSI 构建会去掉整行注释与空行）。
-Add-Type -TypeDefinition 'using System;
+# NSIS 插件目录含原生 System.dll；绝不能让 C# 编译器按相对名称解析框架程序集。
+Add-Type -ReferencedAssemblies ([System.ComponentModel.Win32Exception].Assembly.Location) -TypeDefinition 'using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;

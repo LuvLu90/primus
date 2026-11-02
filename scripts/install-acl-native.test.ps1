@@ -3,9 +3,24 @@ $ErrorActionPreference = 'Stop'
 Write-Output 'native ACL regression: PowerShell started'
 # Test the exact embedded P/Invoke helper without running the elevated installer entry point.
 $source = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../apps/desktop/src-tauri/windows/install-acl.ps1') -Raw
-$native = [regex]::Match($source, "(?s)Add-Type -TypeDefinition '(.+?)'\r?\n")
-if (-not $native.Success) { throw 'native helper missing' }
-Add-Type -TypeDefinition $native.Groups[1].Value
+$parseTokens = $null; $parseErrors = $null
+$sourceAst = [Management.Automation.Language.Parser]::ParseInput($source, [ref]$parseTokens, [ref]$parseErrors)
+$native = $sourceAst.Find({ param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Add-Type' }, $true)
+if (-not $native) { throw 'native helper missing' }
+# NSIS has a native System.dll in its plugin working directory. Compile the exact production command
+# there so a relative .NET framework reference cannot accidentally pick up that plugin.
+$pluginDir = Join-Path $Scratch 'plugins'
+$null = New-Item -ItemType Directory -Path $pluginDir
+Copy-Item -LiteralPath (Join-Path ([Environment]::SystemDirectory) 'version.dll') -Destination (Join-Path $pluginDir 'System.dll')
+$previousDirectory = [Environment]::CurrentDirectory
+Push-Location $pluginDir
+try {
+  [Environment]::CurrentDirectory = $pluginDir
+  . ([ScriptBlock]::Create($native.Extent.Text))
+} finally {
+  [Environment]::CurrentDirectory = $previousDirectory
+  Pop-Location
+}
 Write-Output 'native ACL regression: helper compiled'
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 & icacls.exe $Scratch /grant "*${sid}:(OI)(CI)F" | Out-Null

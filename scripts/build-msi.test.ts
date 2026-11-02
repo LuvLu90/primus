@@ -215,6 +215,9 @@ describe("build-msi", () => {
       freeze.indexOf("SetKernelObjectSecurity"),
     );
     expect(code).toContain("CreateFile(p, 0xE0081, 1, IntPtr.Zero, 3, 0x02200000");
+    expect(code).toContain(
+      "Add-Type -ReferencedAssemblies ([System.ComponentModel.Win32Exception].Assembly.Location)",
+    );
     expect(body("Hold-Item")).toContain("Test-Locked $Path ([IO.Directory]::Exists($Path)) $true");
     expect(body("Hold-Item")).toContain("existing program item is not trusted");
     const prepare = body("Prepare-InstallDirectory");

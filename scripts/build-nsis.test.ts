@@ -168,6 +168,13 @@ describe("build-nsis", () => {
     ];
     expect(refusals).toHaveLength(2); // 联接与上级/硬链接两组，各包含两个实际用例
     for (const refusal of refusals) expect(refusal[1]).toBe("$code -eq 2");
+    expect(smoke).toContain("$script:LastInstallAclOutput = ''");
+    expect(smoke).toContain(
+      "$script:LastInstallAclOutput.Contains('primus-install-acl: error: install dir or one of its parents is a junction or symbolic link')",
+    );
+    expect(smoke).toContain(
+      '$script:LastInstallAclOutput.Contains("primus-install-acl: error: $($case.Refusal)")',
+    );
     const hooks = readFileSync(tauriFile("windows/nsis/hooks.nsh"), "utf8");
     expect(hooks).toMatch(/!macro NSIS_HOOK_PREINSTALL[\s\S]*?SetErrorLevel 2\s+Abort/);
   });
