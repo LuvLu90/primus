@@ -79,6 +79,8 @@ export const strings = {
     coreStopped: "内核已停止运行",
     coreStoppedHint: "重启内核后可继续对话：已完成的消息会保留。",
     restartCore: "重启内核",
+    modelConfigUnavailable: "模型配置未能获取，请检查网络后重试",
+    retryModelConfig: "重试",
     resyncFailed: "重建会话状态失败",
     responseTimeout: "内核超过 10 秒没有回应",
     sessionNotOpen: "会话未打开",
@@ -175,6 +177,7 @@ export const strings = {
       loading: "正在读取模型列表…",
       loadFailed: "读取模型列表失败",
       saveFailed: "保存默认模型失败",
+      refreshFailed: "刷新模型配置失败",
     },
     groupItems: {
       models: "默认思考强度、子 Agent 模型",

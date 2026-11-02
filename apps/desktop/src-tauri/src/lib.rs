@@ -41,11 +41,10 @@ pub fn run() {
     };
     platform::configure_webview_data_dir(&data_paths.webview_dir());
 
-    // 模型配置：校验内置配置（将来为账号服务下发），令牌写入保险库，生成 Core 的 models.json 与默认模型。
-    // 失败不阻止启动：设置页与输入框据 models_get 的 error 提示，并可用 models_refresh 重试
+    // 模型配置状态；写入（refresh）放到 setup 中，等单实例插件放行本进程之后再做，
+    // 避免被转发后退出的第二个实例改写主实例正在使用的保险库与 models.json
     let model_config =
         core_config::ModelConfigState::new(data_paths.core_dir(), data_paths.vault_dir());
-    model_config.refresh();
 
     // Core 进程监管：所有 Core 进程放进同一个 Job Object，主进程被强杀时由系统统一回收（第 2.2 节）
     let supervisor = paths::exe_dir()
@@ -81,6 +80,10 @@ pub fn run() {
         .setup({
             let webview_dir = data_paths.webview_dir();
             move |app| {
+                // 模型配置：校验内置配置（将来为账号服务下发），令牌写入保险库，生成 Core 的 models.json 与默认模型。
+                // 插件（含单实例）在 setup 之前初始化，到这里已确认是主实例。
+                // 失败不阻止启动：设置页与输入框据 models_get 的 error 提示，并可用 models_refresh 重试
+                app.state::<core_config::ModelConfigState>().refresh();
                 let config = app
                     .config()
                     .app

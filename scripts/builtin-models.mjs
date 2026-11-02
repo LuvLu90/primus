@@ -28,6 +28,7 @@ export function smokeModelsConfig(catalog) {
   for (const [pid, provider] of Object.entries(catalog.providers ?? {})) {
     for (const model of provider.models ?? []) {
       const id = `${pid}--${model.id}`.replace(/[^A-Za-z0-9_-]/g, "-");
+      if (Object.hasOwn(providers, id)) throw new Error(`内置模型展开的供应商 ID 重复：${id}`);
       providers[id] = {
         name: `${provider.name ?? pid} · ${model.name ?? model.id}`,
         baseUrl: model.baseUrl ?? provider.baseUrl,

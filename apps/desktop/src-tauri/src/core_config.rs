@@ -81,6 +81,13 @@ impl ClientConfig {
         let root: Value =
             serde_json::from_str(text).map_err(|e| bad(format!("JSON 解析失败：{e}")))?;
         let root = root.as_object().ok_or_else(|| bad("顶层必须是对象"))?;
+        // 先查整份配置的任意层级：下发配置中不得出现令牌（供应商与模型层另有更具体的报错）
+        if root
+            .iter()
+            .any(|(k, v)| k != "providers" && (k == "apiKey" || value_has_api_key(v)))
+        {
+            return Err(bad("配置含 apiKey，配置中不得出现令牌"));
+        }
         let version = root
             .get("version")
             .and_then(Value::as_u64)
@@ -99,7 +106,7 @@ impl ClientConfig {
             let provider = provider
                 .as_object()
                 .ok_or_else(|| bad(format!("{pid} 必须是对象")))?;
-            if provider.contains_key("apiKey") {
+            if has_api_key(provider) {
                 return Err(bad(format!("{pid} 含 apiKey，配置中不得出现令牌")));
             }
             let base_url = provider
@@ -126,7 +133,7 @@ impl ClientConfig {
                 let id = name(model, "id")
                     .filter(|id| !id.is_empty() && !id.contains(['/', '\0']))
                     .ok_or_else(|| bad(format!("{pid} 有模型缺少有效 id")))?;
-                if model.contains_key("apiKey") {
+                if has_api_key(model) {
                     return Err(bad(format!("{pid}/{id} 含 apiKey")));
                 }
                 let api = match model.get("api") {
@@ -255,6 +262,19 @@ fn check_https(owner: &str, url: &str) -> Result<(), InvalidConfig> {
         return Err(bad(format!("{owner} 的 baseUrl 必须是 HTTPS 地址")));
     }
     Ok(())
+}
+
+/// 任意层级（嵌套对象与数组）是否含 `apiKey` 键：下发配置的任何位置都不得出现令牌。
+fn has_api_key(map: &Map<String, Value>) -> bool {
+    map.contains_key("apiKey") || map.values().any(value_has_api_key)
+}
+
+fn value_has_api_key(value: &Value) -> bool {
+    match value {
+        Value::Object(map) => has_api_key(map),
+        Value::Array(items) => items.iter().any(value_has_api_key),
+        _ => false,
+    }
 }
 
 /// `models.json` 中的取令牌命令：`!"<Primus.exe>" --secret model-token`。
@@ -393,6 +413,8 @@ impl ModelConfigState {
 
     /// 解析并应用内置配置（启动时与 `models_refresh` 调用）。失败时记录原因，不影响 App 启动。
     pub(crate) fn refresh(&self) -> ModelsInfo {
+        // 写入期间持有锁：与 `set_default` 串行，避免刷新覆盖用户刚改选的默认模型
+        let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
         let result = ClientConfig::parse(crate::builtin::BUILTIN_CATALOG)
             .map_err(|e| e.to_string())
             .and_then(|config| {
@@ -408,19 +430,17 @@ impl ModelConfigState {
                 .map_err(|e| format!("写入模型配置失败：{e}"))?;
                 Ok(config)
             });
-        {
-            let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
-            match result {
-                Ok(config) => {
-                    inner.config = Some(config);
-                    inner.error = None;
-                }
-                Err(message) => {
-                    eprintln!("[core_config] {message}");
-                    inner.error = Some(message);
-                }
+        match result {
+            Ok(config) => {
+                inner.config = Some(config);
+                inner.error = None;
+            }
+            Err(message) => {
+                eprintln!("[core_config] {message}");
+                inner.error = Some(message);
             }
         }
+        drop(inner);
         self.info()
     }
 
@@ -572,6 +592,24 @@ mod tests {
             (
                 "模型 apiKey",
                 Box::new(|v| v["providers"]["gw-messages"]["models"][0]["apiKey"] = "k".into()),
+            ),
+            (
+                "嵌套 apiKey",
+                Box::new(|v| {
+                    v["providers"]["gw-messages"]["models"][0]["compat"] =
+                        serde_json::json!({ "apiKey": "k" })
+                }),
+            ),
+            (
+                "数组内 apiKey",
+                Box::new(|v| {
+                    v["providers"]["gw-messages"]["headers"] =
+                        serde_json::json!([{ "apiKey": "k" }])
+                }),
+            ),
+            (
+                "顶层 apiKey",
+                Box::new(|v| v["defaults"]["apiKey"] = "k".into()),
             ),
             (
                 "缺协议",

@@ -33,4 +33,15 @@ describe("内置模型冒烟配置", () => {
     }
     expect([...apis].sort()).toEqual(["anthropic-messages", "openai-responses"]);
   });
+
+  it("展开后的供应商 ID 冲突时直接报错，不静默少测模型", () => {
+    const base = { baseUrl: "https://gw.example", api: "openai-responses" };
+    expect(() =>
+      smokeModelsConfig({
+        providers: {
+          a: { ...base, models: [{ id: "m.1" }, { id: "m-1" }] },
+        },
+      }),
+    ).toThrow(/重复/);
+  });
 });

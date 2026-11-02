@@ -89,6 +89,8 @@ function ModelDetail({ model }: { model: ModelSummary }) {
 export function ModelSettings() {
   const [info, setInfo] = useState<ModelsInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // 改选与刷新的失败分别用各自的标题
+  const [actionError, setActionError] = useState<{ title: string; message: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const labelId = useId();
 
@@ -103,13 +105,13 @@ export function ModelSettings() {
     };
   }, []);
 
-  const run = async (action: () => Promise<ModelsInfo>, fallback: string) => {
+  const run = async (action: () => Promise<ModelsInfo>, title: string) => {
     setBusy(true);
-    setError(null);
+    setActionError(null);
     try {
       setInfo(await action());
     } catch (e) {
-      setError(errorText(e, fallback));
+      setActionError({ title, message: errorText(e, title) });
     } finally {
       setBusy(false);
     }
@@ -117,7 +119,7 @@ export function ModelSettings() {
 
   const choose = (key: string) =>
     run(async () => (await getPlatform()).modelsSetDefault(key), tm.saveFailed);
-  const refresh = () => run(async () => (await getPlatform()).modelsRefresh(), tm.loadFailed);
+  const refresh = () => run(async () => (await getPlatform()).modelsRefresh(), tm.refreshFailed);
 
   if (!info) {
     return error ? (
@@ -137,10 +139,10 @@ export function ModelSettings() {
           <p className="mt-1 text-muted">{info.error}</p>
         </div>
       )}
-      {error && (
+      {actionError && (
         <div role="alert" className="rounded-2xl px-4 py-3 text-sm ring-1 ring-danger/40">
-          <p className="font-medium text-danger">{tm.saveFailed}</p>
-          <p className="mt-1 text-muted">{error}</p>
+          <p className="font-medium text-danger">{actionError.title}</p>
+          <p className="mt-1 text-muted">{actionError.message}</p>
         </div>
       )}
       <Section title={tm.defaultModel}>

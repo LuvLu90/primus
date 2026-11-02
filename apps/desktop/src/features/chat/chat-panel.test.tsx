@@ -42,6 +42,39 @@ describe("对话区（mock 事件流）", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: t.send })).toBeTruthy());
   });
 
+  it("没有可用的模型配置时禁止发送，重试成功后恢复", async () => {
+    const base = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    const ok = await base.modelsGet();
+    const modelsRefresh = vi.fn(async () => ok);
+    setPlatformForTesting({
+      ...base,
+      modelsGet: async () => ({
+        ...ok,
+        version: null,
+        models: [],
+        defaultModel: null,
+        compactionModel: null,
+        titleModel: null,
+        error: "写入模型配置失败：拒绝访问",
+      }),
+      modelsRefresh,
+    });
+    render(<ChatPanel />);
+    expect((await screen.findByRole("alert")).textContent).toContain(t.modelConfigUnavailable);
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    fireEvent.change(input, { target: { value: "你好" } });
+    expect((screen.getByRole("button", { name: t.send }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect((input as HTMLTextAreaElement).value).toBe("你好");
+
+    fireEvent.click(screen.getByRole("button", { name: t.retryModelConfig }));
+    await waitFor(() => expect(modelsRefresh).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByText(t.modelConfigUnavailable)).toBeNull());
+    expect((screen.getByRole("button", { name: t.send }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+  });
+
   it("Core 拒绝 prompt 时显示错误并保留草稿", async () => {
     const base = createMockPlatform({ intervalMs: 1, batchSize: 50 });
     let deliver: ((b: CoreBatch) => void) | undefined;

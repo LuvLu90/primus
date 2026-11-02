@@ -108,14 +108,35 @@ describe("设置·账号与模型", () => {
     expect((await screen.findByRole("alert")).textContent).toContain("磁盘已满");
     fireEvent.click(screen.getByRole("radio", { name: "快速模型" }));
     await waitFor(() => expect(screen.getAllByRole("alert")).toHaveLength(2));
+    expect(screen.getAllByRole("alert")[1]?.textContent).toContain(tm.saveFailed);
     expect(screen.getAllByRole("alert")[1]?.textContent).toContain("不在可用列表中");
   });
 
-  it("刷新模型配置", async () => {
-    const modelsRefresh = vi.fn(async () => models);
+  it("刷新模型配置后显示新的默认模型", async () => {
+    const modelsRefresh = vi.fn(async () => ({ ...models, defaultModel: "b/fast" }));
     usePlatform({ modelsGet: async () => models, modelsRefresh });
     render(<ModelSettings />);
     fireEvent.click(await screen.findByRole("button", { name: tm.refresh }));
     await waitFor(() => expect(modelsRefresh).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(screen.getByRole("radio", { name: "快速模型" }).getAttribute("aria-checked")).toBe(
+        "true",
+      ),
+    );
+  });
+
+  it("刷新失败时显示刷新失败的标题", async () => {
+    usePlatform({
+      modelsGet: async () => models,
+      modelsRefresh: async () => {
+        throw new PlatformError("网络不可用");
+      },
+    });
+    render(<ModelSettings />);
+    fireEvent.click(await screen.findByRole("button", { name: tm.refresh }));
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain(tm.refreshFailed);
+    expect(alert.textContent).not.toContain(tm.saveFailed);
+    expect(alert.textContent).toContain("网络不可用");
   });
 });
