@@ -352,7 +352,7 @@ function useModelConfigGate() {
       .catch(() => {})
       .finally(() => setRetrying(false));
   };
-  return { unavailable, retrying, retry };
+  return { unavailable, reason: info?.error ?? null, retrying, retry };
 }
 
 export function ChatPanel() {
@@ -549,7 +549,10 @@ export function ChatPanel() {
               role="alert"
               className="mb-2 flex items-center gap-3 rounded-xl bg-surface px-3 py-2 text-xs ring-1 ring-danger/40"
             >
-              <p className="flex-1 text-danger">{t.modelConfigUnavailable}</p>
+              <div className="flex-1">
+                <p className="text-danger">{t.modelConfigUnavailable}</p>
+                {modelConfig.reason && <p className="text-muted">{modelConfig.reason}</p>}
+              </div>
               <button
                 type="button"
                 onClick={modelConfig.retry}

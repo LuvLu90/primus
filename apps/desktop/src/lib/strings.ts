@@ -79,7 +79,8 @@ export const strings = {
     coreStopped: "内核已停止运行",
     coreStoppedHint: "重启内核后可继续对话：已完成的消息会保留。",
     restartCore: "重启内核",
-    modelConfigUnavailable: "模型配置未能获取，请检查网络后重试",
+    modelConfigUnavailable:
+      "模型配置未能生效，暂时无法发送消息。请重试；仍失败时到“设置 · 模型”查看原因",
     retryModelConfig: "重试",
     resyncFailed: "重建会话状态失败",
     responseTimeout: "内核超过 10 秒没有回应",

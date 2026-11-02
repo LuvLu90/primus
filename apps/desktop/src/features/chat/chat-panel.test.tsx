@@ -60,7 +60,9 @@ describe("对话区（mock 事件流）", () => {
       modelsRefresh,
     });
     render(<ChatPanel />);
-    expect((await screen.findByRole("alert")).textContent).toContain(t.modelConfigUnavailable);
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain(t.modelConfigUnavailable);
+    expect(alert.textContent).toContain("拒绝访问");
     const input = screen.getByRole("textbox", { name: t.inputLabel });
     fireEvent.change(input, { target: { value: "你好" } });
     expect((screen.getByRole("button", { name: t.send }) as HTMLButtonElement).disabled).toBe(true);
