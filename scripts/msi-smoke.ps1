@@ -244,6 +244,8 @@ if ($LASTEXITCODE -ne 0) { throw '无法准备不可信目录探针' }
 [IO.File]::WriteAllText((Join-Path $untrustedDir 'keep.txt'), 'preserve untrusted data')
 $untrustedSddl = (Get-Acl -LiteralPath $untrustedDir).Sddl
 $null = New-Item -ItemType Directory -Path $openParent, $linkDir
+& icacls.exe $linkDir /setowner '*S-1-5-32-544' | Out-Host
+if ($LASTEXITCODE -ne 0) { throw '无法设置硬链接探针目录所有者' }
 & icacls.exe $linkDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX' | Out-Host
 if ($LASTEXITCODE -ne 0) { throw '无法准备可信硬链接探针目录' }
 & icacls.exe $openParent /grant '*S-1-5-32-545:(OI)(CI)M' | Out-Host

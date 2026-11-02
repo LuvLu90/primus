@@ -21,6 +21,8 @@
   ; 保持句柄直到程序文件 ACL 修复完成。data 不动（其中 users\<SID> 是受保护的，归各用户所有）。
   ; 路径经命令行末尾的标记 "#|nsis|<目录>|" 传入，不经 cmd.exe；脚本放在 $PLUGINSDIR（仅管理员可写）。
   InitPluginsDir
+  ; 模板先 SetOutPath $INSTDIR；准备脚本可能替换不可信空目录，不能让安装器自身占住旧目录。
+  SetOutPath "$PLUGINSDIR"
   File "/oname=$PLUGINSDIR\primus-install-acl.ps1" "${PRIMUS_INSTALL_ACL_PS1}"
   nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\primus-install-acl.ps1" "#|nsis|$INSTDIR|"'
   Pop $0
@@ -29,6 +31,7 @@
     SetErrorLevel 2
     Abort
   ${EndIf}
+  SetOutPath "$INSTDIR"
 !macroend
 
 !macro NSIS_HOOK_POSTINSTALL

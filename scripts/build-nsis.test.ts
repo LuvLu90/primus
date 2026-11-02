@@ -110,12 +110,14 @@ describe("build-nsis", () => {
     const pre = /!macro NSIS_HOOK_PREINSTALL([\s\S]*?)!macroend/.exec(text)?.[1] ?? "";
     const steps = [
       "InitPluginsDir",
+      'SetOutPath "$PLUGINSDIR"',
       `File "/oname=$PLUGINSDIR\\primus-install-acl.ps1" "\${PRIMUS_INSTALL_ACL_PS1}"`,
       '"$SYSDIR\\WindowsPowerShell\\v1.0\\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\\primus-install-acl.ps1" "#|nsis|$INSTDIR|"',
       "Pop $0",
       `\${If} $0 != 0`,
       "SetErrorLevel 2",
       "Abort",
+      'SetOutPath "$INSTDIR"',
     ].map((s) => pre.indexOf(s));
     expect(steps.every((i) => i >= 0)).toBe(true);
     // 脚本路径在 !include 本文件时（宏外的顶层）由 \${__FILEDIR__} 确定；写在宏里会在 installer.nsi 中展开，
