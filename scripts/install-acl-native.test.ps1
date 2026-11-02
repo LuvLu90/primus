@@ -25,6 +25,14 @@ try {
   if (-not [PrimusInstallHandle]::SetKernelObjectSecurity($handle, [uint32]2147483653, $bytes)) {
     throw "SetKernelObjectSecurity failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())"
   }
+  $rootAcl = Get-Acl -LiteralPath $root
+  if ($rootAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne $sid) { throw 'directory owner was not set' }
+  if (-not $rootAcl.AreAccessRulesProtected) { throw 'directory DACL is not protected' }
+  $actualDacl = $rootAcl.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access)
+  # Kernel API does not set the auto-inherited bookkeeping flag; Get-Acl may canonicalize equal allow ACEs.
+  $aces = @([regex]::Matches($actualDacl, '\([^)]+\)') | ForEach-Object Value | Sort-Object)
+  $expectedAces = @("(A;OICI;FA;;;$sid)", '(A;OICI;FR;;;BU)' | Sort-Object)
+  if (($aces -join '') -ne ($expectedAces -join '')) { throw "directory DACL does not match requested ACEs: $actualDacl" }
   if ((Get-Acl -LiteralPath $target).Sddl -ne $before) { throw 'directory freeze propagated to external hard link' }
   $renamed = $false
   try { Rename-Item -LiteralPath $root -NewName 'renamed' -ErrorAction Stop; $renamed = $true } catch { }

@@ -216,6 +216,9 @@ describe("build-msi", () => {
     );
     expect(code).toContain("CreateFile(p, 0xE0081, 1, IntPtr.Zero, 3, 0x02200000");
     const scan = body("Freeze-ProgramTree");
+    expect(scan).toContain(
+      "[IO.Path]::GetFileName($child) -in @('Primus.exe', 'uninstall.exe', 'resources')",
+    );
     expect(scan.indexOf("Freeze-Directory $item")).toBeLessThan(
       scan.indexOf("GetFileSystemEntries($item)"),
     );

@@ -10,6 +10,12 @@ describe("installation matrix security regressions", () => {
     );
     expect(matrix).not.toMatch(/icacls.*\$(?:env:RUNNER_TEMP|env:GITHUB_WORKSPACE)/);
     expect(matrix.match(/icacls "\$dir" \/grant '\*S-1-5-32-545:\(OI\)\(CI\)RX'/g)).toHaveLength(2);
+    expect(
+      matrix.match(/\$dir = Join-Path \$env:RUNNER_TEMP "(?:gsudo|msedgedriver)"/g),
+    ).toHaveLength(2);
+    expect(
+      workflow.match(/run: pnpm exec vitest run scripts\/install-acl-native.test.ts/g),
+    ).toHaveLength(2);
   });
 
   it("checks actual WebView2 cache creation under an inherited directory override", () => {

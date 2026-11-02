@@ -193,7 +193,7 @@ function Freeze-ProgramTree {
   $stack = New-Object 'System.Collections.Generic.Stack[string]'
   foreach ($child in [IO.Directory]::GetFileSystemEntries($dir)) {
     if (Test-Link $child) { throw "program files contain a junction or symbolic link: $child" }
-    if (-not [IO.Directory]::Exists($child) -or [IO.Path]::GetFileName($child) -eq 'resources') { $stack.Push($child) }
+    if (-not [IO.Directory]::Exists($child) -or [IO.Path]::GetFileName($child) -in @('Primus.exe', 'uninstall.exe', 'resources')) { $stack.Push($child) }
   }
   while ($stack.Count -gt 0) {
     $item = $stack.Pop()

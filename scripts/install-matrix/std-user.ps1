@@ -1,4 +1,4 @@
-﻿#requires -Version 7.2
+﻿#requires -Version 7.4
 <#
 .SYNOPSIS
   安装矩阵：以标准用户（非管理员）身份验证安装后的 App（由 matrix-checks.ps1 经计划任务以该用户身份运行）。
