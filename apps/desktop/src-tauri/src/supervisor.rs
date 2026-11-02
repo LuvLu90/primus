@@ -712,6 +712,8 @@ impl Supervisor {
     fn launch(&self, key: &str, opts: &LaunchOptions) -> Result<CoreProcess, SupervisorError> {
         let job = Job::new()?;
         let mut cmd = build_command(&self.layout, &self.paths, opts);
+        // 作业名传给 Core：`Primus.exe --secret` 据此确认调用方在本 App 的作业内（第 9.4 节）
+        cmd.env(crate::job::JOB_NAME_ENV, job.name());
         let mut child = cmd.spawn()?;
         if let Err(e) = job.assign(&child) {
             // 不在作业里的 Core 主进程崩溃时会残留，宁可不启动

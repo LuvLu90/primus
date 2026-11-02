@@ -2,7 +2,7 @@
 
 import { ChevronLeft } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { type ReactNode, useId, useState } from "react";
+import { useId, useState } from "react";
 import { GlassPanel } from "@/components/layout/glass-panel";
 import {
   centerSeamStyle,
@@ -19,46 +19,12 @@ import { Switch } from "@/components/ui/switch";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 import { type ThemeMode, useAppearanceStore } from "@/stores/appearance-store";
+import { AccountSettings, ModelSettings } from "./account-models";
+import { Row, Section } from "./settings-section";
 
 const t = strings.settings;
 export type SettingsGroup = keyof typeof t.groups;
 const GROUPS = Object.keys(t.groups) as SettingsGroup[];
-
-/** 设置中的一组卡片（macOS 系统设置的分组样式） */
-function Section({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <section className="flex flex-col gap-2">
-      <h3 className="px-1 text-xs font-medium text-muted">{title}</h3>
-      <div className="divide-y divide-border rounded-2xl bg-white/70 shadow-[0_1px_2px_rgb(0_0_0/0.04)] ring-1 ring-black/[0.06] dark:bg-white/[0.06] dark:ring-white/[0.08]">
-        {children}
-      </div>
-    </section>
-  );
-}
-
-function Row({
-  label,
-  hint,
-  labelId,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  labelId?: string;
-  children: ReactNode;
-}) {
-  return (
-    <div className="flex items-center gap-4 px-4 py-3">
-      <div className="min-w-0 flex-1">
-        <p id={labelId} className="text-sm">
-          {label}
-        </p>
-        {hint && <p className="mt-0.5 text-xs text-muted">{hint}</p>}
-      </div>
-      {children}
-    </div>
-  );
-}
 
 /** 启动与通知开关的默认值（第 18 章），settings.toml 接入前只读 */
 const PENDING_DEFAULTS = { reopen: true, tray: false, notify: true } as const;
@@ -120,7 +86,7 @@ function GeneralSettings() {
   );
 }
 
-function Placeholder({ group }: { group: Exclude<SettingsGroup, "general"> }) {
+function Placeholder({ group }: { group: Exclude<SettingsGroup, "general" | "account"> }) {
   return (
     <Section title={t.groups[group]}>
       <div className="px-4 py-4 text-sm">
@@ -134,7 +100,8 @@ function Placeholder({ group }: { group: Exclude<SettingsGroup, "general"> }) {
 const NAV_WIDTH = 232;
 
 // 设置（第 18 章）：与主界面同样的吸附样式——左侧导航与右侧内容是贴合的两块液态玻璃，
-// 接缝处直角 + 平滑凹口、无缝隙。低保真阶段只实现"通用"中的外观、启动与通知，其余分组列出将提供的设置项。
+// 接缝处直角 + 平滑凹口、无缝隙。已实现"通用"中的外观、启动与通知，"账号"（内置账号）与"模型"（默认模型），
+// 其余分组列出将提供的设置项。
 export function SettingsView() {
   const router = useRouter();
   const [group, setGroup] = useState<SettingsGroup>("general");
@@ -194,7 +161,18 @@ export function SettingsView() {
           <div className="scroll-thin min-h-0 flex-1 overflow-y-auto">
             <div className="mx-auto flex max-w-2xl flex-col gap-6 px-8 py-8">
               <h2 className="font-serif text-2xl font-medium tracking-tight">{t.groups[group]}</h2>
-              {group === "general" ? <GeneralSettings /> : <Placeholder group={group} />}
+              {group === "general" ? (
+                <GeneralSettings />
+              ) : group === "account" ? (
+                <AccountSettings />
+              ) : group === "models" ? (
+                <>
+                  <ModelSettings />
+                  <Placeholder group="models" />
+                </>
+              ) : (
+                <Placeholder group={group} />
+              )}
             </div>
           </div>
         </main>

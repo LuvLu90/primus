@@ -37,9 +37,12 @@ export function createTauriPlatform(): Platform {
     settingsGet: () => call("settingsGet"),
     settingsSet: (patch) => call("settingsSet", { patch }),
 
-    providerSave: (config) => call("providerSave", { config }),
-    providerDelete: (id) => call("providerDelete", { id }),
-    providerTest: (config) => call("providerTest", { config }),
+    authStatus: () => call("authStatus"),
+    authLogin: () => call("authLogin"),
+    authLogout: () => call("authLogout"),
+    modelsGet: () => call("modelsGet"),
+    modelsRefresh: () => call("modelsRefresh"),
+    modelsSetDefault: (model) => call("modelsSetDefault", { model }),
 
     shellDetect: () => call("shellDetect"),
     fsTree: (workspace, path) => call("fsTree", { workspace, path }),

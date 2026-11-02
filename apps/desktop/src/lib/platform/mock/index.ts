@@ -6,7 +6,17 @@ import type {
   RpcCommand,
   RpcResponse,
 } from "@primus/protocol";
-import type { BatchListener, Platform, SessionSummary, WorkspaceInfo } from "../types";
+import {
+  AUTH_NOT_AVAILABLE,
+  type AuthStatus,
+  type BatchListener,
+  type ModelSummary,
+  type ModelsInfo,
+  type Platform,
+  PlatformError,
+  type SessionSummary,
+  type WorkspaceInfo,
+} from "../types";
 import { promptScenario } from "./scenario";
 
 // 浏览器预览用的 mock 平台（第 16.1.1 节）：不依赖 Tauri 与 Rust，
@@ -24,6 +34,39 @@ export interface MockOptions {
   /** 模拟内核卡死：返回 true 的命令不回 response（测试超时） */
   stallCommand?: (cmd: RpcCommand) => boolean;
 }
+
+/** 浏览器预览的内置账号与模型（与薄壳内置配置同形，模型只是示意，不连接任何端点） */
+const MOCK_AUTH: AuthStatus = {
+  loggedIn: true,
+  account: { id: "builtin", name: "内置测试账号", kind: "builtin" },
+  loginAvailable: false,
+};
+
+const MOCK_LARGE: ModelSummary = {
+  key: "mock-messages/mock-large",
+  provider: "mock-messages",
+  id: "mock-large",
+  name: "Mock 大模型",
+  api: "anthropic-messages",
+  reasoning: true,
+  image: true,
+  contextWindow: 1_000_000,
+  maxTokens: 128_000,
+};
+
+const MOCK_FAST: ModelSummary = {
+  key: "mock-responses/mock-fast",
+  provider: "mock-responses",
+  id: "mock-fast",
+  name: "Mock 快速模型",
+  api: "openai-responses",
+  reasoning: false,
+  image: false,
+  contextWindow: 128_000,
+  maxTokens: 16_384,
+};
+
+const MOCK_MODELS: ModelSummary[] = [MOCK_LARGE, MOCK_FAST];
 
 /** 队列项：记录本身，或推送时才生成的记录（get_messages 的响应在推送那一刻取历史快照） */
 type Queued = CoreRecord | (() => CoreRecord);
@@ -55,6 +98,15 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
     [MOCK_WORKSPACE, { path: MOCK_WORKSPACE, name: "示例工作区", trusted: true }],
   ]);
   const sessionIndex: SessionSummary[] = [];
+  let defaultModel = MOCK_LARGE.key;
+  const modelsInfo = (): ModelsInfo => ({
+    version: 1,
+    models: structuredClone(MOCK_MODELS),
+    defaultModel,
+    compactionModel: MOCK_FAST.key,
+    titleModel: MOCK_FAST.key,
+    error: null,
+  });
   let settings: Record<string, unknown> = {};
   let nextSession = 1;
   let nextTerminal = 1;
@@ -254,9 +306,22 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       settings = { ...settings, ...patch };
     },
 
-    providerSave: async () => {},
-    providerDelete: async () => {},
-    providerTest: async () => ({ ok: true, message: "mock：未实际连接" }),
+    authStatus: async () => structuredClone(MOCK_AUTH),
+    authLogin: async () => {
+      throw new PlatformError("账号登录暂未开放，当前使用内置测试账号", AUTH_NOT_AVAILABLE);
+    },
+    authLogout: async () => {
+      throw new PlatformError("账号登出暂未开放，当前使用内置测试账号", AUTH_NOT_AVAILABLE);
+    },
+    modelsGet: async () => modelsInfo(),
+    modelsRefresh: async () => modelsInfo(),
+    modelsSetDefault: async (model) => {
+      if (!MOCK_MODELS.some((m) => m.key === model)) {
+        throw new PlatformError(`模型 ${model} 不在可用列表中`);
+      }
+      defaultModel = model;
+      return modelsInfo();
+    },
 
     shellDetect: async () => ({ shells: [{ kind: "powershell", version: "7.5.0" }] }),
     fsTree: async () => [{ name: "README.md", path: "README.md", kind: "file" }],
