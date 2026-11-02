@@ -64,3 +64,60 @@ try {
   } finally { $ordinaryHandle.Dispose() }
 } finally { $handle.Dispose() }
 Write-Output 'native freeze does not propagate; directory and file handles prevent replacement'
+
+# Metadata-only WRITE_DAC handles survive changes to DACL and are not blocked by read sharing.
+$retainedPath = Join-Path $Scratch 'retained-acl-handle'
+$null = New-Item -ItemType Directory -Path $retainedPath
+$attacker = [PrimusInstallHandle]::CreateFile($retainedPath, 0x60000, 7, [IntPtr]::Zero, 3, 0x02200000, [IntPtr]::Zero)
+if ($attacker.IsInvalid) { throw 'cannot create retained WRITE_DAC test handle' }
+try {
+  $installer = [PrimusInstallHandle]::Open($retainedPath)
+  try {
+    $restricted = New-Object Security.AccessControl.RawSecurityDescriptor("O:${sid}D:P(A;;FR;;;$sid)(A;;FR;;;OW)")
+    $restrictedBytes = New-Object byte[] $restricted.BinaryLength
+    $restricted.GetBinaryForm($restrictedBytes, 0)
+    if (-not [PrimusInstallHandle]::SetKernelObjectSecurity($installer, [uint32]2147483652, $restrictedBytes)) { throw 'cannot restrict probe DACL' }
+    $restored = New-Object Security.AccessControl.RawSecurityDescriptor("O:${sid}D:P(A;OICI;FA;;;$sid)")
+    $restoredBytes = New-Object byte[] $restored.BinaryLength
+    $restored.GetBinaryForm($restoredBytes, 0)
+    if (-not [PrimusInstallHandle]::SetKernelObjectSecurity($attacker, [uint32]2147483652, $restoredBytes)) { throw 'retained-handle vulnerability was not reproduced' }
+  } finally { $installer.Dispose() }
+
+  # Execute the production admission check: it must refuse the untrusted object, before changing ACL.
+  $tokens = $null; $errors = $null
+  $ast = [Management.Automation.Language.Parser]::ParseInput($source, [ref]$tokens, [ref]$errors)
+  foreach ($name in @('Test-Link','Test-Locked','Get-LinkCount','Hold-Item','Prepare-InstallDirectory')) {
+    $fn = $ast.Find({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name }, $true)
+    . ([ScriptBlock]::Create($fn.Extent.Text))
+  }
+  $Trusted = @('S-1-5-18','S-1-5-32-544')
+  $ReadOnlyMask = [int]0x1200a9 -bor [int]0x20000000 -bor [int]::MinValue
+  $script:held = New-Object 'System.Collections.Generic.List[System.IDisposable]'
+  $beforeReject = (Get-Acl -LiteralPath $retainedPath).Sddl
+  $rejected = $false
+  try { $null = Hold-Item $retainedPath } catch { $rejected = $_.Exception.Message -like '*existing program item is not trusted*' }
+  finally { foreach ($heldHandle in $script:held) { $heldHandle.Dispose() } }
+  if (-not $rejected) { throw 'untrusted retained-handle object was accepted' }
+  if ((Get-Acl -LiteralPath $retainedPath).Sddl -ne $beforeReject) { throw 'rejection changed the original ACL' }
+
+  $dir = $retainedPath
+  $marker = Join-Path $dir 'keep.txt'
+  [IO.File]::WriteAllText($marker, 'preserve')
+  $rejected = $false
+  try { Prepare-InstallDirectory } catch { $rejected = $_.Exception.Message -like '*existing program item is not trusted*' }
+  if (-not $rejected) { throw 'non-empty untrusted directory was accepted' }
+  if ([IO.File]::ReadAllText($marker) -ne 'preserve' -or (Get-Acl -LiteralPath $dir).Sddl -ne $beforeReject) { throw 'admission modified existing data or ACL' }
+  [IO.File]::Delete($marker)
+
+  # Empty-directory replacement must not adopt the old object. A retained handle may make deletion fail;
+  # if replacement is possible, writing through the old handle must never affect the new directory.
+  $deleted = $false
+  try { [IO.Directory]::Delete($retainedPath); $deleted = $true } catch { Write-Output 'retained handle prevented replacement (safe refusal)' }
+  if ($deleted) {
+    [PrimusInstallHandle]::CreateTrustedDirectory($retainedPath, $restoredBytes)
+    $freshSddl = (Get-Acl -LiteralPath $retainedPath).Sddl
+    $null = [PrimusInstallHandle]::SetKernelObjectSecurity($attacker, [uint32]2147483652, $restrictedBytes)
+    if ((Get-Acl -LiteralPath $retainedPath).Sddl -ne $freshSddl) { throw 'old handle changed the replacement object' }
+  }
+} finally { $attacker.Dispose() }
+Write-Output 'retained WRITE_DAC reproduced; untrusted object rejected; replacement isolated'

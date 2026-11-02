@@ -37,6 +37,7 @@ it.skipIf(process.platform !== "win32")(
       expect(result.error, `${result.stdout}\n${result.stderr}`).toBeUndefined();
       expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
       expect(result.stdout).toContain("native freeze does not propagate");
+      expect(result.stdout).toContain("retained WRITE_DAC reproduced; untrusted object rejected");
     } finally {
       rmSync(scratch, { recursive: true, force: true });
     }

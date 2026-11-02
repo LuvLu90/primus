@@ -4,6 +4,25 @@ import { dirname, join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("installation matrix security regressions", () => {
+  it("requires gsudo and stops immediately after either ACL grant fails", () => {
+    const workflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+    const matrix = workflow.slice(workflow.indexOf("\n  install-matrix:"));
+    expect(matrix).toContain(
+      'throw "gsudo 便携包中没有 $env:GSUDO_ARCH_DIR 版本；安装矩阵需要它以中完整性级别运行"',
+    );
+    expect(matrix).not.toContain("跳过中完整性级别写入测试");
+    const script = readFileSync(
+      new URL("./install-matrix/matrix-checks.ps1", import.meta.url),
+      "utf8",
+    );
+    for (const path of ["Stage", "OutDir"]) {
+      expect(script).toMatch(
+        new RegExp(
+          `& icacls\\.exe \\$${path}[^\\r\\n]+\\r?\\nif \\(\\$LASTEXITCODE -ne 0\\) \\{ throw "icacls 授权 \\$${path} 失败（退出码 \\$LASTEXITCODE）" \\}`,
+        ),
+      );
+    }
+  });
   it.skipIf(process.platform !== "win32").each([
     ["out", "scripts"],
     ["输出 with spaces", "scripts"],

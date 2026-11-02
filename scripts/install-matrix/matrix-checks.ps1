@@ -64,7 +64,9 @@ New-Item -ItemType Directory -Force -Path $StageScripts, $OutDir | Out-Null
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'scripts\install-matrix') -Destination $StageScripts -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $RepoRoot 'scripts\core-contract') -Destination $StageScripts -Recurse -Force
 & icacls.exe $Stage /grant '*S-1-5-32-545:(OI)(CI)RX' /T /Q | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "icacls 授权 $Stage 失败（退出码 $LASTEXITCODE）" }
 & icacls.exe $OutDir /grant '*S-1-5-32-545:(OI)(CI)M' /T /Q | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "icacls 授权 $OutDir 失败（退出码 $LASTEXITCODE）" }
 $urlFile = Join-Path $OutDir 'faux-url.txt'
 Remove-Item -LiteralPath $urlFile -ErrorAction SilentlyContinue
 # Start-Process 会拼接 ArgumentList，必须保留路径引号；追加 \. 防止目录末尾反斜杠转义结束引号。

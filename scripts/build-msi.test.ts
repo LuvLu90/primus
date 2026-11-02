@@ -215,6 +215,15 @@ describe("build-msi", () => {
       freeze.indexOf("SetKernelObjectSecurity"),
     );
     expect(code).toContain("CreateFile(p, 0xE0081, 1, IntPtr.Zero, 3, 0x02200000");
+    expect(body("Hold-Item")).toContain("Test-Locked $Path ([IO.Directory]::Exists($Path)) $true");
+    expect(body("Hold-Item")).toContain("existing program item is not trusted");
+    const prepare = body("Prepare-InstallDirectory");
+    expect(prepare.indexOf("GetFileSystemEntries($dir).Length -ne 0")).toBeLessThan(
+      prepare.indexOf("[IO.Directory]::Delete($dir)"),
+    );
+    expect(prepare).toContain("[PrimusInstallHandle]::CreateTrustedDirectory($dir, $bytes)");
+    expect(code).not.toContain("[IO.Directory]::CreateDirectory($dir)");
+    expect(body("Test-Locked")).toContain("$null -eq $rawSec.DiscretionaryAcl");
     const scan = body("Freeze-ProgramTree");
     expect(scan).toContain(
       "[IO.Path]::GetFileName($child) -in @('Primus.exe', 'uninstall.exe', 'resources')",
@@ -240,7 +249,7 @@ describe("build-msi", () => {
         "",
         "Assert-InstallPath",
         "if ($mode -ne 'reset') {",
-        "if (-not (Test-Exists $dir)) { $null = [IO.Directory]::CreateDirectory($dir) }",
+        "Prepare-InstallDirectory",
         "Assert-InstallPath",
         "Lock-InstallDir",
         "}",

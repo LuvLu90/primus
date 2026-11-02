@@ -25,3 +25,7 @@
 | 卸载信息 | `ARPPRODUCTICON`；`ARPNOMODIFY`（由 WixUI_InstallDir 提供；安装目录装后不可改，修复 / 卸载可用） |
 
 CI（`.github/workflows/ci.yml` Windows 作业）构建 MSI 后用 `scripts/msi-smoke.ps1` 静默安装，检查布局、`data` 的 ACL（`BUILTIN\Users` 显式 Modify 且继承，显式与继承的 Users 授权都没有更改权限 / 取得所有权）、以中完整性级别（去掉管理员权限）实际写入 `data` 且写不进安装目录根、开始菜单快捷方式与 WebView2 处理，再卸载并确认 `data` 与其中文件仍在。
+
+共享句柄不撤销安装前已取得的 `WRITE_DAC`：不可信非空安装目录或程序对象不再就地修复，安装直接拒绝。
+空的不可信根目录仅非递归删除后原子创建新的受保护目录；旧句柄不会授权访问新对象，创建竞争则失败。
+父目录必须已存在且可信。`data` 不删除、不迁移；正常受保护安装目录可升级，历史上被放宽权限的安装应选择新目录。

@@ -9,7 +9,9 @@
 # 在原路径放上联接。安装目录本身锁好之后再确认一遍（不是重解析点、已锁好）：锁好之前若被换成联接，
 # OPEN_REPARSE_POINT 句柄与复查拒绝联接；复查通过后普通用户不能再改名或替换安装目录及其祖先。
 # 程序目录自上而下用 SetKernelObjectSecurity 只锁定对象本身（不向子项传播），并保持不共享删除的句柄。
-# 普通用户不能再往里新建项，再检查并固定其子项；全树检查完成之前不做任何会传播到子项的 ACL 操作。有多个硬链接的文件
+# 共享句柄不撤销已有 WRITE_DAC，因此仅接受原本可信的目录/程序文件，不把用户可写对象就地修成可信对象。
+# 不可信的非空安装目录拒绝；空目录只可删除后带安全描述符原子创建新对象。data 不迁移、不删除。
+# 全树检查完成之前不做任何会传播到子项的 ACL 操作。有多个硬链接的文件
 # 拒绝处理（改它的所有者与 ACL 会改到安装目录之外的同一文件）。
 #
 # 调用：命令行中带标记 #|<模式>|<安装目录>|，从 [Environment]::CommandLine 读取，不经 cmd.exe，
@@ -54,7 +56,7 @@ $script:fixed = 0
 $script:held = New-Object 'System.Collections.Generic.List[System.IDisposable]'
 
 # SetKernelObjectSecurity 不进行 SetNamedSecurityInfo / icacls 的自动继承传播。
-# 用 OPEN_REPARSE_POINT 打开、拒绝共享写入与删除：已有写入/删除句柄时失败，绝不继续按路径修复。
+# 用 OPEN_REPARSE_POINT 打开、拒绝共享数据写入与删除；这不是 ACL 锁，不阻止已有 WRITE_DAC 句柄。
 # C# 普通多行字符串（不能改为 here-string，MSI 构建会去掉整行注释与空行）。
 Add-Type -TypeDefinition 'using System;
 using System.ComponentModel;
@@ -65,6 +67,17 @@ public static class PrimusInstallHandle {
 public static extern SafeFileHandle CreateFile(string p, uint a, uint s, IntPtr sa, uint c, uint f, IntPtr t);
 [DllImport("advapi32.dll", SetLastError=true)]
 public static extern bool SetKernelObjectSecurity(SafeFileHandle h, uint i, byte[] sd);
+[StructLayout(LayoutKind.Sequential)]
+public struct SecurityAttributes { public int Length; public IntPtr Descriptor; public int Inherit; }
+[DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+static extern bool CreateDirectory(string p, ref SecurityAttributes sa);
+public static void CreateTrustedDirectory(string p, byte[] sd) {
+var pin = GCHandle.Alloc(sd, GCHandleType.Pinned);
+try {
+var sa = new SecurityAttributes { Length = Marshal.SizeOf(typeof(SecurityAttributes)), Descriptor = pin.AddrOfPinnedObject(), Inherit = 0 };
+if (!CreateDirectory(p, ref sa)) throw new Win32Exception(Marshal.GetLastWin32Error());
+} finally { pin.Free(); }
+}
 public static SafeFileHandle Open(string p) {
 var h = CreateFile(p, 0xE0081, 1, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero);
 if (h.IsInvalid) { int e = Marshal.GetLastWin32Error(); h.Dispose(); throw new Win32Exception(e); }
@@ -76,6 +89,10 @@ function Hold-Item([string] $Path) {
   $handle = [PrimusInstallHandle]::Open($Path)
   $script:held.Add($handle)
   if (Test-Link $Path) { throw "program files contain a junction or symbolic link: $Path" }
+  if (-not [IO.Directory]::Exists($Path) -and (Get-LinkCount $Path) -gt 1) { throw "program file has more than one hard link: $Path" }
+  if (-not (Test-Locked $Path ([IO.Directory]::Exists($Path)) $true)) {
+    throw "existing program item is not trusted; choose a new install directory: $Path"
+  }
   return $handle
 }
 
@@ -144,6 +161,8 @@ function Invoke-Icacls([string[]] $IcaclsArgs) {
 function Test-Locked([string] $Path, [bool] $IsDir, [bool] $AllowExplicit = $false) {
   try {
     if ($IsDir) { $sec = [IO.Directory]::GetAccessControl($Path) } else { $sec = [IO.File]::GetAccessControl($Path) }
+    $rawSec = [Security.AccessControl.RawSecurityDescriptor]::new($sec.GetSecurityDescriptorBinaryForm(), 0)
+    if ($null -eq $rawSec.DiscretionaryAcl) { return $false }
     if ($Trusted -notcontains $sec.GetOwner([Security.Principal.SecurityIdentifier]).Value) { return $false }
     foreach ($rule in $sec.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
       if (-not ($rule.IsInherited -or $AllowExplicit)) { return $false }
@@ -213,9 +232,27 @@ function Lock-InstallDir {
   Freeze-Directory $dir
 }
 
+# 不能撤销预先取得的 WRITE_DAC；不修复不可信的旧对象。仅空根目录可删除后原子创建全新的安全对象。
+# Delete 不递归、不删除任何已有数据；CreateDirectory 遇到竞争者占位即失败，不采用其对象。
+function Prepare-InstallDirectory {
+  if ([IO.Directory]::Exists($dir)) {
+    if (Test-Locked $dir $true $true) { return }
+    if ([IO.Directory]::GetFileSystemEntries($dir).Length -ne 0) {
+      throw "existing program item is not trusted; choose a new install directory: $dir"
+    }
+    [IO.Directory]::Delete($dir)
+  }
+  $parent = [IO.Path]::GetDirectoryName($dir)
+  if (-not [IO.Directory]::Exists($parent)) { throw "install parent must already exist: $parent" }
+  $sd = New-Object Security.AccessControl.RawSecurityDescriptor('O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)(A;OICI;0x1200a9;;;AC)')
+  $bytes = New-Object byte[] $sd.BinaryLength
+  $sd.GetBinaryForm($bytes, 0)
+  [PrimusInstallHandle]::CreateTrustedDirectory($dir, $bytes)
+}
+
 Assert-InstallPath
 if ($mode -ne 'reset') {
-  if (-not (Test-Exists $dir)) { $null = [IO.Directory]::CreateDirectory($dir) }
+  Prepare-InstallDirectory
   Assert-InstallPath
   Lock-InstallDir
 }

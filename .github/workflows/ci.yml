@@ -478,7 +478,7 @@ jobs:
           if (Test-Path (Join-Path $bin "gsudo.exe")) {
             $bin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
           } else {
-            Write-Host "::warning::gsudo 便携包中没有 $env:GSUDO_ARCH_DIR 版本，跳过中完整性级别写入测试"
+            throw "gsudo 便携包中没有 $env:GSUDO_ARCH_DIR 版本；安装矩阵需要它以中完整性级别运行"
           }
           icacls "$dir" /grant '*S-1-5-32-545:(OI)(CI)RX' | Out-Null
           if ($LASTEXITCODE -ne 0) { throw 'gsudo 工具目录授权失败' }

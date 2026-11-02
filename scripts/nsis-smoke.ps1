@@ -195,8 +195,16 @@ $openParent = Join-Path $env:SystemDrive 'PrimusOpenParentProbe'
 # 硬链接目标保留继承：目录 ACL 传播也不得改变外部目标，不能用受保护 DACL 掩盖缺陷
 $linkDir = Join-Path $env:SystemDrive 'PrimusHardlinkProbe'
 $linkTarget = Join-Path $env:SystemDrive 'PrimusHardlinkTarget.exe'
-foreach ($path in $openParent, $linkDir, $linkTarget) { if (Test-Path -LiteralPath $path) { throw "✗ 残留：$path（请先删除）" } }
+$untrustedDir = Join-Path $env:SystemDrive 'PrimusUntrustedProbe'
+foreach ($path in $openParent, $linkDir, $linkTarget, $untrustedDir) { if (Test-Path -LiteralPath $path) { throw "✗ 残留：$path（请先删除）" } }
+$null = New-Item -ItemType Directory -Path $untrustedDir
+& icacls.exe $untrustedDir /grant '*S-1-5-32-545:(OI)(CI)M' | Out-Host
+if ($LASTEXITCODE -ne 0) { throw '无法准备不可信目录探针' }
+[IO.File]::WriteAllText((Join-Path $untrustedDir 'keep.txt'), 'preserve untrusted data')
+$untrustedSddl = (Get-Acl -LiteralPath $untrustedDir).Sddl
 $null = New-Item -ItemType Directory -Path $openParent, $linkDir
+& icacls.exe $linkDir /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-32-545:(OI)(CI)RX' | Out-Host
+if ($LASTEXITCODE -ne 0) { throw '无法准备可信硬链接探针目录' }
 & icacls.exe $openParent /grant '*S-1-5-32-545:(OI)(CI)M' | Out-Host
 if ($LASTEXITCODE -ne 0) { throw "✗ icacls /grant $openParent 退出码 $LASTEXITCODE" }
 [IO.File]::WriteAllText($linkTarget, 'primus hardlink probe')
@@ -205,6 +213,7 @@ $linkSddl = (Get-Acl -LiteralPath $linkTarget).Sddl
 try {
   foreach ($case in @(
       @{ Name = '上级目录普通用户可改名'; Dir = (Join-Path $openParent 'Primus') },
+      @{ Name = '非空普通用户可写目录'; Dir = $untrustedDir },
       @{ Name = '预先存在的 Primus.exe 有多个硬链接'; Dir = $linkDir })) {
     $code = Invoke-Nsis $Exe "/S /D=$($case.Dir)"
     Assert-True ($code -eq 2) "$($case.Name)：安装程序以钩子中止码 2 退出（实际退出码 $code）"
@@ -212,8 +221,10 @@ try {
   }
   Assert-True ((Get-Acl -LiteralPath $linkTarget).Sddl -eq $linkSddl) '硬链接目标的所有者与 ACL 未被改动'
   Assert-True ([IO.File]::ReadAllText($linkTarget) -eq 'primus hardlink probe') '硬链接目标的内容未被改动'
+  Assert-True ((Get-Acl -LiteralPath $untrustedDir).Sddl -eq $untrustedSddl) '拒绝不可信目录时不修改其权限'
+  Assert-True ([IO.File]::ReadAllText((Join-Path $untrustedDir 'keep.txt')) -eq 'preserve untrusted data') '不可信目录的原有数据保留'
 } finally {
-  Remove-Item -LiteralPath $openParent, $linkDir -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $openParent, $linkDir, $untrustedDir -Recurse -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $linkTarget -Force -ErrorAction SilentlyContinue
 }
 
