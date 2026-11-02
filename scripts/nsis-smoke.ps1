@@ -177,7 +177,7 @@ try {
       @{ Name = '安装目录本身是联接'; Dir = $probeLink },
       @{ Name = '上级目录是联接'; Dir = (Join-Path $probeLink 'Primus') })) {
     $code = Invoke-Nsis $Exe "/S /D=$($case.Dir)"
-    Assert-True ($code -ne 0) "$($case.Name)：安装程序中止（退出码 $code）"
+    Assert-True ($code -eq 2) "$($case.Name)：安装程序以钩子中止码 2 退出（实际退出码 $code）"
     # Tauri 的模板在钩子之前 SetOutPath，可能经联接建出空目录；不得有文件写入、目标 ACL 不变
     Assert-True ((Get-Acl -LiteralPath $probeTarget).Sddl -eq $targetSddl) "$($case.Name)：联接目标的 ACL 未被改动"
     Assert-True (@(Get-ChildItem -LiteralPath $probeTarget -Recurse -File -Force).Count -eq 0) "$($case.Name)：联接目标中没有写入文件"
@@ -207,7 +207,7 @@ try {
       @{ Name = '上级目录普通用户可改名'; Dir = (Join-Path $openParent 'Primus') },
       @{ Name = '预先存在的 Primus.exe 有多个硬链接'; Dir = $linkDir })) {
     $code = Invoke-Nsis $Exe "/S /D=$($case.Dir)"
-    Assert-True ($code -ne 0) "$($case.Name)：安装程序中止（退出码 $code）"
+    Assert-True ($code -eq 2) "$($case.Name)：安装程序以钩子中止码 2 退出（实际退出码 $code）"
     Assert-True ($null -eq (Get-UninstallEntry)) "$($case.Name)：未留下安装记录"
   }
   Assert-True ((Get-Acl -LiteralPath $linkTarget).Sddl -eq $linkSddl) '硬链接目标的所有者与 ACL 未被改动'

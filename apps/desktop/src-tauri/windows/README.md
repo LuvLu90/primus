@@ -16,7 +16,7 @@
 |---|---|
 | 安装目录可选 | `WixUI_InstallDir`，默认 `C:\Program Files\Primus`；静默安装可传 `INSTALLFOLDER="D:\某目录"` |
 | 主程序与资源 | `Primus.exe` 在安装目录根；`resources\runtime`、`resources\agent-core` 用 `<Files>` 整目录收集 |
-| 安装目录 ACL | 组件 `InstallDirAcl`：`PermissionEx Sddl`（MsiLockPermissionsEx）把安装目录设为受保护的 DACL（SYSTEM、Administrators 完全控制，Users 与应用包读取和执行），装在 `D:\primus` 等自选目录时不继承盘根给 Authenticated Users 的“修改”；NSIS 钩子用 `icacls /inheritance:r` 做同样设置 |
+| 安装目录 ACL | MSI 的 `CheckInstallDir` / `ResetProgramAcl` 与 NSIS 预安装钩子共用 `windows/install-acl.ps1`：检查祖先路径，用 `SetKernelObjectSecurity` 只锁定目录自身（不传播权限），保持句柄并冻结、检查程序树，拒绝重解析点和多重硬链接，全部检查通过后才修复程序文件 ACL。MSI 的 `InstallDirAcl` 组件另用 `PermissionEx Sddl`（MsiLockPermissionsEx）设置同一受保护 DACL：SYSTEM、Administrators 完全控制，Users 与应用包读取和执行；`data` 不参与程序文件修复 |
 | `data` 目录 | `CreateFolder` + `util:PermissionEx` 给本地化的 Users 组（`util:QueryWindowsWellKnownSIDs` 查出的 `[WIX_ACCOUNT_USERS]`）授予“修改”(M)，继承到子项；组件 `Permanent`，卸载与升级保留 |
 | 升级 | `MajorUpgrade` + 固定 `UpgradeCode`；降级给出中文提示。安装目录写入 `HKLM\Software\Primus\InstallDir`，重大升级时（未显式传 `INSTALLFOLDER`）由 `AppSearch` 读回并沿用，装在其他盘的实例升级后仍在原目录、复用原 `data` |
 | WebView2 | 注册表检测，缺失时运行内嵌引导程序 |

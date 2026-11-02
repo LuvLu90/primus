@@ -67,7 +67,9 @@ Copy-Item -LiteralPath (Join-Path $RepoRoot 'scripts\core-contract') -Destinatio
 & icacls.exe $OutDir /grant '*S-1-5-32-545:(OI)(CI)M' /T /Q | Out-Null
 $urlFile = Join-Path $OutDir 'faux-url.txt'
 Remove-Item -LiteralPath $urlFile -ErrorAction SilentlyContinue
-$faux = Start-Process -FilePath $node -ArgumentList @((Join-Path $StageScripts 'install-matrix\faux-serve.mjs'), '--out', $OutDir) `
+# Start-Process 会拼接 ArgumentList，必须保留路径引号；追加 \. 防止目录末尾反斜杠转义结束引号。
+$fauxArgs = '"{0}" --out "{1}"' -f (Join-Path $StageScripts 'install-matrix\faux-serve.mjs'), (Join-Path $OutDir '.')
+$faux = Start-Process -FilePath $node -ArgumentList $fauxArgs `
   -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $OutDir 'faux.log') -RedirectStandardError (Join-Path $OutDir 'faux.err.log')
 $deadline = (Get-Date).AddSeconds(20)
 while (-not (Test-Path -LiteralPath $urlFile) -and (Get-Date) -lt $deadline -and -not $faux.HasExited) { Start-Sleep -Milliseconds 200 }

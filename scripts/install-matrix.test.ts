@@ -1,7 +1,89 @@
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("installation matrix security regressions", () => {
+  it.skipIf(process.platform !== "win32").each([
+    ["out", "scripts"],
+    ["输出 with spaces", "scripts"],
+    ["trailing space dir\\", "scripts with spaces"],
+  ])(
+    "starts the real Faux service with output directory %s and stage %s",
+    (outName, stageName) => {
+      const data = resolve(".dev-data");
+      mkdirSync(data, { recursive: true });
+      const scratch = mkdtempSync(join(data, "matrix-launch-"));
+      if (dirname(scratch) !== data) throw new Error("invalid scratch directory");
+      try {
+        const stage = join(scratch, stageName);
+        for (const file of ["install-matrix/faux-serve.mjs", "core-contract/faux-model.mjs"]) {
+          const target = join(stage, file);
+          mkdirSync(dirname(target), { recursive: true });
+          copyFileSync(new URL(file, import.meta.url), target);
+        }
+        const source = readFileSync(
+          new URL("./install-matrix/matrix-checks.ps1", import.meta.url),
+          "utf8",
+        );
+        // Execute the production Start-Process statement, not a separately quoted test approximation.
+        const start = source.indexOf("$fauxArgs =");
+        const end = source.indexOf("$deadline =", start);
+        expect(start).toBeGreaterThanOrEqual(0);
+        expect(end).toBeGreaterThan(start);
+        const launch = source.slice(start, end);
+        const script = `
+$ErrorActionPreference = 'Stop'
+$node = $env:PRIMUS_TEST_NODE
+$StageScripts = $env:PRIMUS_TEST_STAGE
+$OutDir = $env:PRIMUS_TEST_OUT
+$null = New-Item -ItemType Directory -Path $OutDir -Force
+$faux = $null
+try {
+${launch}
+  $deadline = (Get-Date).AddSeconds(15)
+  $urlFile = Join-Path $OutDir 'faux-url.txt'
+  while (-not (Test-Path -LiteralPath $urlFile) -and -not $faux.HasExited -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 100 }
+  if (-not (Test-Path -LiteralPath $urlFile)) { throw 'Faux service did not create its URL file in the requested directory' }
+  $url = (Get-Content -LiteralPath $urlFile -Raw).Trim()
+  if ($url -notmatch '^http://127\\.0\\.0\\.1:[0-9]+$') { throw 'unexpected Faux URL' }
+  $response = Invoke-WebRequest "$url/v1/messages" -Method Post -ContentType 'application/json' -Body '{"messages":[]}' -TimeoutSec 5
+  if ($response.StatusCode -ne 200 -or $response.Content -notmatch 'tool_use') { throw 'Faux response was not the expected tool call' }
+  if (-not (Test-Path -LiteralPath (Join-Path $OutDir 'faux-requests.jsonl'))) { throw 'request log missing' }
+} finally {
+  if ($faux -and -not $faux.HasExited) { Stop-Process -Id $faux.Id -Force; $faux.WaitForExit() }
+  $errFile = Join-Path $OutDir 'faux.err.log'
+  if (Test-Path -LiteralPath $errFile) { Get-Content -LiteralPath $errFile }
+}
+`;
+        const result = spawnSync(
+          "pwsh",
+          [
+            "-NoProfile",
+            "-NonInteractive",
+            "-EncodedCommand",
+            Buffer.from(script, "utf16le").toString("base64"),
+          ],
+          {
+            encoding: "utf8",
+            timeout: 30_000,
+            env: {
+              ...process.env,
+              PRIMUS_TEST_NODE: process.execPath,
+              PRIMUS_TEST_STAGE: stage,
+              PRIMUS_TEST_OUT: join(scratch, outName),
+            },
+          },
+        );
+        expect(result.error, `${result.stdout}\n${result.stderr}`).toBeUndefined();
+        expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+      } finally {
+        rmSync(scratch, { recursive: true, force: true });
+      }
+    },
+    40_000,
+  );
+
   it("does not persist checkout credentials or grant access to the entire runner temp", () => {
     const workflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
     const matrix = workflow.slice(workflow.indexOf("\n  install-matrix:"));
@@ -14,7 +96,9 @@ describe("installation matrix security regressions", () => {
       matrix.match(/\$dir = Join-Path \$env:RUNNER_TEMP "(?:gsudo|msedgedriver)"/g),
     ).toHaveLength(2);
     expect(
-      workflow.match(/run: pnpm exec vitest run scripts\/install-acl-native.test.ts/g),
+      workflow.match(
+        /run: pnpm exec vitest run scripts\/install-acl-native.test.ts scripts\/install-matrix.test.ts/g,
+      ),
     ).toHaveLength(2);
   });
 

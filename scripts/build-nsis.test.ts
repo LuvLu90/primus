@@ -155,6 +155,19 @@ describe("build-nsis", () => {
     ).toThrow("实际 2 个");
   });
 
+  it("拒绝用例必须返回钩子中止码 2，不能把任意安装失败当作通过", () => {
+    const smoke = readFileSync(new URL("./nsis-smoke.ps1", import.meta.url), "utf8");
+    const refusals = [
+      ...smoke.matchAll(
+        /\$code = Invoke-Nsis \$Exe "\/S \/D=\$\(\$case\.Dir\)"\r?\n\s+Assert-True \(([^)]+)\)/g,
+      ),
+    ];
+    expect(refusals).toHaveLength(2); // 联接与上级/硬链接两组，各包含两个实际用例
+    for (const refusal of refusals) expect(refusal[1]).toBe("$code -eq 2");
+    const hooks = readFileSync(tauriFile("windows/nsis/hooks.nsh"), "utf8");
+    expect(hooks).toMatch(/!macro NSIS_HOOK_PREINSTALL[\s\S]*?SetErrorLevel 2\s+Abort/);
+  });
+
   it.skipIf(process.platform === "win32")("非 Windows 上拒绝真实构建，--dry-run 列出命令", () => {
     const real = spawnSync(process.execPath, [SCRIPT], { encoding: "utf8" });
     expect(real.status).toBe(1);
