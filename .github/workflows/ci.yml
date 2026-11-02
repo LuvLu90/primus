@@ -143,6 +143,14 @@ jobs:
         working-directory: apps/desktop/src-tauri
         run: cargo fmt --check
 
+      - name: 安装 ACL 原生回归（继承硬链接与句柄固定）
+        timeout-minutes: 3
+        run: pnpm exec vitest run scripts/install-acl-native.test.ts scripts/install-matrix.test.ts
+
+      - name: 安装 ACL 提权回归（可信夹具与空目录替换）
+        timeout-minutes: 3
+        run: powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/install-acl-elevated.test.ps1
+
       - name: 构建前端（静态导出，供 Tauri 嵌入）
         run: pnpm --filter @primus/desktop build
 
@@ -275,12 +283,14 @@ jobs:
       # 用安装后的 node.exe 跑 RPC 冒烟 → 静默卸载，data 及其中文件保留（GitHub 托管运行器以管理员运行）
       - name: MSI 静默安装 / 卸载冒烟
         shell: pwsh
+        timeout-minutes: 15
         run: ./scripts/msi-smoke.ps1 -Msi $env:PRIMUS_MSI
 
       # NSIS 安装程序同样验收：/S 静默安装 → 布局与 Core 文件哈希、卸载信息、快捷方式 → data 的 ACL（hooks.nsh）
       # 与中完整性级别写入 → 安装后的 node.exe 跑 RPC 冒烟 → uninstall.exe /S 卸载，data 保留
       - name: NSIS 静默安装 / 卸载冒烟
         shell: pwsh
+        timeout-minutes: 15
         run: ./scripts/nsis-smoke.ps1 -Exe $env:PRIMUS_NSIS
 
       # 端到端冒烟（技术方案第 18 章）：tauri-driver 作 WebDriver 服务端，转接与 WebView2 运行时同版本的 msedgedriver
@@ -337,6 +347,14 @@ jobs:
         run: |
           rustc -vV
           rustup target list --installed
+
+      - name: 安装 ACL 原生回归（继承硬链接与句柄固定）
+        timeout-minutes: 3
+        run: pnpm exec vitest run scripts/install-acl-native.test.ts scripts/install-matrix.test.ts
+
+      - name: 安装 ACL 提权回归（可信夹具与空目录替换）
+        timeout-minutes: 3
+        run: powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/install-acl-elevated.test.ps1
 
       # 内置运行时按架构下载 win-arm64 的 node.exe（哈希锁定在 scripts/node-runtime.json），并在本机原生运行冒烟
       - name: 构建 Agent Core 并组装 dist/（运行时 win-arm64）
@@ -410,8 +428,126 @@ jobs:
 
       - name: MSI 静默安装 / 卸载冒烟
         shell: pwsh
+        timeout-minutes: 15
         run: ./scripts/msi-smoke.ps1 -Msi $env:PRIMUS_MSI
 
       - name: NSIS 静默安装 / 卸载冒烟
         shell: pwsh
+        timeout-minutes: 15
         run: ./scripts/nsis-smoke.ps1 -Exe $env:PRIMUS_NSIS
+
+  # 安装矩阵（开发计划第 4 周 P0 安装测试）：两个架构 × 两个位置（Program Files、隔离非系统卷，优先 D），
+  # 用上面两个作业刚构建的 MSI。每格：静默安装与布局检查（msi-smoke.ps1）→ 附加检查（install-matrix/matrix-checks.ps1：
+  # x64 用端到端测试对安装后的 Primus.exe 完成一次含工具调用的对话；新建标准用户启动 App、核对 ACL 与隔离、
+  # 用安装后的运行时完成一次 Core 对话；数据都在 <安装目录>\data）→ 静默卸载，data 保留。
+  # 模型是本机 Faux 服务（scripts/install-matrix/faux-serve.mjs），不需要任何密钥。PR 上不重复跑（推送 dev / main 时跑）。
+  install-matrix:
+    name: 安装矩阵（${{ matrix.arch }} · ${{ matrix.location }}）
+    if: github.event_name != 'pull_request'
+    needs: [windows, windows-arm64]
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x64, arm64]
+        location: [programfiles, d-drive]
+        include:
+          - arch: x64
+            runner: windows-2025
+            gsudo-dir: x64
+            gui: true
+          - arch: arm64
+            runner: windows-11-arm
+            gsudo-dir: arm64
+            gui: false
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: primus-installers-windows-${{ matrix.arch }}
+          path: out
+
+      - name: 安装 gsudo ${{ env.GSUDO_VERSION }}
+        shell: pwsh
+        env:
+          GSUDO_ARCH_DIR: ${{ matrix.gsudo-dir }}
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP "gsudo.portable.zip"
+          $dir = Join-Path $env:RUNNER_TEMP "gsudo"
+          Invoke-WebRequest -Uri "https://github.com/gerardog/gsudo/releases/download/v$env:GSUDO_VERSION/gsudo.portable.zip" -OutFile $zip
+          $hash = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $env:GSUDO_SHA256) { throw "gsudo.portable.zip 校验失败：$hash" }
+          Expand-Archive -Path $zip -DestinationPath $dir -Force
+          $bin = Join-Path $dir $env:GSUDO_ARCH_DIR
+          if (Test-Path (Join-Path $bin "gsudo.exe")) {
+            $bin | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          } else {
+            throw "gsudo 便携包中没有 $env:GSUDO_ARCH_DIR 版本；安装矩阵需要它以中完整性级别运行"
+          }
+          icacls "$dir" /grant '*S-1-5-32-545:(OI)(CI)RX' | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'gsudo 工具目录授权失败' }
+
+      # 端到端对话所需：e2e 依赖、tauri-driver、与 WebView2 运行时同版本的 msedgedriver（同上面 x64 作业）
+      - if: ${{ matrix.gui }}
+        uses: pnpm/action-setup@v6.1.0
+      - if: ${{ matrix.gui }}
+        uses: actions/setup-node@v7.1.0
+        with:
+          node-version-file: .node-version
+      - if: ${{ matrix.gui }}
+        name: 安装 e2e 依赖
+        run: pnpm install --frozen-lockfile --filter "@primus/e2e..."
+      - if: ${{ matrix.gui }}
+        name: 安装 tauri-driver ${{ env.TAURI_DRIVER_VERSION }}
+        run: cargo install tauri-driver --locked --version ${{ env.TAURI_DRIVER_VERSION }}
+      - if: ${{ matrix.gui }}
+        name: 安装与 WebView2 运行时匹配的 msedgedriver
+        shell: pwsh
+        run: |
+          $guid = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
+          $keys = @(
+            "HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\$guid",
+            "HKLM:\SOFTWARE\Microsoft\EdgeUpdate\Clients\$guid",
+            "HKCU:\Software\Microsoft\EdgeUpdate\Clients\$guid"
+          )
+          $version = $keys | Where-Object { Test-Path $_ } |
+            ForEach-Object { (Get-ItemProperty -Path $_ -Name pv -ErrorAction SilentlyContinue).pv } |
+            Where-Object { $_ -and $_ -ne '0.0.0.0' } | Select-Object -First 1
+          if (-not $version) { throw "未找到 WebView2 运行时版本" }
+          $dir = Join-Path $env:RUNNER_TEMP "msedgedriver"
+          $zip = Join-Path $env:RUNNER_TEMP "edgedriver_win64.zip"
+          Invoke-WebRequest -Uri "https://msedgedriver.microsoft.com/$version/edgedriver_win64.zip" -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $dir -Force
+          "PRIMUS_NATIVE_DRIVER=$(Join-Path $dir 'msedgedriver.exe')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          icacls "$dir" /grant '*S-1-5-32-545:(OI)(CI)RX' | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'msedgedriver 工具目录授权失败' }
+
+      - name: 准备安装位置（${{ matrix.location }}）
+        shell: pwsh
+        run: ./scripts/install-matrix/prepare-location.ps1 -Location ${{ matrix.location }}
+
+      - name: 安装、检查、对话、卸载
+        shell: pwsh
+        timeout-minutes: 25
+        env:
+          PRIMUS_MATRIX_GUI: ${{ matrix.gui }}
+        run: |
+          $msi = Get-ChildItem out -Filter "Primus_*_${{ matrix.arch }}_zh-CN.msi" | Select-Object -First 1
+          if (-not $msi) { throw "未找到 ${{ matrix.arch }} 的 MSI" }
+          $extra = @{ Gui = ($env:PRIMUS_MATRIX_GUI -eq 'true') }
+          ./scripts/msi-smoke.ps1 -Msi $msi.FullName -InstallDir $env:PRIMUS_MATRIX_DIR -LogDir 'C:\PrimusMatrix\out\msi-smoke' -ExtraChecks ./scripts/install-matrix/matrix-checks.ps1 -ExtraChecksArgs $extra
+
+      - name: 上传矩阵日志
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: install-matrix-${{ matrix.arch }}-${{ matrix.location }}
+          # 只给一个路径：多个路径会按公共上级目录计算根目录，与工作区不在同一根下（D:\a 对 C:\PrimusMatrix）时上传报错
+          path: C:\PrimusMatrix\out
+          retention-days: 14
+          if-no-files-found: ignore

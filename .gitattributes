@@ -4,3 +4,5 @@
 *.png binary
 *.ico binary
 *.wasm binary
+*.bmp binary
+*.rtf text eol=crlf

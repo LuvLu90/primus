@@ -9,7 +9,7 @@
 // build-msi.mjs --skip-tauri 会因 exe 已变化而拒绝，需重新编译。
 //
 // NSIS 的固定设置在 tauri.conf.json 的 bundle 中（bundle.active 保持 false，tauri build 不打包）：
-// 简体中文界面、按机器安装到 Program Files、内嵌 WebView2 引导程序、许可页 windows/License.rtf、
+// 简体中文界面、按机器安装到 Program Files、内嵌 WebView2 引导程序、隐私政策页 windows/Privacy.rtf、安装界面图片 windows/art（与 MSI 同风格）、
 // 安装钩子 windows/nsis/hooks.nsh（data 目录授予 Users 组“修改”，与 Primus.wxs 一致）。
 // 只在打包时合并的临时配置（不写进 tauri.conf.json）：
 //   - productName「乾元 Primus」：安装界面、开始菜单快捷方式、“应用和功能”中的显示名与 MSI 一致；

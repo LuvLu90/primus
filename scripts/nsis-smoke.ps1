@@ -48,6 +48,7 @@ Set-StrictMode -Version Latest
 
 $ProductName = '乾元 Primus'
 $RepoRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'install-acl-fixtures.ps1')
 $Exe = (Resolve-Path -LiteralPath $Exe).Path
 $InstallDir = [IO.Path]::GetFullPath($InstallDir.TrimEnd('\'))
 $DataDir = Join-Path $InstallDir 'data'
@@ -78,8 +79,22 @@ function Get-UninstallEntry {
 
 # 运行 NSIS 程序并等待结束；返回退出码
 function Invoke-Nsis([string] $FilePath, [string] $ArgumentLine) {
+  $script:LastInstallAclOutput = ''
   Write-Host "  $FilePath $ArgumentLine"
-  $process = Start-Process -FilePath $FilePath -ArgumentList $ArgumentLine -Wait -PassThru
+  # 限时等待，避免步骤无限挂起
+  $diagnosticDir = Join-Path $RepoRoot '.dev-data\nsis-smoke'
+  $null = New-Item -ItemType Directory -Path $diagnosticDir -Force
+  $diagnosticFile = Join-Path $diagnosticDir ("hook-" + [guid]::NewGuid().ToString('N') + '.log')
+  $process = Start-Process -FilePath $FilePath -ArgumentList $ArgumentLine -PassThru -RedirectStandardOutput $diagnosticFile
+  $null = $process.Handle
+  if (-not $process.WaitForExit(300 * 1000)) {
+    Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+    throw "✗ $FilePath 超过 300 秒未结束"
+  }
+  if ((Get-Item -LiteralPath $diagnosticFile).Length -gt 0) {
+    $script:LastInstallAclOutput = [Text.Encoding]::Unicode.GetString([IO.File]::ReadAllBytes($diagnosticFile))
+    $script:LastInstallAclOutput | Write-Host
+  }
   return $process.ExitCode
 }
 
@@ -158,7 +173,74 @@ if (-not (Test-Administrator)) { throw '✗ 需要以管理员身份运行（按
 if (Get-UninstallEntry) { throw "✗ 本机已安装 $ProductName，请先卸载或在干净环境中运行" }
 if (Test-Path -LiteralPath $InstallDir) { throw "✗ 安装目录已存在：$InstallDir（上次运行的残留？请先删除）" }
 
-# ---- 1. 安装 ----
+# ---- 0. 安装目录或其上级是联接时拒绝安装（hooks.nsh → install-acl.ps1），且不改动联接目标 ----
+Write-Step '安装目录或其上级是联接时拒绝安装'
+$probeLink = Join-Path $env:SystemDrive 'PrimusJunctionProbe'
+$probeTarget = Join-Path $env:SystemDrive 'PrimusJunctionTarget'
+foreach ($path in $probeLink, $probeTarget) { if (Test-Path -LiteralPath $path) { throw "✗ 残留：$path（请先删除）" } }
+$null = New-Item -ItemType Directory -Path $probeTarget
+$null = New-Item -ItemType Junction -Path $probeLink -Target $probeTarget
+$targetSddl = (Get-Acl -LiteralPath $probeTarget).Sddl
+try {
+  foreach ($case in @(
+      @{ Name = '安装目录本身是联接'; Dir = $probeLink },
+      @{ Name = '上级目录是联接'; Dir = (Join-Path $probeLink 'Primus') })) {
+    $code = Invoke-Nsis $Exe "/S /D=$($case.Dir)"
+    Assert-True ($code -eq 2) "$($case.Name)：安装程序以钩子中止码 2 退出（实际退出码 $code）"
+    Assert-True ($script:LastInstallAclOutput.Contains('primus-install-acl: error: install dir or one of its parents is a junction or symbolic link')) "$($case.Name)：确由重解析点检查拒绝"
+    # Tauri 的模板在钩子之前 SetOutPath，可能经联接建出空目录；不得有文件写入、目标 ACL 不变
+    Assert-True ((Get-Acl -LiteralPath $probeTarget).Sddl -eq $targetSddl) "$($case.Name)：联接目标的 ACL 未被改动"
+    Assert-True (@(Get-ChildItem -LiteralPath $probeTarget -Recurse -File -Force).Count -eq 0) "$($case.Name)：联接目标中没有写入文件"
+    Assert-True ($null -eq (Get-UninstallEntry)) "$($case.Name)：未留下安装记录"
+  }
+} finally {
+  if (Test-Path -LiteralPath $probeLink) { [IO.Directory]::Delete($probeLink) }
+  Remove-Item -LiteralPath $probeTarget -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# ---- 0b. 上级目录普通用户可改名、程序文件有多个硬链接时拒绝安装（hooks.nsh → install-acl.ps1），且不改动外部文件 ----
+Write-Step '上级目录普通用户可改名、预先存在的程序文件有多个硬链接时拒绝安装'
+# C:\ 下新建的目录继承盘根给 Authenticated Users 的“修改”（含删除），这里再给 Users “修改”；装到其子目录须被拒绝
+$openParent = Join-Path $env:SystemDrive 'PrimusOpenParentProbe'
+# 硬链接目标保留继承：目录 ACL 传播也不得改变外部目标，不能用受保护 DACL 掩盖缺陷
+$linkDir = Join-Path $env:SystemDrive 'PrimusHardlinkProbe'
+$linkTarget = Join-Path $env:SystemDrive 'PrimusHardlinkTarget.exe'
+$untrustedDir = Join-Path $env:SystemDrive 'PrimusUntrustedProbe'
+foreach ($path in $openParent, $linkDir, $linkTarget, $untrustedDir) { if (Test-Path -LiteralPath $path) { throw "✗ 残留：$path（请先删除）" } }
+$null = New-Item -ItemType Directory -Path $untrustedDir
+& icacls.exe $untrustedDir /grant '*S-1-5-32-545:(OI)(CI)M' | Out-Host
+if ($LASTEXITCODE -ne 0) { throw '无法准备不可信目录探针' }
+[IO.File]::WriteAllText((Join-Path $untrustedDir 'keep.txt'), 'preserve untrusted data')
+$untrustedSddl = (Get-Acl -LiteralPath $untrustedDir).Sddl
+$null = New-Item -ItemType Directory -Path $openParent, $linkDir
+Set-TrustedInstallDirectoryAcl $linkDir
+& icacls.exe $openParent /grant '*S-1-5-32-545:(OI)(CI)M' | Out-Host
+if ($LASTEXITCODE -ne 0) { throw "✗ icacls /grant $openParent 退出码 $LASTEXITCODE" }
+[IO.File]::WriteAllText($linkTarget, 'primus hardlink probe')
+$null = New-Item -ItemType HardLink -Path (Join-Path $linkDir 'Primus.exe') -Target $linkTarget
+$linkSddl = (Get-Acl -LiteralPath $linkTarget).Sddl
+try {
+  foreach ($case in @(
+      @{ Name = '上级目录普通用户可改名'; Dir = (Join-Path $openParent 'Primus'); Refusal = 'parent directory can be renamed or changed by' },
+      @{ Name = '非空普通用户可写目录'; Dir = $untrustedDir; Refusal = 'existing program item is not trusted' },
+      @{ Name = '预先存在的 Primus.exe 有多个硬链接'; Dir = $linkDir; Refusal = 'program file has more than one hard link' })) {
+    $code = Invoke-Nsis $Exe "/S /D=$($case.Dir)"
+    Assert-True ($code -eq 2) "$($case.Name)：安装程序以钩子中止码 2 退出（实际退出码 $code）"
+    Assert-True ($script:LastInstallAclOutput.Contains("primus-install-acl: error: $($case.Refusal)")) "$($case.Name)：确由预期的 ACL 检查拒绝"
+    Assert-True ($null -eq (Get-UninstallEntry)) "$($case.Name)：未留下安装记录"
+  }
+  Assert-True ((Get-Acl -LiteralPath $linkTarget).Sddl -eq $linkSddl) '硬链接目标的所有者与 ACL 未被改动'
+  Assert-True ([IO.File]::ReadAllText($linkTarget) -eq 'primus hardlink probe') '硬链接目标的内容未被改动'
+  Assert-True ((Get-Acl -LiteralPath $untrustedDir).Sddl -eq $untrustedSddl) '拒绝不可信目录时不修改其权限'
+  Assert-True ([IO.File]::ReadAllText((Join-Path $untrustedDir 'keep.txt')) -eq 'preserve untrusted data') '不可信目录的原有数据保留'
+} finally {
+  Remove-Item -LiteralPath $openParent, $linkDir, $untrustedDir -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $linkTarget -Force -ErrorAction SilentlyContinue
+}
+
+# ---- 1. 安装到可信的已有目录（不能把所有已有目录一律拒绝）----
+$null = New-Item -ItemType Directory -Path $InstallDir
+Set-TrustedInstallDirectoryAcl $InstallDir
 Write-Step "静默安装 $Exe → $InstallDir"
 # /D= 必须是最后一个参数且不能加引号（NSIS 约定），路径中的空格原样保留
 $code = Invoke-Nsis $Exe "/S /D=$InstallDir"

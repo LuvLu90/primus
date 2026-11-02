@@ -30,6 +30,13 @@
 .PARAMETER Gsudo
   gsudo.exe 路径，用于中完整性级别写入测试。默认取 PATH 中的 gsudo；找不到时只做 ACL 检查。
 
+.PARAMETER ExtraChecks
+  安装检查与 Core 冒烟之后、卸载之前调用的附加检查脚本（如 scripts/install-matrix/matrix-checks.ps1），
+  以 -InstallDir <安装目录> 及 -ExtraChecksArgs 中的参数调用；抛错即冒烟失败（仍会尝试卸载清理）。
+
+.PARAMETER ExtraChecksArgs
+  传给 -ExtraChecks 脚本的其他参数（哈希表，如 @{ Gui = $true }）。
+
 .PARAMETER KeepInstalled
   只安装与检查，不卸载（虚拟机手工测试时使用）。
 
@@ -46,6 +53,9 @@ param(
   [string] $Node,
   [string] $Gsudo,
   [string] $LogDir = (Join-Path ([IO.Path]::GetTempPath()) 'primus-msi-smoke'),
+  [string] $ExtraChecks,
+  [hashtable] $ExtraChecksArgs = @{},
+  [int] $TimeoutSeconds = 300,
   [switch] $KeepInstalled,
   [switch] $KeepData
 )
@@ -57,6 +67,7 @@ $ProductName = '乾元 Primus'
 $AppUserModelId = 'com.primus.desktop'
 $WebView2Guid = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'
 $RepoRoot = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'install-acl-fixtures.ps1')
 $Msi = (Resolve-Path -LiteralPath $Msi).Path
 $InstallDir = [IO.Path]::GetFullPath($InstallDir.TrimEnd('\'))
 $DataDir = Join-Path $InstallDir 'data'
@@ -87,7 +98,17 @@ function Invoke-Msiexec([string] $Action, [string] $LogName, [string[]] $Propert
   $log = Join-Path $LogDir $LogName
   $argumentLine = @($Action, "`"$Msi`"") + $Properties + @('/qn', '/norestart', '/l*v', "`"$log`"")
   Write-Host "  msiexec $($argumentLine -join ' ')"
-  $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList ($argumentLine -join ' ') -Wait -PassThru
+  # 不用 -Wait：它会等整棵进程树；改为限时等待，超时打印安装日志末尾后失败，避免步骤无限挂起（ARM64 曾卡住）
+  $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList ($argumentLine -join ' ') -PassThru
+  $null = $process.Handle
+  if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+    if (Test-Path -LiteralPath $log) {
+      Write-Host "---- $log（末尾 120 行）----"
+      Get-Content -LiteralPath $log -Tail 120 | ForEach-Object { Write-Host $_ }
+    }
+    Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+    throw "✗ msiexec $Action 超过 $TimeoutSeconds 秒未结束（日志 $log）"
+  }
   # 0 成功；3010 成功但需重启（ERROR_SUCCESS_REBOOT_REQUIRED）
   if ($process.ExitCode -notin 0, 3010) {
     if (Test-Path -LiteralPath $log) {
@@ -170,6 +191,101 @@ if (Test-Path -LiteralPath $InstallDir) { throw "✗ 安装目录已存在：$In
 
 $webView2Before = Get-WebView2Version
 Write-Host "WebView2 运行时（安装前）：$(if ($webView2Before) { $webView2Before } else { '未安装' })"
+
+# ---- 0. 安装目录或其上级是联接时拒绝安装（Primus.wxs 的 CheckInstallDir / install-acl.ps1），且不改动联接目标 ----
+Write-Step '安装目录或其上级是联接时拒绝安装'
+$probeLink = Join-Path $env:SystemDrive 'PrimusJunctionProbe'
+$probeTarget = Join-Path $env:SystemDrive 'PrimusJunctionTarget'
+foreach ($path in $probeLink, $probeTarget) { if (Test-Path -LiteralPath $path) { throw "✗ 残留：$path（请先删除）" } }
+$null = New-Item -ItemType Directory -Path $probeTarget
+$null = New-Item -ItemType Junction -Path $probeLink -Target $probeTarget
+$targetSddl = (Get-Acl -LiteralPath $probeTarget).Sddl
+try {
+  foreach ($case in @(
+      @{ Name = '安装目录本身是联接'; Dir = $probeLink; Log = 'junction-self.log' },
+      @{ Name = '上级目录是联接'; Dir = (Join-Path $probeLink 'Primus'); Log = 'junction-parent.log' })) {
+    $log = Join-Path $LogDir $case.Log
+    $argumentLine = "/i `"$Msi`" INSTALLFOLDER=`"$($case.Dir)`" /qn /norestart /l*v `"$log`""
+    Write-Host "  msiexec $argumentLine"
+    $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList $argumentLine -PassThru
+    $null = $process.Handle
+    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+      Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+      throw "✗ $($case.Name)：msiexec 超过 $TimeoutSeconds 秒未结束（日志 $log）"
+    }
+    $refused = Select-String -LiteralPath $log -SimpleMatch 'primus-install-acl: error: install dir or one of its parents is a junction'
+    if ($process.ExitCode -ne 1603 -or -not $refused) {
+      Write-Host "---- $log 中含 primus-install-acl / CheckInstallDir 的行 ----"
+      Select-String -LiteralPath $log -Pattern 'primus-install-acl|CheckInstallDir' | ForEach-Object { Write-Host $_.Line }
+    }
+    Assert-True ($process.ExitCode -eq 1603) "$($case.Name)：安装失败并回滚（退出码 $($process.ExitCode)）"
+    Assert-True ($null -ne $refused) "$($case.Name)：由 CheckInstallDir 拒绝（日志中有 install-acl.ps1 的拒绝信息）"
+    Assert-True ((Get-Acl -LiteralPath $probeTarget).Sddl -eq $targetSddl) "$($case.Name)：联接目标的 ACL 未被改动"
+    Assert-True (@(Get-ChildItem -LiteralPath $probeTarget -Recurse -File -Force).Count -eq 0) "$($case.Name)：联接目标中没有写入文件"
+    Assert-True ($null -eq (Get-UninstallEntry)) "$($case.Name)：未留下安装记录"
+  }
+} finally {
+  # 只删联接本身（不跟随），再删目标
+  if (Test-Path -LiteralPath $probeLink) { [IO.Directory]::Delete($probeLink) }
+  Remove-Item -LiteralPath $probeTarget -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+# ---- 0b. 上级目录普通用户可改名、程序文件有多个硬链接时拒绝安装（install-acl.ps1），且不改动外部文件 ----
+Write-Step '上级目录普通用户可改名、预先存在的程序文件有多个硬链接时拒绝安装'
+# C:\ 下新建的目录继承盘根给 Authenticated Users 的“修改”（含删除），这里再给 Users “修改”；装到其子目录须被拒绝
+$openParent = Join-Path $env:SystemDrive 'PrimusOpenParentProbe'
+# 硬链接目标保留继承：目录 ACL 传播也不得改变外部目标，不能用受保护 DACL 掩盖缺陷
+$linkDir = Join-Path $env:SystemDrive 'PrimusHardlinkProbe'
+$linkTarget = Join-Path $env:SystemDrive 'PrimusHardlinkTarget.exe'
+$untrustedDir = Join-Path $env:SystemDrive 'PrimusUntrustedProbe'
+foreach ($path in $openParent, $linkDir, $linkTarget, $untrustedDir) { if (Test-Path -LiteralPath $path) { throw "✗ 残留：$path（请先删除）" } }
+$null = New-Item -ItemType Directory -Path $untrustedDir
+& icacls.exe $untrustedDir /grant '*S-1-5-32-545:(OI)(CI)M' | Out-Host
+if ($LASTEXITCODE -ne 0) { throw '无法准备不可信目录探针' }
+[IO.File]::WriteAllText((Join-Path $untrustedDir 'keep.txt'), 'preserve untrusted data')
+$untrustedSddl = (Get-Acl -LiteralPath $untrustedDir).Sddl
+$null = New-Item -ItemType Directory -Path $openParent, $linkDir
+# 完整替换 DACL，不能残留 ARM64 运行器创建目录时的显式用户授权。
+Set-TrustedInstallDirectoryAcl $linkDir
+& icacls.exe $openParent /grant '*S-1-5-32-545:(OI)(CI)M' | Out-Host
+if ($LASTEXITCODE -ne 0) { throw "✗ icacls /grant $openParent 退出码 $LASTEXITCODE" }
+[IO.File]::WriteAllText($linkTarget, 'primus hardlink probe')
+$null = New-Item -ItemType HardLink -Path (Join-Path $linkDir 'Primus.exe') -Target $linkTarget
+$linkSddl = (Get-Acl -LiteralPath $linkTarget).Sddl
+try {
+  foreach ($case in @(
+      @{ Name = '上级目录普通用户可改名'; Dir = (Join-Path $openParent 'Primus'); Log = 'open-parent.log'
+        Refusal = 'primus-install-acl: error: parent directory can be renamed or changed by' },
+      @{ Name = '非空普通用户可写目录'; Dir = $untrustedDir; Log = 'untrusted.log'
+        Refusal = 'primus-install-acl: error: existing program item is not trusted' },
+      @{ Name = '预先存在的 Primus.exe 有多个硬链接'; Dir = $linkDir; Log = 'hardlink.log'
+        Refusal = 'primus-install-acl: error: program file has more than one hard link' })) {
+    $log = Join-Path $LogDir $case.Log
+    $argumentLine = "/i `"$Msi`" INSTALLFOLDER=`"$($case.Dir)`" /qn /norestart /l*v `"$log`""
+    Write-Host "  msiexec $argumentLine"
+    $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList $argumentLine -PassThru
+    $null = $process.Handle
+    if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+      Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+      throw "✗ $($case.Name)：msiexec 超过 $TimeoutSeconds 秒未结束（日志 $log）"
+    }
+    $refused = Select-String -LiteralPath $log -SimpleMatch $case.Refusal
+    if ($process.ExitCode -ne 1603 -or -not $refused) {
+      Write-Host "---- $log 中含 primus-install-acl 的行 ----"
+      Select-String -LiteralPath $log -Pattern 'primus-install-acl' | ForEach-Object { Write-Host $_.Line }
+    }
+    Assert-True ($process.ExitCode -eq 1603) "$($case.Name)：安装失败并回滚（退出码 $($process.ExitCode)）"
+    Assert-True ($null -ne $refused) "$($case.Name)：由 install-acl.ps1 拒绝（$($case.Refusal)）"
+    Assert-True ($null -eq (Get-UninstallEntry)) "$($case.Name)：未留下安装记录"
+  }
+  Assert-True ((Get-Acl -LiteralPath $linkTarget).Sddl -eq $linkSddl) '硬链接目标的所有者与 ACL 未被改动'
+  Assert-True ([IO.File]::ReadAllText($linkTarget) -eq 'primus hardlink probe') '硬链接目标的内容未被改动'
+  Assert-True ((Get-Acl -LiteralPath $untrustedDir).Sddl -eq $untrustedSddl) '拒绝不可信目录时不修改其权限'
+  Assert-True ([IO.File]::ReadAllText((Join-Path $untrustedDir 'keep.txt')) -eq 'preserve untrusted data') '不可信目录的原有数据保留'
+} finally {
+  Remove-Item -LiteralPath $openParent, $linkDir, $untrustedDir -Recurse -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $linkTarget -Force -ErrorAction SilentlyContinue
+}
 
 # ---- 1. 安装 ----
 Write-Step "静默安装 $Msi → $InstallDir"
@@ -282,6 +398,31 @@ exit 1
 } else {
   Write-Host '  · 未找到 gsudo，跳过中完整性级别写入测试（ACL 检查已通过）'
 }
+# 安装目录所有者为 Administrators（Primus.wxs InstallDirAcl 的 O:BA）：目录若由普通用户预先建好，
+# 原所有者会保有隐式的更改权限，可以改回 DACL 后替换程序文件
+$installOwner = (Get-Acl -LiteralPath $InstallDir).GetOwner([Security.Principal.SecurityIdentifier]).Value
+Assert-True ($installOwner -eq 'S-1-5-32-544') "安装目录所有者为 Administrators（实际 $installOwner）"
+# 程序文件（Primus.wxs 的 CheckInstallDir / ResetProgramAcl）：所有者不是普通用户、无显式授权，全部从安装目录继承
+# 中文界面的包会把 Action start/ended 日志行本地化（且按 ANSI 代码页写），只匹配引擎自身不本地化的行：
+# 延迟自定义操作写入安装脚本时记 "Executing op: CustomActionSchedule(Action=<名>,"。
+# 两个操作都是 Return="check"，执行失败会回滚、msiexec 返回 1603，上面已确认退出码为 0，故执行即成功
+$installLogText = Get-Content -LiteralPath $installLog -Raw
+foreach ($ca in 'CheckInstallDir', 'ResetProgramAcl') {
+  $scheduled = $installLogText -match "Executing op: CustomActionSchedule\(Action=$ca,"
+  if (-not $scheduled) {
+    Write-Host "---- $installLog 中含 $ca 的行 ----"
+    Select-String -LiteralPath $installLog -SimpleMatch $ca | ForEach-Object { Write-Host $_.Line }
+  }
+  Assert-True $scheduled "安装时执行了 $ca 并成功（Return=check，msiexec 退出码 0）"
+}
+foreach ($item in @((Join-Path $InstallDir 'Primus.exe'), (Join-Path $InstallDir 'resources'))) {
+  $itemAcl = Get-Acl -LiteralPath $item
+  $itemOwner = $itemAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+  # 全新安装时文件由安装服务（SYSTEM）新建，所有者是 Administrators 或 SYSTEM，都不是普通用户
+  Assert-True ($itemOwner -in 'S-1-5-32-544', 'S-1-5-18') "$item 所有者为 Administrators 或 SYSTEM（实际 $itemOwner）"
+  $explicit = @($itemAcl.Access | Where-Object { -not $_.IsInherited })
+  Assert-True ($explicit.Count -eq 0) "$item 没有显式授权（实际 $($explicit.Count) 条）"
+}
 
 # ---- 4. WebView2（第 3.5 节）----
 Write-Step 'WebView2 检测与引导'
@@ -302,6 +443,19 @@ if (-not (Test-Path -LiteralPath $smokeScript)) { throw "✗ 未找到 $smokeScr
 Write-Step "Core RPC 冒烟（安装目录中的 node.exe + agent-core；驱动：$smokeNode）"
 & $smokeNode $smokeScript --entry (Join-Path $coreDir 'rpc-entry.js') --node $nodeExe
 Assert-True ($LASTEXITCODE -eq 0) '安装后的 Core 响应 get_state'
+
+if ($ExtraChecks) {
+  Write-Step "附加检查：$ExtraChecks"
+  $extraArgs = @{ InstallDir = $InstallDir } + $ExtraChecksArgs
+  try {
+    & $ExtraChecks @extraArgs
+  } catch {
+    # 附加检查失败也要卸载，免得在虚拟机或运行器上留下安装
+    Write-Host "  ✗ 附加检查失败：$($_.Exception.Message)" -ForegroundColor Red
+    if (-not $KeepInstalled) { Invoke-Msiexec -Action '/x' -LogName 'uninstall-after-failure.log' | Out-Null }
+    throw
+  }
+}
 
 if ($KeepInstalled) {
   Write-Step "按 -KeepInstalled 保留安装（$InstallDir）"
@@ -327,7 +481,39 @@ Assert-True ((Get-Content -LiteralPath $marker) -eq 'keep') '卸载后 data 中�
 if ($KeepData) {
   Write-Host "`n· 按 -KeepData 保留 $DataDir"
 } else {
-  Remove-Item -LiteralPath $InstallDir -Recurse -Force
+  # data\users\<SID> 只授予各自用户与 SYSTEM（第 4.3 节），管理员要先取得所有权才能删除其他用户的目录。
+  # takeown /R 只能进入已有列目录权限的子目录：每一轮取得所有权并授权后才能看到下一层，所以多轮重试
+  $removed = $false
+  for ($round = 0; $round -lt 8 -and -not $removed; $round++) {
+    try {
+      Remove-Item -LiteralPath $InstallDir -Recurse -Force -ErrorAction Stop
+      $removed = $true
+    } catch {
+      if ($round -eq 0) { Write-Host "  · 直接删除失败（$($_.Exception.Message)），取得所有权后重试" }
+      # takeown /R、icacls /T 会顺着重解析点改到安装目录之外（data 可由普通用户写入、可建目录联接）：
+      # 每轮先检查当前已能看到的部分，有就报错退出。pwsh 的 -Recurse 不进入联接；新一层在上一轮授权后才可见，
+      # 所以每轮在 takeown 之前都检查一次
+      $links = @(Get-ChildItem -LiteralPath $InstallDir -Recurse -Force -Attributes ReparsePoint -ErrorAction SilentlyContinue)
+      if ($links.Count -gt 0) {
+        throw "✗ $InstallDir 下有重解析点，拒绝取得所有权与改权限：$(($links | Select-Object -First 5 | ForEach-Object FullName) -join '; ')"
+      }
+      & takeown.exe /F $InstallDir /R /D Y 2>&1 | Out-Null
+      # 只给管理员加显式授权（/T 逐个写到目录与文件上），不用 /reset：清理失败时 users\<SID> 仍是受保护的，
+      # 不会改为继承 data 上 Users 的“修改”
+      & icacls.exe $InstallDir /grant '*S-1-5-32-544:(OI)(CI)F' /T /C /Q 2>&1 | Out-Null
+    }
+  }
+  if (-not $removed) {
+    # 兜底：robocopy /B 以备份语义（管理员的备份 / 还原特权）把目录镜像为空，不受各文件 ACL 限制；
+    # /XJ 不进入目录联接（data 可由普通用户写入，避免顺着联接删到安装目录之外）
+    $empty = Join-Path ([IO.Path]::GetTempPath()) "primus-msi-smoke-empty-$PID"
+    New-Item -ItemType Directory -Force -Path $empty | Out-Null
+    & robocopy.exe $empty $InstallDir /MIR /B /XJ /R:0 /W:0 /NFL /NDL /NJH /NJS /NP | Out-Null
+    Write-Host "  · robocopy /B 清空 $InstallDir（退出码 $LASTEXITCODE）"
+    $global:LASTEXITCODE = 0  # robocopy 退出码 1–7 表示成功，免得作业按非零码判失败
+    Remove-Item -LiteralPath $empty -Force
+    Remove-Item -LiteralPath $InstallDir -Recurse -Force
+  }
   Write-Host "`n· 已清理保留的 $InstallDir"
 }
 

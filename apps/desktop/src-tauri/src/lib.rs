@@ -31,6 +31,7 @@ pub fn run() {
     let Some(data_paths) = paths::prepare_or_guide() else {
         std::process::exit(1);
     };
+    platform::configure_webview_data_dir(&data_paths.webview_dir());
 
     // Core 进程监管：所有 Core 进程放进同一个 Job Object，主进程被强杀时由系统统一回收（第 2.2 节）
     let supervisor = paths::exe_dir()
@@ -61,6 +62,25 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
+        // WebView2 用户数据放进 data\users\<SID>\webview（约束 C2，第 4.2 节），不落到 %LOCALAPPDATA%：
+        // tauri.conf.json 中主窗口设 create: false，在这里按同一份配置创建并指定数据目录
+        .setup({
+            let webview_dir = data_paths.webview_dir();
+            move |app| {
+                let config = app
+                    .config()
+                    .app
+                    .windows
+                    .iter()
+                    .find(|w| w.label == "main")
+                    .cloned()
+                    .ok_or("tauri.conf.json 缺少 main 窗口配置")?;
+                tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?
+                    .data_directory(webview_dir)
+                    .build()?;
+                Ok(())
+            }
+        })
         .manage(data_paths)
         .manage(supervisor)
         .manage(sessions::AppSessions::default())

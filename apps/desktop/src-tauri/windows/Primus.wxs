@@ -18,6 +18,7 @@
     <INSTALLFOLDER>\Primus.exe
     <INSTALLFOLDER>\resources\runtime\      node.exe + LICENSE（保留 OpenJS 官方签名）
     <INSTALLFOLDER>\resources\agent-core\   dist/agent-core 整目录（含 extensions\primus-bundle.js）
+    <INSTALLFOLDER>\                        受保护的 DACL：SYSTEM、Administrators 完全控制，Users 只读和执行（装在其他盘也一样）
     <INSTALLFOLDER>\data\                   Users 组可修改，卸载与升级时保留
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
@@ -32,7 +33,6 @@
     <!-- 开始菜单、控制面板“程序和功能”中的图标与信息（第 3.3.2 节） -->
     <Icon Id="PrimusIcon.ico" SourceFile="$(ShellDir)\icons\icon.ico" />
     <Property Id="ARPPRODUCTICON" Value="PrimusIcon.ico" />
-    <Property Id="ARPURLINFOABOUT" Value="https://github.com/skaduv/primus" />
     <!-- 安装目录在安装时选定，之后不能“更改”；修复与卸载照常可用。ARPNOMODIFY=1 由下方 WixUI_InstallDir
          自带（WixUI_InstallDir.wxs 已定义该属性），这里不能重复定义，否则 WIX0091 -->
 
@@ -60,6 +60,17 @@
         <Component Id="InstallDirRegistry" Bitness="always64">
           <RegistryValue Root="HKLM" Key="Software\Primus" Name="InstallDir" Type="string"
                          Value="[INSTALLFOLDER]" KeyPath="yes" />
+        </Component>
+        <!-- 安装目录本身的 ACL（约束 C2：可装到其他盘）：装在 D:\primus 这类自选目录时，目录会继承盘根的 ACL，
+             而非系统盘根默认给 Authenticated Users “修改”，普通用户就能替换 Primus.exe 与 resources 中的程序。
+             这里用 MsiLockPermissionsEx（PermissionEx 的 Sddl）在 CreateFolders 阶段、安装文件之前把目录设为受保护的 DACL，
+             与 Program Files 一致：SYSTEM、Administrators 完全控制，Users 与应用包只读和执行，都 (OI)(CI) 继承到子项；
+             所有者设为 Administrators（O:BA），目录若由普通用户预先建好，原所有者不再保有隐式的更改权限。
+             用具体权限位（FA、0x1200a9 = 读取与执行）而不是通用权限，理由同下方 data。data 在此基础上另加 Users “修改”。 -->
+        <Component Id="InstallDirAcl" Guid="14C5A071-4289-451D-8C44-1D656FCB629F">
+          <CreateFolder>
+            <PermissionEx Sddl="O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)(A;OICI;0x1200a9;;;AC)" />
+          </CreateFolder>
         </Component>
         <Directory Id="RESOURCES" Name="resources">
           <Directory Id="RUNTIMEDIR" Name="runtime" />
@@ -100,6 +111,7 @@
     <Feature Id="Main" Title="乾元 Primus" AllowAbsent="no">
       <ComponentRef Id="MainExe" />
       <ComponentRef Id="InstallDirRegistry" />
+      <ComponentRef Id="InstallDirAcl" />
       <ComponentRef Id="DataDir" />
       <ComponentRef Id="StartMenuShortcut" />
       <!-- 整目录收集（第 3.3.2 节）：不逐个列文件，Core 升级后自动包含新文件 -->
@@ -121,12 +133,51 @@
     <Binary Id="WebView2Setup" SourceFile="$(WebView2Setup)" />
     <CustomAction Id="InstallWebView2" BinaryRef="WebView2Setup" ExeCommand="/silent /install"
                   Execute="deferred" Impersonate="no" Return="check" />
+    <!-- 安装目录可能由普通用户预先建好（约束 C2：可装到其他盘），两步处理，逻辑都在 windows/install-acl.ps1
+         （与 NSIS hooks.nsh 的 NSIS_HOOK_PREINSTALL 共用；build-msi.mjs 以 -d InstallAclScript 传入其 Base64），任一步失败即回滚：
+         1. CheckInstallDir（CreateFolders 之前，install-acl.ps1 的 lock 模式）：安装目录及其每一级祖先、已有的直接子项都不能是
+            重解析点（联接、符号链接），否则下面的 ACL 操作会顺着它改到别处；已存在的祖先须是普通用户不能改名、删除子项、
+            改权限的；然后建好安装目录并设为与 InstallDirAcl 相同的受保护 DACL，再确认它不是重解析点且已锁好。
+            此后普通用户不能再把安装目录或其祖先换成联接，CreateFolders 设同样的 DACL。
+         2. ResetProgramAcl（CreateFolders 之后、安装文件之前）：再检查一遍并确认安装目录已锁好，然后自上而下处理预先存在的
+            Primus.exe 与 resources 树：所有者改为 Administrators、清掉显式授权、改为从已锁好的上级继承，锁好一层再看下一层，
+            检查与修改之间普通用户不能插入联接；有多个硬链接的文件拒绝处理。覆盖安装时未列入 LockPermissions 的文件沿用原有安全描述符，所有者若仍是
+            该用户，隐含 WRITE_DAC，可改回 DACL 后替换程序。data 不动：其中 users\<SID> 是受保护的，归各用户所有。
+         不经 cmd.exe：PowerShell 从自身命令行末尾的注释标记 #|模式|安装目录| 读取路径，% 等字符按字面处理；
+         MSI 格式化字符串中的方括号写作 [\[] [\]]。以 SYSTEM 身份运行（Impersonate="no"）。 -->
+    <SetProperty Id="CheckInstallDir" Before="CheckInstallDir" Sequence="execute"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command &quot;&amp; ([\[]ScriptBlock[\]]::Create([\[]Text.Encoding[\]]::Unicode.GetString([\[]Convert[\]]::FromBase64String('$(InstallAclScript)')))) #|lock|[INSTALLFOLDER]|&quot;" />
+    <CustomAction Id="CheckInstallDir" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec"
+                  Execute="deferred" Impersonate="no" Return="check" />
+    <SetProperty Id="ResetProgramAcl" Before="ResetProgramAcl" Sequence="execute"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command &quot;&amp; ([\[]ScriptBlock[\]]::Create([\[]Text.Encoding[\]]::Unicode.GetString([\[]Convert[\]]::FromBase64String('$(InstallAclScript)')))) #|reset|[INSTALLFOLDER]|&quot;" />
+    <CustomAction Id="ResetProgramAcl" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec"
+                  Execute="deferred" Impersonate="no" Return="check" />
     <InstallExecuteSequence>
+      <Custom Action="CheckInstallDir" Before="CreateFolders" Condition="NOT REMOVE" />
+      <Custom Action="ResetProgramAcl" Before="InstallFiles" Condition="NOT REMOVE" />
       <Custom Action="InstallWebView2" Before="InstallFinalize" Condition="WEBVIEW2_MISSING AND NOT REMOVE" />
     </InstallExecuteSequence>
 
-    <!-- 允许选择安装目录（约束 C2：可把整个应用连同数据装到其他盘），中文界面由 -culture zh-CN 提供 -->
-    <WixVariable Id="WixUILicenseRtf" Value="$(ShellDir)\windows\License.rtf" />
+    <!-- 允许选择安装目录（约束 C2：可把整个应用连同数据装到其他盘），中文界面由 -culture zh-CN 提供。
+         界面与 NSIS 安装程序统一：同一份隐私政策（windows/Privacy.rtf）、同一套横幅与侧栏图（windows/art，
+         由应用图标生成，浅灰侧栏 + 强调色细条），完成页都带“立即启动”勾选框（默认勾选）。 -->
+    <WixVariable Id="WixUILicenseRtf" Value="$(ShellDir)\windows\Privacy.rtf" />
+    <WixVariable Id="WixUIBannerBmp" Value="$(ShellDir)\windows\art\wix-banner.bmp" />
+    <WixVariable Id="WixUIDialogBmp" Value="$(ShellDir)\windows\art\wix-dialog.bmp" />
     <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+
+    <!-- 安装完成后立即启动：完成页勾选框只在全新安装 / 升级时显示（修复、卸载时 Installed 已设置，不显示）。
+         WixShellExec 在界面进程（安装者本人、非提权）中运行 Primus.exe；静默安装没有完成页，不会启动。 -->
+    <SetProperty Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="立即启动 乾元 Primus" Before="CostInitialize"
+                 Sequence="ui" Condition="NOT Installed" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <Property Id="WixShellExecTarget" Value="[#MainExeFile]" />
+    <CustomAction Id="LaunchPrimus" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixShellExec"
+                  Impersonate="yes" Return="ignore" />
+    <UI>
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchPrimus"
+               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed" />
+    </UI>
   </Package>
 </Wix>

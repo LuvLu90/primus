@@ -12,7 +12,9 @@ import {
   checkExeStamp,
   checkRuntimePlatform,
   compareMsiVersions,
+  encodeInstallAclScript,
   exeStamp,
+  INSTALL_ACL_PS1,
   isTrustedMicrosoftSignature,
   isTrustedOpenJsSignature,
   msiFileName,
@@ -139,6 +141,139 @@ describe("build-msi", () => {
     expect(checkRuntimePlatform({ runtime: null }, "x64")).toContain("未知");
   });
 
+  it("install-acl.ps1：先拒绝重解析点（含祖先），自上而下锁好再看子项，嵌入时去掉注释", () => {
+    const raw = readFileSync(INSTALL_ACL_PS1);
+    // UTF-8 BOM（Windows PowerShell 5.1 -File 才按 UTF-8 读中文注释）；代码中不用弯引号
+    expect([...raw.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+    const source = raw.toString("utf8");
+    expect(source).not.toMatch(/[\u2018-\u201b\u201c-\u201f]/);
+    expect(source).not.toMatch(/<#|@'|@"/);
+    const code = Buffer.from(encodeInstallAclScript(source), "base64").toString("utf16le");
+    // 去掉了整行注释与空行，只剩 ASCII 代码
+    expect(code).not.toMatch(/^\s*#/m);
+    expect(code).not.toMatch(/^\s*$/m);
+    expect(code).not.toMatch(/[^\t\n\r -~]/);
+    expect(code.startsWith("$ErrorActionPreference = 'Stop'")).toBe(true);
+    // 任何错误退出码 1（安装回滚 / 中止），成功显式 exit 0
+    expect(code).toContain(
+      'trap { [Console]::Out.WriteLine("primus-install-acl: error: $_"); exit 1 }',
+    );
+    expect(code.trimEnd().endsWith("exit 0")).toBe(true);
+    // 路径只从命令行标记读取，必须是本地盘符下的规范绝对路径
+    expect(code).toContain(
+      "[regex]::Matches([Environment]::CommandLine, '#\\|(lock|reset|nsis)\\|([^|\"]+)\\|')",
+    );
+    expect(code).toContain("if ($dir -cne $raw) { throw");
+    // 安装目录及每一级祖先、直接子项：重解析点即失败
+    // 去掉缩进后函数体内的 } 也在行首，按下一个 function 切分
+    const fn = () => /\nfunction ([^\n]*)\{([\s\S]*?)(?=\nfunction |\nAssert-InstallPath\n)/g;
+    const body = (name: string) =>
+      [...code.matchAll(fn())].find(
+        (m) => m[1].startsWith(`${name} `) || m[1].startsWith(`${name}(`),
+      )?.[2] ?? "";
+    const assertPath = body("Assert-InstallPath");
+    expect(assertPath).toContain("$p = [IO.Path]::GetDirectoryName($p)");
+    expect(assertPath).toContain("[IO.Directory]::GetFileSystemEntries($dir)");
+    expect(assertPath.match(/Test-Link/g)).toHaveLength(2);
+    // 已存在的祖先普通用户改不动（盘根可有删除权限）；在重解析点检查之后
+    expect(assertPath.indexOf("if (Test-Exists $p) { Assert-SafeAncestor $p }")).toBeGreaterThan(
+      assertPath.indexOf("install dir or one of its parents is a junction"),
+    );
+    const ancestor = body("Assert-SafeAncestor");
+    expect(code).toContain(
+      "$AncestorTrusted = $Trusted + @('S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464', 'S-1-3-0', 'S-1-3-4')",
+    );
+    expect(code).toContain(
+      "$AncestorDenyMask = 0x10000 -bor 0x40000 -bor 0x80000 -bor 0x40 -bor 0x10000000",
+    );
+    for (const line of [
+      "if ($AncestorTrusted -notcontains $owner) { throw",
+      "if (-not [IO.Path]::GetDirectoryName($Path)) { $mask = $mask -band -bnot 0x10000 }",
+      "if (($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { continue }",
+      "if (([int]$rule.FileSystemRights -band $mask) -ne 0) {",
+    ]) {
+      expect(ancestor).toContain(line);
+    }
+    // 程序文件：先确认不是重解析点，不合格才 setowner + reset，之后才把子项入栈
+    const repair = body("Repair-ProgramFiles");
+    expect(repair).toContain("foreach ($name in 'Primus.exe', 'uninstall.exe', 'resources')");
+    expect(repair).toContain("if (Test-Exists $item) { $stack.Push($item) }");
+    expect(body("Get-LinkCount")).toContain("& $Fsutil hardlink list $Path");
+    const order = [
+      "if (Test-Link $item) { throw",
+      "if (-not $isDir -and (Get-LinkCount $item) -gt 1) { throw",
+      "if (-not (Test-Locked $item $isDir)) {",
+      "Invoke-Icacls @($item, '/setowner', \"*$Admins\", '/L', '/Q')",
+      "Invoke-Icacls @($item, '/reset', '/L', '/Q')",
+      "[IO.Directory]::GetFileSystemEntries($item)",
+    ].map((s) => repair.indexOf(s));
+    expect(order.every((i) => i >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+    // 冻结使用不会传播的句柄 API；固定句柄后才扫描硬链接，所有句柄直到修复结束才释放。
+    const freeze = body("Freeze-Directory");
+    expect(freeze.indexOf("Hold-Item $Path")).toBeLessThan(
+      freeze.indexOf("SetKernelObjectSecurity"),
+    );
+    expect(code).toContain("CreateFile(p, 0xE0081, 1, IntPtr.Zero, 3, 0x02200000");
+    expect(code).toContain(
+      "Add-Type -ReferencedAssemblies ([System.ComponentModel.Win32Exception].Assembly.Location)",
+    );
+    expect(body("Hold-Item")).toContain("Test-Locked $Path ([IO.Directory]::Exists($Path)) $true");
+    expect(body("Hold-Item")).toContain("existing program item is not trusted");
+    const prepare = body("Prepare-InstallDirectory");
+    expect(prepare.indexOf("GetFileSystemEntries($dir).Length -ne 0")).toBeLessThan(
+      prepare.indexOf("[IO.Directory]::Delete($dir)"),
+    );
+    expect(prepare).toContain("[PrimusInstallHandle]::CreateTrustedDirectory($dir, $bytes)");
+    expect(code).not.toContain("[IO.Directory]::CreateDirectory($dir)");
+    expect(body("Test-Locked")).toContain("$null -eq $rawSec.DiscretionaryAcl");
+    const scan = body("Freeze-ProgramTree");
+    expect(scan).toContain(
+      "[IO.Path]::GetFileName($child) -in @('Primus.exe', 'uninstall.exe', 'resources')",
+    );
+    expect(scan.indexOf("Freeze-Directory $item")).toBeLessThan(
+      scan.indexOf("GetFileSystemEntries($item)"),
+    );
+    expect(scan.indexOf("Hold-Item $item")).toBeLessThan(scan.indexOf("Get-LinkCount $item"));
+    // 每次 icacls 都带 /L（不跟随链接）、不带 /T
+    const icacls = [...code.matchAll(/Invoke-Icacls @\(([^\n]*)\)$/gm)].map((m) => m[1]);
+    expect(icacls).toHaveLength(2);
+    for (const call of icacls) {
+      expect(call).toContain("'/L', '/Q'");
+      expect(call).not.toContain("/T");
+    }
+    // nsis 模式的安装目录 ACL 与 Primus.wxs InstallDirAcl 一致
+    expect(code).toContain(
+      "O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)(A;OICI;0x1200a9;;;AC)",
+    );
+    const main = code.slice(code.lastIndexOf("\nAssert-InstallPath\nif ($mode -ne 'reset')"));
+    expect(main).toBe(
+      [
+        "",
+        "Assert-InstallPath",
+        "if ($mode -ne 'reset') {",
+        "Prepare-InstallDirectory",
+        "Assert-InstallPath",
+        "Lock-InstallDir",
+        "}",
+        "Assert-InstallPath",
+        'if (-not (Test-Locked $dir $true $true)) { throw "install dir is not locked (owner SYSTEM or Administrators, others read and execute only): $dir" }',
+        "Freeze-ProgramTree",
+        "Repair-ProgramFiles",
+        "foreach ($handle in $script:held) { $handle.Dispose() }",
+        '[Console]::Out.WriteLine("primus-install-acl: $mode $dir ok (reset $($script:fixed) items)")',
+        "exit 0",
+      ].join("\n"),
+    );
+    // Windows CreateProcess 的命令行上限为 32767 UTF-16 字符，为安装路径和调用包装预留空间。
+    expect(encodeInstallAclScript(source).length).toBeLessThan(30000);
+    for (const script of ["msi-smoke.ps1", "nsis-smoke.ps1"]) {
+      const smoke = readFileSync(new URL(script, import.meta.url), "utf8");
+      expect(smoke).not.toContain("$linkTarget /inheritance:d");
+      expect(smoke).toContain("(Get-Acl -LiteralPath $linkTarget).Sddl -eq $linkSddl");
+    }
+  });
+
   it("wix build 参数与技术方案第 3.3.1 节一致", () => {
     const args = wixBuildArgs({
       appDir: "C:/t/release",
@@ -174,6 +309,8 @@ describe("build-msi", () => {
       "ShellDir=C:/r/apps/desktop/src-tauri",
       "-d",
       "WebView2Setup=C:/r/w/MicrosoftEdgeWebview2Setup.exe",
+      "-d",
+      `InstallAclScript=${encodeInstallAclScript(readFileSync(INSTALL_ACL_PS1, "utf8"))}`,
       "-o",
       "C:/r/out/Primus_1.2.3_x64_zh-CN.msi",
     ]);
@@ -331,6 +468,43 @@ describe("build-msi", () => {
       expect(permission).toContain(`${right}="yes"`);
     for (const right of ["GenericAll", "GenericWrite", "ChangePermission", "TakeOwnership"])
       expect(permission).not.toContain(right);
+    // 安装目录本身：受保护的 DACL，Users 只读和执行（装在 D:\primus 等自选目录时不继承盘根的“修改”）
+    expect(wxs).toContain('<ComponentRef Id="InstallDirAcl" />');
+    const sddl = /<PermissionEx Sddl="([^"]+)"/.exec(wxs)?.[1] ?? "";
+    // 所有者为 Administrators：用户预先建好的目录，原所有者不再保有隐式的更改权限
+    expect(sddl).toMatch(/^O:BA/);
+    // DACL 段精确比较：受保护，Users 与应用包只读和执行（0x1200a9），不含任何写入
+    const dacl = /D:.*?(?=S:|$)/.exec(sddl)?.[0] ?? "";
+    expect(dacl).toBe(
+      "D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)(A;OICI;0x1200a9;;;AC)",
+    );
+    // 预先存在的程序文件（安装目录可能由普通用户预先建好）：以 SYSTEM 运行，失败回滚；data 不动
+    for (const id of ["CheckInstallDir", "ResetProgramAcl"])
+      expect(wxs).toMatch(
+        new RegExp(
+          `<CustomAction Id="${id}"[^>]*DllEntry="WixQuietExec"[^>]*Execute="deferred" Impersonate="no" Return="check"`,
+        ),
+      );
+    // 安装目录本身的重解析点检查在 CreateFolders（设 DACL）之前；改程序文件在设好 DACL 之后、安装文件之前
+    expect(wxs).toContain(
+      '<Custom Action="CheckInstallDir" Before="CreateFolders" Condition="NOT REMOVE" />',
+    );
+    expect(wxs).toContain(
+      '<Custom Action="ResetProgramAcl" Before="InstallFiles" Condition="NOT REMOVE" />',
+    );
+    const prop = (id: string) =>
+      (new RegExp(`<SetProperty Id="${id}"[^>]*Value="([^"]+)"`).exec(wxs)?.[1] ?? "")
+        .replaceAll("&quot;", '"')
+        .replaceAll("&amp;", "&");
+    // 不经 cmd.exe（% 不会被展开）：PowerShell 解码嵌入的 install-acl.ps1，路径在命令行末尾的注释标记里；
+    // MSI 格式化字符串中的方括号已转义
+    for (const [id, mode] of [
+      ["CheckInstallDir", "lock"],
+      ["ResetProgramAcl", "reset"],
+    ])
+      expect(prop(id)).toBe(
+        `"[System64Folder]WindowsPowerShell\\v1.0\\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "& ([\\[]ScriptBlock[\\]]::Create([\\[]Text.Encoding[\\]]::Unicode.GetString([\\[]Convert[\\]]::FromBase64String('$(InstallAclScript)')))) #|${mode}|[INSTALLFOLDER]|"`,
+      );
     expect(wxs).toContain('Value="com.primus.desktop"');
     const conf = JSON.parse(
       readFileSync(new URL("../apps/desktop/src-tauri/tauri.conf.json", import.meta.url), "utf8"),

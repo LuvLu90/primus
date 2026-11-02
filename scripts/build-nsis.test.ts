@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 // @ts-expect-error 纯 JS 脚本，无类型声明
@@ -67,13 +67,32 @@ describe("build-nsis", () => {
     expect(conf.bundle.targets).toEqual(["nsis"]);
     // 发布者与 MSI 的 Manufacturer 一致：Tauri 的 NSIS 安装程序据显示名 + 发布者识别已装的 MSI 并提示先卸载
     expect(conf.bundle.publisher).toBe(NSIS_PRODUCT_NAME);
-    expect(conf.bundle.licenseFile).toBe("windows/License.rtf");
+    expect(conf.bundle.licenseFile).toBe("windows/Privacy.rtf");
+    // 按官方产品对外：安装界面与卸载信息里不出现代码仓库地址
+    expect(conf.bundle.homepage).toBeUndefined();
+    const policy = readFileSync(tauriFile(conf.bundle.licenseFile), "latin1");
+    expect(policy.startsWith("{\\rtf1")).toBe(true);
+    expect(policy).not.toMatch(/github|MIT|License/i);
     // resources 不写进 tauri.conf.json：tauri-build 编译时会检查它们存在，开发构建不应依赖 dist/
     expect(conf.bundle.resources).toBeUndefined();
     const nsis = conf.bundle.windows.nsis;
     expect(nsis.languages).toEqual(["SimpChinese"]);
     expect(nsis.displayLanguageSelector).toBe(false);
     expect(nsis.installMode).toBe("perMachine");
+    // 与 MSI 同一套界面图片（Primus.wxs 的 WixUIBannerBmp / WixUIDialogBmp）
+    // 尺寸与色深按 windows/README.md：页眉 150×57、侧边 164×314，均为 24 位
+    const sizes: [string, number, number][] = [
+      [nsis.headerImage, 150, 57],
+      [nsis.sidebarImage, 164, 314],
+    ];
+    for (const [img, w, h] of sizes) {
+      const bmp = readFileSync(tauriFile(img));
+      expect(bmp.subarray(0, 2).toString("latin1")).toBe("BM");
+      expect(bmp.readUInt32LE(2)).toBe(bmp.length); // bfSize 与实际长度一致（文件未截断）
+      expect(bmp.readInt32LE(18)).toBe(w);
+      expect(Math.abs(bmp.readInt32LE(22))).toBe(h);
+      expect(bmp.readUInt16LE(28)).toBe(24);
+    }
     expect(conf.bundle.windows.webviewInstallMode).toEqual({
       type: "embedBootstrapper",
       silent: true,
@@ -82,10 +101,49 @@ describe("build-nsis", () => {
     // UTF-8 BOM：makensis 才会按 UTF-8 读取中文
     expect([...hooks.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
     const text = hooks.toString("utf8");
-    expect(text).toContain("!macro NSIS_HOOK_POSTINSTALL");
+    expect(text).toContain("!macro NSIS_HOOK_PREINSTALL");
     // data 目录与 Primus.wxs 一致：Users 组（按 SID）“修改”并继承，不是完全控制
     expect(text).toContain("/grant *S-1-5-32-545:(OI)(CI)M");
-    expect(text).not.toMatch(/:\(OI\)\(CI\)F/);
+    expect(text).not.toMatch(/S-1-5-32-545:\(OI\)\(CI\)F/);
+    // 安装目录与预先存在的程序文件交给 windows/install-acl.ps1 的 nsis 模式（与 MSI 共用，详见 build-msi.test.ts）：
+    // 脚本释放到 $PLUGINSDIR，路径经命令行末尾的标记传入，不经 cmd.exe；退出码非 0 即中止安装
+    const pre = /!macro NSIS_HOOK_PREINSTALL([\s\S]*?)!macroend/.exec(text)?.[1] ?? "";
+    const steps = [
+      "InitPluginsDir",
+      'SetOutPath "$PLUGINSDIR"',
+      `File "/oname=$PLUGINSDIR\\primus-install-acl.ps1" "\${PRIMUS_INSTALL_ACL_PS1}"`,
+      '"$SYSDIR\\WindowsPowerShell\\v1.0\\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\\primus-install-acl.ps1" "#|nsis|$INSTDIR|"',
+      "Pop $0",
+      "Pop $1",
+      "kernel32::WriteFile",
+      `\${If} $0 != 0`,
+      "SetErrorLevel 2",
+      "Abort",
+      'SetOutPath "$INSTDIR"',
+    ].map((s) => pre.indexOf(s));
+    expect(steps.every((i) => i >= 0)).toBe(true);
+    // 脚本路径在 !include 本文件时（宏外的顶层）由 \${__FILEDIR__} 确定；写在宏里会在 installer.nsi 中展开，
+    // 指向 target\\release\\nsis\\<arch>，makensis 找不到脚本
+    const topLevel = text.replace(/!macro[\s\S]*?!macroend/g, "");
+    expect(topLevel).toContain(
+      `!define PRIMUS_INSTALL_ACL_PS1 "\${__FILEDIR__}\\..\\install-acl.ps1"`,
+    );
+    const macroCode = (text.match(/!macro[\s\S]*?!macroend/g) ?? [])
+      .join("\n")
+      .split("\n")
+      .filter((line) => !line.trim().startsWith(";"))
+      .join("\n");
+    expect(macroCode).not.toContain("__FILEDIR__");
+    expect([...steps].sort((a, b) => a - b)).toEqual(steps);
+    expect(pre.match(/nsExec::ExecToStack/g)).toHaveLength(1);
+    const preCode = pre
+      .split("\n")
+      .filter((line) => !line.trim().startsWith(";"))
+      .join("\n");
+    expect(preCode).not.toMatch(/cmd\.exe|fsutil|icacls/);
+    expect(existsSync(tauriFile("windows/install-acl.ps1"))).toBe(true);
+    // 不显式授予 Authenticated Users、Everyone，Users 不得有写入
+    expect(text).not.toMatch(/S-1-5-11|S-1-1-0/);
   });
 
   it("按文件名后缀挑出本次产物，架构不符或数量不对即失败", () => {
@@ -99,6 +157,26 @@ describe("build-nsis", () => {
     expect(() =>
       pickNsisOutput(["a_0.0.1_x64-setup.exe", "b_0.0.1_x64-setup.exe"], "0.0.1", "x64"),
     ).toThrow("实际 2 个");
+  });
+
+  it("拒绝用例必须返回钩子中止码 2，不能把任意安装失败当作通过", () => {
+    const smoke = readFileSync(new URL("./nsis-smoke.ps1", import.meta.url), "utf8");
+    const refusals = [
+      ...smoke.matchAll(
+        /\$code = Invoke-Nsis \$Exe "\/S \/D=\$\(\$case\.Dir\)"\r?\n\s+Assert-True \(([^)]+)\)/g,
+      ),
+    ];
+    expect(refusals).toHaveLength(2); // 联接与上级/硬链接两组，各包含两个实际用例
+    for (const refusal of refusals) expect(refusal[1]).toBe("$code -eq 2");
+    expect(smoke).toContain("$script:LastInstallAclOutput = ''");
+    expect(smoke).toContain(
+      "$script:LastInstallAclOutput.Contains('primus-install-acl: error: install dir or one of its parents is a junction or symbolic link')",
+    );
+    expect(smoke).toContain(
+      '$script:LastInstallAclOutput.Contains("primus-install-acl: error: $($case.Refusal)")',
+    );
+    const hooks = readFileSync(tauriFile("windows/nsis/hooks.nsh"), "utf8");
+    expect(hooks).toMatch(/!macro NSIS_HOOK_PREINSTALL[\s\S]*?SetErrorLevel 2\s+Abort/);
   });
 
   it.skipIf(process.platform === "win32")("非 Windows 上拒绝真实构建，--dry-run 列出命令", () => {
