@@ -114,6 +114,8 @@ describe("build-nsis", () => {
       `File "/oname=$PLUGINSDIR\\primus-install-acl.ps1" "\${PRIMUS_INSTALL_ACL_PS1}"`,
       '"$SYSDIR\\WindowsPowerShell\\v1.0\\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\\primus-install-acl.ps1" "#|nsis|$INSTDIR|"',
       "Pop $0",
+      "Pop $1",
+      "kernel32::WriteFile",
       `\${If} $0 != 0`,
       "SetErrorLevel 2",
       "Abort",
@@ -133,7 +135,7 @@ describe("build-nsis", () => {
       .join("\n");
     expect(macroCode).not.toContain("__FILEDIR__");
     expect([...steps].sort((a, b) => a - b)).toEqual(steps);
-    expect(pre.match(/nsExec::ExecToLog/g)).toHaveLength(1);
+    expect(pre.match(/nsExec::ExecToStack/g)).toHaveLength(1);
     const preCode = pre
       .split("\n")
       .filter((line) => !line.trim().startsWith(";"))

@@ -80,11 +80,17 @@ function Get-UninstallEntry {
 function Invoke-Nsis([string] $FilePath, [string] $ArgumentLine) {
   Write-Host "  $FilePath $ArgumentLine"
   # 限时等待，避免步骤无限挂起
-  $process = Start-Process -FilePath $FilePath -ArgumentList $ArgumentLine -PassThru
+  $diagnosticDir = Join-Path $RepoRoot '.dev-data\nsis-smoke'
+  $null = New-Item -ItemType Directory -Path $diagnosticDir -Force
+  $diagnosticFile = Join-Path $diagnosticDir ("hook-" + [guid]::NewGuid().ToString('N') + '.log')
+  $process = Start-Process -FilePath $FilePath -ArgumentList $ArgumentLine -PassThru -RedirectStandardOutput $diagnosticFile
   $null = $process.Handle
   if (-not $process.WaitForExit(300 * 1000)) {
     Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
     throw "✗ $FilePath 超过 300 秒未结束"
+  }
+  if ((Get-Item -LiteralPath $diagnosticFile).Length -gt 0) {
+    [Text.Encoding]::Unicode.GetString([IO.File]::ReadAllBytes($diagnosticFile)) | Write-Host
   }
   return $process.ExitCode
 }

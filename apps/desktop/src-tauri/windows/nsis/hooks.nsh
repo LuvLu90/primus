@@ -24,8 +24,15 @@
   ; 模板先 SetOutPath $INSTDIR；准备脚本可能替换不可信空目录，不能让安装器自身占住旧目录。
   SetOutPath "$PLUGINSDIR"
   File "/oname=$PLUGINSDIR\primus-install-acl.ps1" "${PRIMUS_INSTALL_ACL_PS1}"
-  nsExec::ExecToLog '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\primus-install-acl.ps1" "#|nsis|$INSTDIR|"'
+  nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\primus-install-acl.ps1" "#|nsis|$INSTDIR|"'
   Pop $0
+  Pop $1
+  DetailPrint "$1"
+  ; GUI 安装器通常没有 stdout；冒烟用 RedirectStandardOutput 提供管道/文件时输出 UTF-16 诊断。
+  System::Call 'kernel32::GetStdHandle(i -11)p.r2'
+  StrLen $3 $1
+  IntOp $3 $3 * 2
+  System::Call 'kernel32::WriteFile(p r2, w r1, i r3, *i .r4, p 0)'
   ${If} $0 != 0
     MessageBox MB_ICONSTOP|MB_OK "无法安全地准备安装目录（install-acl.ps1 退出码 $0）：安装目录或其上级可能是联接或符号链接、上级目录普通用户可以改名或修改，或已有的程序文件有多个硬链接，或无法设置权限。请改装到新建的目录或 Program Files。$INSTDIR" /SD IDOK
     SetErrorLevel 2
