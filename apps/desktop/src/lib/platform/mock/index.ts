@@ -14,6 +14,8 @@ import {
   type ModelsInfo,
   type Platform,
   PlatformError,
+  SESSION_OPEN,
+  type SessionIndexEvent,
   type SessionSummary,
   type WorkspaceInfo,
 } from "../types";
@@ -73,6 +75,8 @@ type Queued = CoreRecord | (() => CoreRecord);
 
 interface MockSession {
   key: string;
+  /** 会话文件路径（mock 中只是标识），新会话首条消息定稿后才进入索引，与 Core 落盘时机一致 */
+  path: string;
   workspace: string;
   onBatch: BatchListener;
   seq: number;
@@ -88,6 +92,30 @@ interface MockSession {
 }
 
 const MOCK_WORKSPACE = "C:\\Users\\mock\\示例工作区";
+const MOCK_SESSIONS_DIR = "C:\\Users\\mock\\data\\sessions";
+/** 与薄壳一致的分页大小 */
+const MOCK_PAGE_SIZE = 50;
+/** 与薄壳一致：少于这么多字符的查询只匹配会话名与首条用户消息（trigram 分词的下限） */
+const MOCK_FULL_TEXT_MIN_CHARS = 3;
+
+/** 键集游标 `<毫秒>:<路径>`（与薄壳 session_index 的 parse_cursor 一致）；解析不了时为 undefined（按第一页处理） */
+function parseCursor(cursor: string): { updatedAt: number; path: string } | undefined {
+  const i = cursor.indexOf(":");
+  if (i < 0) return undefined;
+  const time = cursor.slice(0, i);
+  if (!/^-?\d+$/.test(time)) return undefined;
+  return { updatedAt: Number(time), path: cursor.slice(i + 1) };
+}
+
+/** 消息正文（字符串或 text 块），供 mock 索引标题与搜索 */
+function messageText(m: AgentMessage): string {
+  const content = (m as { content?: unknown }).content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((c: { type?: string; text?: string }) => (c.type === "text" ? (c.text ?? "") : ""))
+    .join(" ");
+}
 
 export function createMockPlatform(options: MockOptions = {}): Platform {
   const intervalMs = options.intervalMs ?? 16;
@@ -97,7 +125,42 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
   const workspaces = new Map<string, WorkspaceInfo>([
     [MOCK_WORKSPACE, { path: MOCK_WORKSPACE, name: "示例工作区", trusted: true }],
   ]);
+  // 会话索引（模拟薄壳的 session_index）：会话文件路径 → 摘要与已定稿的消息
   const sessionIndex: SessionSummary[] = [];
+  const history = new Map<string, AgentMessage[]>();
+  let indexListener: ((e: SessionIndexEvent) => void) | undefined;
+  let indexSeq = 0;
+  const notifyIndex = () => {
+    indexSeq += 1;
+    indexListener?.({ seq: indexSeq });
+  };
+  /** 消息定稿后更新索引：有用户消息才入索引（Core 在第一条用户消息之前不落盘） */
+  const touchIndex = (s: MockSession) => {
+    history.set(s.path, s.messages.slice());
+    const firstUser = s.messages.find((m) => (m as { role?: string }).role === "user");
+    if (!firstUser) return;
+    const t = now();
+    const entry = sessionIndex.find((x) => x.path === s.path);
+    if (entry) {
+      entry.updatedAt = t;
+      entry.messageCount = s.messages.length;
+    } else {
+      sessionIndex.push({
+        path: s.path,
+        id: s.key,
+        name: null,
+        title: messageText(firstUser).trim().slice(0, 200),
+        workspace: s.workspace,
+        createdAt: t,
+        updatedAt: t,
+        messageCount: s.messages.length,
+        archived: false,
+      });
+    }
+    notifyIndex();
+  };
+  const sortedIndex = () =>
+    sessionIndex.slice().sort((a, b) => b.updatedAt - a.updatedAt || (a.path < b.path ? 1 : -1));
   let defaultModel = MOCK_LARGE.key;
   const modelsInfo = (): ModelsInfo => ({
     version: 1,
@@ -122,7 +185,10 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
     if (r.type === "response") return;
     s.delivered.push(r);
     // 历史只记已定稿（已推送 message_end）的消息，与 Core 的 get_messages 一致
-    if (r.type === "message_end") s.messages.push(r.message);
+    if (r.type === "message_end") {
+      s.messages.push(r.message);
+      touchIndex(s);
+    }
     if (r.type === "agent_settled") {
       s.streaming = false;
       s.aborting = false;
@@ -252,19 +318,58 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       if (ws) ws.trusted = trusted;
     },
 
-    sessionList: async (workspace) => ({
-      items: sessionIndex.filter((x) => x.workspace === workspace),
-    }),
-    sessionSearch: async (workspace, query) =>
-      sessionIndex.filter((x) => x.workspace === workspace && (x.name ?? "").includes(query)),
+    sessionList: async (workspace, cursor) => {
+      // 键集分页（与薄壳一致）：只返回排在游标那条之后的会话，归档或新增会话不会让后续页漏项或重复
+      const after = cursor ? parseCursor(cursor) : undefined;
+      const all = sortedIndex().filter(
+        (x) =>
+          !x.archived &&
+          (workspace === null || x.workspace === workspace) &&
+          (!after ||
+            x.updatedAt < after.updatedAt ||
+            (x.updatedAt === after.updatedAt && x.path < after.path)),
+      );
+      const items = all.slice(0, MOCK_PAGE_SIZE);
+      const last = items.at(-1);
+      return {
+        items: structuredClone(items),
+        nextCursor:
+          all.length > MOCK_PAGE_SIZE && last ? `${last.updatedAt}:${last.path}` : undefined,
+      };
+    },
+    sessionSearch: async (workspace, query) => {
+      const q = query.trim().toLowerCase();
+      if (!q) return [];
+      // 与薄壳一致：3 个字符以上匹配消息全文，更短只匹配会话名与首条用户消息（title）
+      const fullText = [...q].length >= MOCK_FULL_TEXT_MIN_CHARS;
+      return structuredClone(
+        sortedIndex()
+          .filter((x) => workspace === null || x.workspace === workspace)
+          .filter((x) =>
+            [
+              x.name ?? "",
+              x.title,
+              ...(fullText ? (history.get(x.path) ?? []).map(messageText) : []),
+            ].some((t) => t.toLowerCase().includes(q)),
+          )
+          .slice(0, MOCK_PAGE_SIZE),
+      );
+    },
+    sessionWatch: async (onChange) => {
+      indexListener = onChange;
+      // 与薄壳一致：注册后补发一次，覆盖注册前发生的变化
+      notifyIndex();
+    },
     sessionOpen: async (workspace, sessionPath, onBatch) => {
       const key = `mock-${nextSession++}`;
+      const path = sessionPath || `${MOCK_SESSIONS_DIR}\\${key}.jsonl`;
       sessions.set(key, {
         key,
+        path,
         workspace,
         onBatch,
         seq: 0,
-        messages: [],
+        messages: history.get(path)?.slice() ?? [],
         queue: [],
         timer: undefined,
         streaming: false,
@@ -272,22 +377,43 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
         delivered: [],
         aborting: false,
       });
-      if (!sessionPath)
-        sessionIndex.push({ path: `${key}.jsonl`, workspace, updatedAt: now(), name: "新会话" });
-      return { sessionKey: key };
+      return { sessionKey: key, sessionId: sessionPath ? null : key };
     },
     sessionClose: async (sessionKey) => {
       const s = sessions.get(sessionKey);
       if (!s) return;
+      // Core 受理 prompt 时就已写下用户消息：队列里尚未推送的第一条用户 message_end 计入历史与索引，
+      // 其余未推送的记录（助手消息等）丢弃。生成型队列项（函数）不是记录，跳过
+      const pendingUser = s.queue.find(
+        (item): item is Extract<CoreRecord, { type: "message_end" }> =>
+          typeof item !== "function" &&
+          item.type === "message_end" &&
+          (item.message as { role?: string }).role === "user",
+      );
+      if (pendingUser) {
+        s.messages.push(pendingUser.message);
+        touchIndex(s);
+      }
       s.closed = true;
       if (s.timer !== undefined) clearTimeout(s.timer);
+      s.queue = [];
       sessions.delete(sessionKey);
     },
     sessionDelete: async (path) => {
+      if ([...sessions.values()].some((s) => s.path === path && !s.closed))
+        throw new PlatformError("会话正在打开中，请先关闭再删除", SESSION_OPEN);
       const i = sessionIndex.findIndex((x) => x.path === path);
-      if (i >= 0) sessionIndex.splice(i, 1);
+      if (i < 0) throw new Error(`不是会话文件：${path}`);
+      sessionIndex.splice(i, 1);
+      history.delete(path);
+      notifyIndex();
     },
-    sessionArchive: async () => {},
+    sessionArchive: async (path, archived) => {
+      const entry = sessionIndex.find((x) => x.path === path);
+      if (!entry) throw new Error(`会话不在索引中：${path}`);
+      entry.archived = archived;
+      notifyIndex();
+    },
 
     coreSend: async (sessionKey, record) => {
       const s = session(sessionKey);

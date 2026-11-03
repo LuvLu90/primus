@@ -30,6 +30,7 @@ import {
   GlassPopoverTrigger,
 } from "@/components/ui/glass-popover";
 import { GlassSurface } from "@/components/ui/glass-surface";
+import { type ChatTab, useSessionsStore } from "@/features/sessions/sessions-store";
 import { getPlatform, isTauriRuntime } from "@/lib/platform";
 import type { ModelsInfo, WorkspaceInfo } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
@@ -355,9 +356,28 @@ function useModelConfigGate() {
   return { unavailable, reason: info?.error ?? null, retrying, retry };
 }
 
-export function ChatPanel() {
+/** 路径最后一段（工作区显示名） */
+function baseName(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+}
+
+/** 一个会话标签的对话区；不传 `tab` 时为独立的新会话（测试与单会话场景） */
+export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
+  const tabId = tab?.id;
+  const markOpened = useSessionsStore((s) => s.markOpened);
+  const setTabOpening = useSessionsStore((s) => s.setOpening);
+  const setTabRunning = useSessionsStore((s) => s.setRunning);
   const { state, error, unresponsive, coreStopped, send, abort, restarting, restart } =
-    useChatSession();
+    useChatSession({
+      sessionPath: tab?.sessionPath,
+      workspace: tab?.workspace,
+      onOpening: tabId ? (opening) => setTabOpening(tabId, opening) : undefined,
+      onOpened: tabId ? (opened) => markOpened(tabId, opened) : undefined,
+    });
+  // 运行中的标签不会因标签上限被关闭
+  useEffect(() => {
+    if (tabId) setTabRunning(tabId, state.running);
+  }, [tabId, state.running, setTabRunning]);
   const modelConfig = useModelConfigGate();
   const [draft, setDraft] = useState("");
   const [preview, setPreview] = useState(false);
@@ -413,6 +433,15 @@ export function ChatPanel() {
   };
   const lastMessage = state.messages.at(-1);
   const started = state.messages.length > 0;
+  // 会话已打开或是历史会话：工作区锁定为会话自己的工作区（空串为未选工作区）；否则跟随输入框上方的选择
+  const lockedPath = tab?.workspace ?? null;
+  const shownWorkspace: WorkspaceInfo | null =
+    lockedPath === null
+      ? workspace
+      : lockedPath
+        ? { path: lockedPath, name: baseName(lockedPath), trusted: false }
+        : null;
+  const workspaceLocked = started || lockedPath !== null;
   const canPickFiles = useCanPickFiles();
   const canUseWorkspaces = useCanUseWorkspaces();
   useEffect(() => {
@@ -540,8 +569,8 @@ export function ChatPanel() {
       <div ref={composerRef} className="pointer-events-none absolute inset-x-0 bottom-0 px-6 pb-4">
         <div className="pointer-events-auto mx-auto max-w-3xl">
           <WorkspaceBar
-            visible={canUseWorkspaces && !workspace && state.messages.length === 0}
-            current={workspace}
+            visible={canUseWorkspaces && !shownWorkspace && !workspaceLocked}
+            current={shownWorkspace}
             onPicked={setWorkspace}
           />
           {modelConfig.unavailable && (
@@ -647,28 +676,29 @@ export function ChatPanel() {
                     </span>
                   </GlassButton>
                 </PermissionPicker>
-                {workspace &&
-                  (started ? (
+                {canUseWorkspaces &&
+                  shownWorkspace &&
+                  (workspaceLocked ? (
                     // 会话已绑定到开始时的工作区，之后不能切换，避免界面与 Core 实际工作区不一致
                     <span
-                      title={`${t.currentWorkspace}：${workspace.path}\n${t.workspaceLocked}`}
+                      title={`${t.currentWorkspace}：${shownWorkspace.path}\n${t.workspaceLocked}`}
                       className="flex h-[30px] items-center gap-1.5 px-2 text-muted"
                     >
                       <Folder aria-hidden size={14} />
-                      <span className="max-w-40 truncate text-[12px]">{workspace.name}</span>
+                      <span className="max-w-40 truncate text-[12px]">{shownWorkspace.name}</span>
                     </span>
                   ) : (
-                    <WorkspacePicker current={workspace} onPicked={setWorkspace}>
+                    <WorkspacePicker current={shownWorkspace} onPicked={setWorkspace}>
                       <GlassButton
                         variant="capsule"
                         size={30}
                         {...glass}
-                        title={`${t.currentWorkspace}：${workspace.path}`}
+                        title={`${t.currentWorkspace}：${shownWorkspace.path}`}
                         className={glassButtonClass}
                       >
                         <Folder aria-hidden size={14} />
                         <span className="max-w-40 truncate text-[12px] font-normal">
-                          {workspace.name}
+                          {shownWorkspace.name}
                         </span>
                       </GlassButton>
                     </WorkspacePicker>

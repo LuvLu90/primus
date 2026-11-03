@@ -1,6 +1,6 @@
 import type { CoreBatch } from "@primus/protocol";
 import { Channel, invoke } from "@tauri-apps/api/core";
-import { COMMANDS, type Platform, toPlatformError } from "../types";
+import { COMMANDS, type Platform, type SessionIndexEvent, toPlatformError } from "../types";
 
 // 真实实现：逐个映射到薄壳命令（附录 B）。参数名用 camelCase，Tauri 会转换为 Rust 端的 snake_case。
 // 会话事件与终端输出经 Channel 推送（第 7.1 节）。
@@ -22,6 +22,11 @@ export function createTauriPlatform(): Platform {
 
     sessionList: (workspace, cursor) => call("sessionList", { workspace, cursor }),
     sessionSearch: (workspace, query) => call("sessionSearch", { workspace, query }),
+    sessionWatch: (onChange) => {
+      const channel = new Channel<SessionIndexEvent>();
+      channel.onmessage = onChange;
+      return call("sessionWatch", { onEvent: channel });
+    },
     sessionOpen: (workspace, sessionPath, onBatch) => {
       const channel = new Channel<CoreBatch>();
       channel.onmessage = onBatch;
@@ -29,7 +34,7 @@ export function createTauriPlatform(): Platform {
     },
     sessionClose: (sessionKey) => call("sessionClose", { sessionKey }),
     sessionDelete: (sessionPath) => call("sessionDelete", { sessionPath }),
-    sessionArchive: (sessionPath) => call("sessionArchive", { sessionPath }),
+    sessionArchive: (sessionPath, archived) => call("sessionArchive", { sessionPath, archived }),
 
     coreSend: (sessionKey, record) => call("coreSend", { sessionKey, record }),
     coreRestart: (sessionKey) => call("coreRestart", { sessionKey }),

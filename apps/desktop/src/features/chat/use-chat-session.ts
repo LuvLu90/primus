@@ -15,7 +15,8 @@ import {
   type SessionStore,
 } from "@/stores/session-store";
 
-// 一个会话的生命周期：首次发送时打开会话（浏览器预览下由 mock 平台提供假 Core 事件流）。
+// 一个会话的生命周期：新会话首次发送时打开；历史会话挂载后立即打开并用 get_messages + get_state 加载历史
+// （浏览器预览下由 mock 平台提供假 Core 事件流）。
 // 批次先交给 RPC 客户端（id 关联、超时、缺口重建），去重后的记录在 requestAnimationFrame 中
 // 一次性合并进 store（第 16.4 节）。
 
@@ -52,7 +53,21 @@ export interface ChatSession {
   restart: () => Promise<void>;
 }
 
-export function useChatSession(): ChatSession {
+export interface ChatSessionOptions {
+  /** 打开的历史会话文件：挂载后立即打开并加载历史；新会话不传 */
+  sessionPath?: string | null;
+  /** 会话的工作区；不传时用输入框上方选中的工作区（未选为空，即直接对话） */
+  workspace?: string | null;
+  /** 开始打开会话（true）与打开结束（false，无论成败；成功时先于 onOpened） */
+  onOpening?: (opening: boolean) => void;
+  /** 会话已打开：薄壳给出的会话 ID（新会话）与实际使用的工作区 */
+  onOpened?: (opened: { sessionId: string | null; workspace: string }) => void;
+}
+
+export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
+  // 选项放进 ref：打开流程只在需要时读取最新值，不让回调随之重建
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
   const storeRef = useRef<SessionStore>(null);
   storeRef.current ??= createSessionStore();
   const store = storeRef.current;
@@ -113,18 +128,28 @@ export function useChatSession(): ChatSession {
   const disposed = useRef(false);
   // 重建失败的代次：推迟的“重建成功”清除只在期间没有新的失败时生效，避免旧的成功清掉新失败的提示
   const resyncFailures = useRef(0);
+  // 历史会话的历史已显示：任意一次重建（首次加载、缺口重建、重启后重建）成功即为 true；
+  // 打开或重建失败时保持 false，下次发送前再加载
+  const historyLoaded = useRef(false);
 
   const ensureOpen = useCallback((): Promise<void> => {
     if (conn.current) return Promise.resolve();
     opening.current ??= (async () => {
+      optionsRef.current.onOpening?.(true);
       const platform = await getPlatform();
-      // 用输入框上方选中的工作区；未选择时直接对话，不隐式绑定最近的工作区（会话开始后工作区锁定）
-      const path = useAppStore.getState().workspace?.path ?? "";
+      // 历史会话用它自己的工作区；新会话用输入框上方选中的工作区，未选择时直接对话，
+      // 不隐式绑定最近的工作区（会话开始后工作区锁定）
+      const { sessionPath, workspace } = optionsRef.current;
+      const path = workspace ?? useAppStore.getState().workspace?.path ?? "";
       // 批次可能在 sessionOpen 返回前到达：先缓存，客户端建好后按序交付
       let client: RpcClient | undefined;
       const early: CoreBatch[] = [];
       const onBatch = (batch: CoreBatch) => (client ? client.receive(batch) : early.push(batch));
-      const { sessionKey } = await platform.sessionOpen(path, undefined, onBatch);
+      const { sessionKey, sessionId } = await platform.sessionOpen(
+        path,
+        sessionPath ?? undefined,
+        onBatch,
+      );
       if (disposed.current) {
         // 打开期间组件已卸载：立即关闭，避免会话泄漏
         void platform.sessionClose(sessionKey).catch(() => {});
@@ -156,6 +181,7 @@ export function useChatSession(): ChatSession {
         // 若这一帧之前又有一轮重建失败，保留新的失败提示。
         // 重建成功即解除“重启后重建失败”造成的锁定；超时命令造成的锁定仍等其迟到响应
         onResynced: () => {
+          historyLoaded.current = true;
           lock.current.restart = false;
           syncUnresponsive();
           const failures = resyncFailures.current;
@@ -166,33 +192,66 @@ export function useChatSession(): ChatSession {
       });
       for (const batch of early) client.receive(batch);
       conn.current = { platform, client };
+      optionsRef.current.onOpening?.(false);
+      optionsRef.current.onOpened?.({ sessionId: sessionId ?? null, workspace: path });
     })().finally(() => {
       opening.current = null;
+      // 失败时也结束“打开中”（成功时已在 onOpened 之前结束，重复调用无影响）
+      if (!disposed.current) optionsRef.current.onOpening?.(false);
     });
     return opening.current;
   }, [enqueue, setError, clearError, syncUnresponsive]);
 
-  // 卸载时关闭会话
+  // 卸载时关闭会话。推迟到下一个任务再关：React 开发模式（StrictMode）会立即卸载再挂载，
+  // 重新挂载时取消关闭，打开中的会话照常复用，不会对同一个会话文件重复打开
+  const closeTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => {
+    clearTimeout(closeTimer.current);
     disposed.current = false;
     return () => {
-      disposed.current = true;
-      opening.current = null;
-      const c = conn.current;
-      conn.current = null;
-      if (c) {
-        c.client.close();
-        void c.platform.sessionClose(c.client.sessionKey).catch(() => {});
-      }
+      closeTimer.current = setTimeout(() => {
+        disposed.current = true;
+        opening.current = null;
+        const c = conn.current;
+        conn.current = null;
+        if (c) {
+          c.client.close();
+          void c.platform.sessionClose(c.client.sessionKey).catch(() => {});
+        }
+      }, 0);
     };
   }, []);
+
+  // 历史会话：挂载后打开并加载历史。成功后之后的重建由缺口检测与重启触发；打开或重建失败时不标记已加载，
+  // 下一次发送前重试（标签隐藏而不卸载，挂载效果不会再次执行）
+  const historyPath = options.sessionPath ?? null;
+  // 进行中的历史加载：挂载效果与发送并发时复用，不重复打开或重建（RpcClient.resync 自身也会合并并发调用）
+  const historyLoading = useRef<Promise<void>>(null);
+  const loadHistory = useCallback((): Promise<void> => {
+    historyLoading.current ??= (async () => {
+      await ensureOpen();
+      const c = conn.current;
+      // 重建失败已由 onResyncError 提示，historyLoaded 保持 false
+      if (c && !historyLoaded.current) await c.client.resync();
+    })().finally(() => {
+      historyLoading.current = null;
+    });
+    return historyLoading.current;
+  }, [ensureOpen]);
+  useEffect(() => {
+    if (!historyPath || historyLoaded.current) return;
+    loadHistory().catch(fail);
+  }, [historyPath, loadHistory, fail]);
 
   const send = useCallback(
     async (message: string): Promise<boolean> => {
       // 重建失败的提示保留到重建成功为止
       setErrorState((e) => (e?.kind === "resync" ? e : undefined));
       try {
-        await ensureOpen();
+        // 历史会话的历史尚未加载成功（之前打开或重建失败）：先打开并重建再发送；
+        // 重建失败时照常发送（Core 已从会话文件恢复，失败提示保留到之后的重建成功）
+        if (optionsRef.current.sessionPath && !historyLoaded.current) await loadHistory();
+        else await ensureOpen();
         // coreSend 只表示已提交；以 Core 的响应为准（失败原因由 session-store 显示为 lastError）
         const c = conn.current;
         if (!c) throw new Error(strings.chat.sessionNotOpen);
@@ -204,7 +263,7 @@ export function useChatSession(): ChatSession {
         return false;
       }
     },
-    [ensureOpen, fail],
+    [ensureOpen, loadHistory, fail],
   );
 
   const abort = useCallback(async (): Promise<boolean> => {

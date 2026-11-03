@@ -10,6 +10,7 @@ import {
   useState,
 } from "react";
 import { ChatPanel } from "@/features/chat/chat-panel";
+import { useSessionsStore } from "@/features/sessions/sessions-store";
 import { getWindowControls, type WindowControls } from "@/lib/platform";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
@@ -124,7 +125,7 @@ export function AppShell() {
               disabled={center.busy}
               onToggle={() => s.setInspectorPanelOpen(!s.inspectorPanelOpen)}
             />
-            <ChatPanel />
+            <ChatTabs />
           </main>
           {s.inspectorPanelOpen && (
             <ResizeHandle
@@ -198,6 +199,24 @@ export function snapEase(t: number): number {
 }
 
 /** 中央纸面：接缝形状见 centerSeamStyle；随侧栏同步过渡 */
+/**
+ * 多会话（ADR 0006）：每个标签一个 ChatPanel，非当前标签隐藏而不卸载，
+ * 切回时 Core 进程、时间线、草稿都还在；关闭标签才卸载并关闭会话。
+ */
+function ChatTabs() {
+  const tabs = useSessionsStore((s) => s.tabs);
+  const activeTabId = useSessionsStore((s) => s.activeTabId);
+  return tabs.map((tab) => (
+    <div
+      key={tab.id}
+      hidden={tab.id !== activeTabId}
+      className={tab.id === activeTabId ? "flex min-h-0 flex-1 flex-col" : "hidden"}
+    >
+      <ChatPanel tab={tab} />
+    </div>
+  ));
+}
+
 function seamStyle(leftOpen: boolean, rightOpen: boolean, animate: boolean): CSSProperties {
   return {
     ...centerSeamStyle(leftOpen, rightOpen),

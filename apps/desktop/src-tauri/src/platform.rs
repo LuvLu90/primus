@@ -47,6 +47,47 @@ pub(crate) fn guide_text(detail: &str, repairable: bool) -> String {
     }
 }
 
+/// 路径比较用的键（会话索引按工作区过滤，ADR 0006）：Windows 上不区分大小写、`/` 与 `\` 等价；
+/// 去掉末尾分隔符（根目录除外）。
+pub(crate) fn path_key(path: &str) -> String {
+    path_key_for(path, cfg!(windows))
+}
+
+/// 按文件身份比较用的键（会话文件占用检查）：先解析符号链接、`.` 段与 Windows 短名（`canonicalize`），
+/// 解析不了（文件不存在等）时用原路径；Windows 上去掉 `canonicalize` 加的 `\\?\` 前缀，再按 [`path_key`] 规范化。
+pub(crate) fn file_identity_key(path: &Path) -> Option<String> {
+    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    resolved
+        .to_str()
+        .map(|p| path_key(strip_verbatim_prefix(p, cfg!(windows))))
+}
+
+/// 去掉 Windows 的 `\\?\` 前缀（`\\?\UNC\` 网络路径保留原样，二者都经 `canonicalize` 时仍一致）。
+fn strip_verbatim_prefix(path: &str, windows: bool) -> &str {
+    match path.strip_prefix(r"\\?\") {
+        Some(rest) if windows && !rest.starts_with(r"UNC\") => rest,
+        _ => path,
+    }
+}
+
+fn path_key_for(path: &str, windows: bool) -> String {
+    let (mut key, sep) = if windows {
+        (path.replace('/', "\\").to_lowercase(), '\\')
+    } else {
+        (path.to_owned(), '/')
+    };
+    while key.ends_with(sep) {
+        let rest = &key[..key.len() - 1];
+        // 保留根目录：`/`、`c:\`
+        let is_root = rest.is_empty() || (windows && rest.len() == 2 && rest.ends_with(':'));
+        if is_root {
+            break;
+        }
+        key.pop();
+    }
+    key
+}
+
 #[cfg(windows)]
 pub(crate) use windows_impl::*;
 
@@ -700,6 +741,39 @@ mod windows_impl {
         let aces = unsafe { (*dacl).AceCount };
         Ok((control & SE_DACL_PROTECTED != 0, aces))
     }
+
+    /// 把文件移到回收站（会话删除，ADR 0006）。`path` 须为不带 `\\?\` 前缀的绝对路径。
+    pub(crate) fn move_to_trash(path: &Path) -> io::Result<()> {
+        use windows_sys::Win32::UI::Shell::{
+            FO_DELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT,
+            FOF_WANTNUKEWARNING, SHFILEOPSTRUCTW, SHFileOperationW,
+        };
+
+        let mut from: Vec<u16> = path.as_os_str().encode_wide().collect();
+        if from.contains(&0) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "路径含 NUL"));
+        }
+        // pFrom 是以两个 NUL 结尾的路径列表
+        from.extend([0, 0]);
+        // SAFETY: SHFILEOPSTRUCTW 是纯数据结构，全零（空指针、0 标志）是合法初值
+        let mut op: SHFILEOPSTRUCTW = unsafe { std::mem::zeroed() };
+        op.wFunc = FO_DELETE as _;
+        op.pFrom = from.as_ptr();
+        // FOF_WANTNUKEWARNING：卷上没有回收站、只能永久删除时先警告用户；用户取消则 fAnyOperationsAborted 置位、
+        // 返回错误，索引保持不变（不会在没有回收站副本的情况下静默删除）
+        op.fFlags =
+            (FOF_ALLOWUNDO | FOF_WANTNUKEWARNING | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT)
+                as _;
+        // SAFETY: op 的指针字段指向本函数内存活的缓冲区（from），调用期间有效
+        let rc = unsafe { SHFileOperationW(&mut op) };
+        if rc != 0 {
+            return Err(io::Error::other(format!("移到回收站失败（错误码 {rc}）")));
+        }
+        if op.fAnyOperationsAborted != 0 {
+            return Err(io::Error::other("移到回收站被取消"));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(not(windows))]
@@ -785,6 +859,14 @@ mod fallback_impl {
     pub(crate) fn open_reinstall_page() {
         eprintln!("请从 {REINSTALL_URL} 下载安装包重新安装。");
     }
+
+    /// 移到回收站：macOS / Linux 在 P3 阶段实现，目前不支持。
+    pub(crate) fn move_to_trash(_path: &Path) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "当前平台暂不支持移到回收站",
+        ))
+    }
 }
 
 /// 一次性设置窗口外框位置与尺寸（物理像素）。
@@ -851,6 +933,59 @@ pub fn set_window_bounds(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn path_key_normalizes_per_platform() {
+        assert_eq!(path_key_for("C:/Work/Proj/", true), r"c:\work\proj");
+        assert_eq!(path_key_for(r"C:\Work\Proj\\", true), r"c:\work\proj");
+        assert_eq!(path_key_for(r"C:\", true), r"c:\");
+        assert_eq!(path_key_for("/home/a/Proj/", false), "/home/a/Proj");
+        assert_eq!(path_key_for("/", false), "/");
+        assert_eq!(path_key_for("", false), "");
+    }
+
+    #[test]
+    fn verbatim_prefix_is_stripped_on_windows_only() {
+        assert_eq!(
+            strip_verbatim_prefix(r"\\?\C:\a.jsonl", true),
+            r"C:\a.jsonl"
+        );
+        assert_eq!(
+            strip_verbatim_prefix(r"\\?\UNC\srv\a.jsonl", true),
+            r"\\?\UNC\srv\a.jsonl"
+        );
+        assert_eq!(strip_verbatim_prefix(r"\\?\C:\a", false), r"\\?\C:\a");
+        assert_eq!(strip_verbatim_prefix("/a/b.jsonl", true), "/a/b.jsonl");
+    }
+
+    #[test]
+    fn file_identity_key_resolves_dot_segments_and_symlinks() {
+        let dir = std::env::temp_dir().join(format!("primus-fik-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let file = dir.join("sub").join("a.jsonl");
+        std::fs::write(&file, "x").unwrap();
+        let dotted = dir
+            .join(".")
+            .join("sub")
+            .join("..")
+            .join("sub")
+            .join("a.jsonl");
+        assert_eq!(file_identity_key(&dotted), file_identity_key(&file));
+        #[cfg(unix)]
+        {
+            let link = dir.join("link");
+            let _ = std::fs::remove_file(&link);
+            std::os::unix::fs::symlink(dir.join("sub"), &link).unwrap();
+            assert_eq!(
+                file_identity_key(&link.join("a.jsonl")),
+                file_identity_key(&file)
+            );
+        }
+        // 不存在的文件：用原路径
+        let missing = dir.join("missing.jsonl");
+        assert_eq!(file_identity_key(&missing), missing.to_str().map(path_key));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[cfg(windows)]
     #[test]

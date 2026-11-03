@@ -18,11 +18,28 @@ export interface WorkspaceInfo {
   trusted: boolean;
 }
 
+/** 会话索引中的一条会话（`session_list` / `session_search`，第 10.2 节、ADR 0006） */
 export interface SessionSummary {
+  /** 会话文件绝对路径：打开、删除、归档都用它 */
   path: string;
-  name?: string;
+  id: string;
+  /** 会话名；没有时显示 `title` */
+  name: string | null;
+  /** 首条用户消息（截断）；还没有用户消息时为空串 */
+  title: string;
+  /** 所属工作区（会话文件头的 cwd） */
   workspace: string;
+  /** 创建时间（毫秒） */
+  createdAt: number;
+  /** 最后活动时间（毫秒） */
   updatedAt: number;
+  messageCount: number;
+  archived: boolean;
+}
+
+/** 会话索引变化的信号（`session_watch`）：`seq` 递增，收到后重新拉取列表 */
+export interface SessionIndexEvent {
+  seq: number;
 }
 
 export interface Page<T> {
@@ -32,6 +49,8 @@ export interface Page<T> {
 
 export interface SessionHandle {
   sessionKey: string;
+  /** 新会话的会话 ID（与 SessionSummary.id 对应）；恢复已有会话时为 null */
+  sessionId?: string | null;
 }
 
 export type BatchListener = (batch: CoreBatch) => void;
@@ -95,8 +114,15 @@ export interface Platform {
   /** 系统文件对话框（可多选）；只返回本地路径，文件不复制 */
   dialogPickFiles(): Promise<string[]>;
 
-  sessionList(workspace: string, cursor?: string): Promise<Page<SessionSummary>>;
-  sessionSearch(workspace: string, query: string): Promise<SessionSummary[]>;
+  /**
+   * 会话列表：最后活动时间倒序、每页 50 条、不含已归档。`workspace` 为 null 时列出全部工作区，
+   * 空串为未选工作区的默认目录；`cursor` 为上一页的 `nextCursor`
+   */
+  sessionList(workspace: string | null, cursor?: string): Promise<Page<SessionSummary>>;
+  /** 搜索会话（含已归档，最多 50 条）；3 个字符以上匹配消息全文，更短只匹配会话名与首条消息 */
+  sessionSearch(workspace: string | null, query: string): Promise<SessionSummary[]>;
+  /** 订阅会话索引变化；再次调用替换旧的订阅 */
+  sessionWatch(onChange: (event: SessionIndexEvent) => void): Promise<void>;
   /** 分配或启动 Core 进程；`onBatch` 接收该会话的事件批次（第 7.3 节） */
   sessionOpen(
     workspace: string,
@@ -104,8 +130,10 @@ export interface Platform {
     onBatch: BatchListener,
   ): Promise<SessionHandle>;
   sessionClose(sessionKey: string): Promise<void>;
+  /** 移到回收站并删除索引；打开中的会话以 code `sessionOpen` 拒绝 */
   sessionDelete(sessionPath: string): Promise<void>;
-  sessionArchive(sessionPath: string): Promise<void>;
+  /** 归档或取消归档（只改索引） */
+  sessionArchive(sessionPath: string, archived: boolean): Promise<void>;
 
   /** 写入 Core 的 stdin；响应与事件经 `sessionOpen` 的批次返回 */
   coreSend(sessionKey: string, record: RpcCommand | { type: string; id: string }): Promise<void>;
@@ -152,6 +180,9 @@ export const AUTH_NOT_AVAILABLE = "notAvailable";
 /** 会话命令错误码：会话的内核未运行（重启失败、因进程上限被淘汰或已自行退出），需重启内核 */
 export const CORE_NOT_RUNNING = "coreNotRunning";
 
+/** 删除会话的错误码：会话正在打开中，需先关闭 */
+export const SESSION_OPEN = "sessionOpen";
+
 /** 薄壳命令返回的结构化错误（`{ code, message }`，见 core_send / core_restart）；code 供界面区分处理 */
 export class PlatformError extends Error {
   readonly code: string | undefined;
@@ -181,6 +212,7 @@ export const COMMANDS = {
   dialogPickFiles: "dialog_pick_files",
   sessionList: "session_list",
   sessionSearch: "session_search",
+  sessionWatch: "session_watch",
   sessionOpen: "session_open",
   sessionClose: "session_close",
   sessionDelete: "session_delete",

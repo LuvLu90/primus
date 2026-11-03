@@ -13,12 +13,15 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "=2.7.4", features = [] }
 
 [dependencies]
-# P0 第 1 周只引入空壳所需依赖；其余依赖（tokio、rusqlite、notify、gix、windows 等）
-# 随对应模块落地时再加入，版本以技术方案第 2.4 节为准。
+# 依赖随对应模块落地时加入（其余如 tokio、gix、windows 等以后再加），版本以技术方案第 2.4 节为准。
 tauri = { version = "=2.12.5", features = [] }
 tauri-plugin-single-instance = "=2.5.4"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.154", features = ["raw_value"] }
+# 会话索引（第 10.2 节、ADR 0006）：bundled 内置 SQLite（含 FTS5 与 trigram 分词器），不依赖系统库
+rusqlite = { version = "=0.40.2", features = ["bundled"] }
+# 会话目录监听（fs_watch）
+notify = "=8.2.0"
 
 # Windows 平台层（第 4.3 节 ACL、第 3.7 节修复引导、第 2.2 节 Job Object）：只用 windows-sys 的原始 FFI，版本见技术方案第 2.4 节
 [target.'cfg(windows)'.dependencies]
