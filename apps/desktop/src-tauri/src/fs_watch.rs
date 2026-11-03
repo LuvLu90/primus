@@ -60,6 +60,10 @@ pub(crate) fn start(index: Arc<SessionIndex>, notifier: Arc<IndexNotifier>) -> J
         .name("primus-session-watch".into())
         .spawn(move || {
             let (tx, rx) = mpsc::channel();
+            // 首次启动时 Core 可能还没建会话目录；目录不存在时 notify 无法监听
+            if let Err(e) = std::fs::create_dir_all(index.sessions_dir()) {
+                eprintln!("无法创建会话目录：{e}");
+            }
             let watcher = notify::recommended_watcher(tx).and_then(|mut w| {
                 w.watch(index.sessions_dir(), RecursiveMode::Recursive)?;
                 Ok(w)

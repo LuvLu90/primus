@@ -157,11 +157,6 @@ impl<S: BatchSink + Clone> Sessions<S> {
         let n = self.next.fetch_add(1, Ordering::Relaxed) + 1;
         let key = format!("s{n}");
         let session_file = session_file.filter(|p| !p.is_empty()).map(PathBuf::from);
-        if let Some(file) = &session_file
-            && self.is_using(file, None)
-        {
-            return Err(SessionError::InUse(file.clone()));
-        }
         let session_id = session_file.is_none().then(|| new_session_id(n));
         let opts = LaunchOptions {
             cwd,
@@ -173,17 +168,26 @@ impl<S: BatchSink + Clone> Sessions<S> {
         };
         // 先登记（标记启动中）再拉起：拉起期间若被其他会话的拉起淘汰，标记能落到这一条上；
         // 期间被关闭则结束新进程
-        self.entries().insert(
-            key.clone(),
-            Entry {
-                bridge: None,
-                restarting: true,
-                evicted: false,
-                last_seq: 0,
-                opts: opts.clone(),
-                sink: sink.clone(),
-            },
-        );
+        // 占用检查与登记在同一次加锁内完成，并发打开同一会话文件时只有一个能通过
+        {
+            let mut entries = self.entries();
+            if let Some(file) = &opts.session_file
+                && using(&entries, file, None)
+            {
+                return Err(SessionError::InUse(file.clone()));
+            }
+            entries.insert(
+                key.clone(),
+                Entry {
+                    bridge: None,
+                    restarting: true,
+                    evicted: false,
+                    last_seq: 0,
+                    opts: opts.clone(),
+                    sink: sink.clone(),
+                },
+            );
+        }
         let result = self.launch(supervisor, &key, &opts, sink, 0);
         if let Err(e) = result {
             // 打开失败：撤下登记并报告拉起的原因（如 LimitReached）
@@ -247,19 +251,7 @@ impl<S: BatchSink + Clone> Sessions<S> {
     /// 是否有打开中的会话使用这个会话文件或会话 ID（删除前检查）。新会话按薄壳定好的会话 ID 判断，
     /// 恢复的会话按会话文件路径判断（路径按 `platform::path_key` 比较）。
     pub(crate) fn is_using(&self, session_file: &Path, session_id: Option<&str>) -> bool {
-        let file_key = session_file.to_str().map(crate::platform::path_key);
-        self.entries().values().any(|entry| {
-            let same_file = file_key.is_some()
-                && entry
-                    .opts
-                    .session_file
-                    .as_deref()
-                    .and_then(Path::to_str)
-                    .map(crate::platform::path_key)
-                    == file_key;
-            let same_id = session_id.is_some() && entry.opts.session_id.as_deref() == session_id;
-            same_file || same_id
-        })
+        using(&self.entries(), session_file, session_id)
     }
 
     /// 关闭会话并结束其 Core；会话不存在时什么也不做。
@@ -427,6 +419,27 @@ fn new_session_id(n: u64) -> String {
         .map(|d| d.as_nanos())
         .unwrap_or_default();
     format!("primus-{nanos:x}-{n}")
+}
+
+/// 是否有打开中的会话在使用这个会话文件或会话 ID（调用方持有 `entries` 锁）。
+fn using<S>(
+    entries: &HashMap<String, Entry<S>>,
+    session_file: &Path,
+    session_id: Option<&str>,
+) -> bool {
+    let file_key = session_file.to_str().map(crate::platform::path_key);
+    entries.values().any(|entry| {
+        let same_file = file_key.is_some()
+            && entry
+                .opts
+                .session_file
+                .as_deref()
+                .and_then(Path::to_str)
+                .map(crate::platform::path_key)
+                == file_key;
+        let same_id = session_id.is_some() && entry.opts.session_id.as_deref() == session_id;
+        same_file || same_id
+    })
 }
 
 #[cfg(test)]
