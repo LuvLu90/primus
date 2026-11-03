@@ -47,6 +47,30 @@ pub(crate) fn guide_text(detail: &str, repairable: bool) -> String {
     }
 }
 
+/// 路径比较用的键（会话索引按工作区过滤，ADR 0006）：Windows 上不区分大小写、`/` 与 `\` 等价；
+/// 去掉末尾分隔符（根目录除外）。
+pub(crate) fn path_key(path: &str) -> String {
+    path_key_for(path, cfg!(windows))
+}
+
+fn path_key_for(path: &str, windows: bool) -> String {
+    let (mut key, sep) = if windows {
+        (path.replace('/', "\\").to_lowercase(), '\\')
+    } else {
+        (path.to_owned(), '/')
+    };
+    while key.ends_with(sep) {
+        let rest = &key[..key.len() - 1];
+        // 保留根目录：`/`、`c:\`
+        let is_root = rest.is_empty() || (windows && rest.len() == 2 && rest.ends_with(':'));
+        if is_root {
+            break;
+        }
+        key.pop();
+    }
+    key
+}
+
 #[cfg(windows)]
 pub(crate) use windows_impl::*;
 
@@ -700,6 +724,35 @@ mod windows_impl {
         let aces = unsafe { (*dacl).AceCount };
         Ok((control & SE_DACL_PROTECTED != 0, aces))
     }
+
+    /// 把文件移到回收站（会话删除，ADR 0006）。`path` 须为不带 `\\?\` 前缀的绝对路径。
+    pub(crate) fn move_to_trash(path: &Path) -> io::Result<()> {
+        use windows_sys::Win32::UI::Shell::{
+            FO_DELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT,
+            SHFILEOPSTRUCTW, SHFileOperationW,
+        };
+
+        let mut from: Vec<u16> = path.as_os_str().encode_wide().collect();
+        if from.contains(&0) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "路径含 NUL"));
+        }
+        // pFrom 是以两个 NUL 结尾的路径列表
+        from.extend([0, 0]);
+        // SAFETY: SHFILEOPSTRUCTW 是纯数据结构，全零（空指针、0 标志）是合法初值
+        let mut op: SHFILEOPSTRUCTW = unsafe { std::mem::zeroed() };
+        op.wFunc = FO_DELETE as _;
+        op.pFrom = from.as_ptr();
+        op.fFlags = (FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT) as _;
+        // SAFETY: op 的指针字段指向本函数内存活的缓冲区（from），调用期间有效
+        let rc = unsafe { SHFileOperationW(&mut op) };
+        if rc != 0 {
+            return Err(io::Error::other(format!("移到回收站失败（错误码 {rc}）")));
+        }
+        if op.fAnyOperationsAborted != 0 {
+            return Err(io::Error::other("移到回收站被取消"));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(not(windows))]
@@ -785,6 +838,14 @@ mod fallback_impl {
     pub(crate) fn open_reinstall_page() {
         eprintln!("请从 {REINSTALL_URL} 下载安装包重新安装。");
     }
+
+    /// 移到回收站：macOS / Linux 在 P3 阶段实现，目前不支持。
+    pub(crate) fn move_to_trash(_path: &Path) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "当前平台暂不支持移到回收站",
+        ))
+    }
 }
 
 /// 一次性设置窗口外框位置与尺寸（物理像素）。
@@ -851,6 +912,16 @@ pub fn set_window_bounds(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn path_key_normalizes_per_platform() {
+        assert_eq!(path_key_for("C:/Work/Proj/", true), r"c:\work\proj");
+        assert_eq!(path_key_for(r"C:\Work\Proj\\", true), r"c:\work\proj");
+        assert_eq!(path_key_for(r"C:\", true), r"c:\");
+        assert_eq!(path_key_for("/home/a/Proj/", false), "/home/a/Proj");
+        assert_eq!(path_key_for("/", false), "/");
+        assert_eq!(path_key_for("", false), "");
+    }
 
     #[cfg(windows)]
     #[test]

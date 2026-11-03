@@ -1,6 +1,6 @@
 import type { CoreBatch, CoreRecord } from "@primus/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { COMMANDS } from "../types";
+import { COMMANDS, PlatformError, SESSION_OPEN } from "../types";
 import { createMockPlatform } from "./index";
 import { chunk, promptScenario } from "./scenario";
 
@@ -250,6 +250,75 @@ describe("mock 平台", () => {
     await vi.runAllTimersAsync();
     expect(onBatch).not.toHaveBeenCalled();
     await expect(platform.coreSend(sessionKey, { id: "c-2", type: "get_state" })).rejects.toThrow();
+  });
+});
+
+describe("mock 会话索引", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("首条消息定稿后入索引并通知；可按工作区列出、搜索、归档、删除，历史会话能恢复消息", async () => {
+    let t = 1000;
+    const platform = createMockPlatform({ batchSize: 50, now: () => t });
+    const changes = vi.fn();
+    await platform.sessionWatch(changes);
+    expect((await platform.sessionList(null)).items).toEqual([]);
+
+    const opened = await platform.sessionOpen("ws", undefined, () => {});
+    expect(opened.sessionId).toBe(opened.sessionKey);
+    await platform.coreSend(opened.sessionKey, { id: "1", type: "prompt", message: "数据库迁移" });
+    await vi.runAllTimersAsync();
+    expect(changes).toHaveBeenCalled();
+
+    const [entry] = (await platform.sessionList(null)).items;
+    expect(entry).toMatchObject({ id: opened.sessionId, title: "数据库迁移", workspace: "ws" });
+    if (!entry) throw new Error("缺少索引条目");
+    expect((await platform.sessionList("other")).items).toEqual([]);
+    // 回答正文也能搜到
+    expect(await platform.sessionSearch(null, "mock 平台")).toHaveLength(1);
+    expect(await platform.sessionSearch(null, "   ")).toEqual([]);
+
+    // 打开中不能删除
+    await expect(platform.sessionDelete(entry.path)).rejects.toSatisfy(
+      (e) => e instanceof PlatformError && e.code === SESSION_OPEN,
+    );
+    await platform.sessionClose(opened.sessionKey);
+
+    // 恢复历史会话：get_messages 返回已定稿的消息
+    const records: unknown[] = [];
+    const resumed = await platform.sessionOpen("ws", entry.path, (b) => records.push(...b.records));
+    expect(resumed.sessionId).toBeNull();
+    await platform.coreSend(resumed.sessionKey, { id: "g", type: "get_messages" });
+    await vi.runAllTimersAsync();
+    const res = records.find((r) => (r as { id?: string }).id === "g") as {
+      data: { messages: unknown[] };
+    };
+    expect(res.data.messages.length).toBeGreaterThan(1);
+    await platform.sessionClose(resumed.sessionKey);
+
+    t = 2000;
+    await platform.sessionArchive(entry.path, true);
+    expect((await platform.sessionList(null)).items).toEqual([]);
+    expect((await platform.sessionSearch(null, "迁移"))[0]?.archived).toBe(true);
+    await platform.sessionArchive(entry.path, false);
+    await platform.sessionDelete(entry.path);
+    expect((await platform.sessionList(null)).items).toEqual([]);
+    await expect(platform.sessionDelete(entry.path)).rejects.toThrow();
+    await expect(platform.sessionArchive(entry.path, true)).rejects.toThrow();
+  });
+
+  it("列表按 50 条分页", async () => {
+    const platform = createMockPlatform({ batchSize: 50 });
+    for (let i = 0; i < 55; i++) {
+      const { sessionKey } = await platform.sessionOpen("ws", undefined, () => {});
+      await platform.coreSend(sessionKey, { id: `p${i}`, type: "prompt", message: `第${i}个` });
+    }
+    await vi.runAllTimersAsync();
+    const first = await platform.sessionList(null);
+    expect(first.items).toHaveLength(50);
+    const second = await platform.sessionList(null, first.nextCursor);
+    expect(second.items).toHaveLength(5);
+    expect(second.nextCursor).toBeUndefined();
   });
 });
 

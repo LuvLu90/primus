@@ -14,6 +14,8 @@ import {
   type ModelsInfo,
   type Platform,
   PlatformError,
+  SESSION_OPEN,
+  type SessionIndexEvent,
   type SessionSummary,
   type WorkspaceInfo,
 } from "../types";
@@ -73,6 +75,8 @@ type Queued = CoreRecord | (() => CoreRecord);
 
 interface MockSession {
   key: string;
+  /** 会话文件路径（mock 中只是标识），新会话首条消息定稿后才进入索引，与 Core 落盘时机一致 */
+  path: string;
   workspace: string;
   onBatch: BatchListener;
   seq: number;
@@ -88,6 +92,19 @@ interface MockSession {
 }
 
 const MOCK_WORKSPACE = "C:\\Users\\mock\\示例工作区";
+const MOCK_SESSIONS_DIR = "C:\\Users\\mock\\data\\sessions";
+/** 与薄壳一致的分页大小 */
+const MOCK_PAGE_SIZE = 50;
+
+/** 消息正文（字符串或 text 块），供 mock 索引标题与搜索 */
+function messageText(m: AgentMessage): string {
+  const content = (m as { content?: unknown }).content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((c: { type?: string; text?: string }) => (c.type === "text" ? (c.text ?? "") : ""))
+    .join(" ");
+}
 
 export function createMockPlatform(options: MockOptions = {}): Platform {
   const intervalMs = options.intervalMs ?? 16;
@@ -97,7 +114,42 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
   const workspaces = new Map<string, WorkspaceInfo>([
     [MOCK_WORKSPACE, { path: MOCK_WORKSPACE, name: "示例工作区", trusted: true }],
   ]);
+  // 会话索引（模拟薄壳的 session_index）：会话文件路径 → 摘要与已定稿的消息
   const sessionIndex: SessionSummary[] = [];
+  const history = new Map<string, AgentMessage[]>();
+  let indexListener: ((e: SessionIndexEvent) => void) | undefined;
+  let indexSeq = 0;
+  const notifyIndex = () => {
+    indexSeq += 1;
+    indexListener?.({ seq: indexSeq });
+  };
+  /** 消息定稿后更新索引：有用户消息才入索引（Core 在第一条用户消息之前不落盘） */
+  const touchIndex = (s: MockSession) => {
+    history.set(s.path, s.messages.slice());
+    const firstUser = s.messages.find((m) => (m as { role?: string }).role === "user");
+    if (!firstUser) return;
+    const t = now();
+    const entry = sessionIndex.find((x) => x.path === s.path);
+    if (entry) {
+      entry.updatedAt = t;
+      entry.messageCount = s.messages.length;
+    } else {
+      sessionIndex.push({
+        path: s.path,
+        id: s.key,
+        name: null,
+        title: messageText(firstUser).trim().slice(0, 200),
+        workspace: s.workspace,
+        createdAt: t,
+        updatedAt: t,
+        messageCount: s.messages.length,
+        archived: false,
+      });
+    }
+    notifyIndex();
+  };
+  const sortedIndex = () =>
+    sessionIndex.slice().sort((a, b) => b.updatedAt - a.updatedAt || (a.path < b.path ? 1 : -1));
   let defaultModel = MOCK_LARGE.key;
   const modelsInfo = (): ModelsInfo => ({
     version: 1,
@@ -122,7 +174,10 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
     if (r.type === "response") return;
     s.delivered.push(r);
     // 历史只记已定稿（已推送 message_end）的消息，与 Core 的 get_messages 一致
-    if (r.type === "message_end") s.messages.push(r.message);
+    if (r.type === "message_end") {
+      s.messages.push(r.message);
+      touchIndex(s);
+    }
     if (r.type === "agent_settled") {
       s.streaming = false;
       s.aborting = false;
@@ -252,19 +307,44 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       if (ws) ws.trusted = trusted;
     },
 
-    sessionList: async (workspace) => ({
-      items: sessionIndex.filter((x) => x.workspace === workspace),
-    }),
-    sessionSearch: async (workspace, query) =>
-      sessionIndex.filter((x) => x.workspace === workspace && (x.name ?? "").includes(query)),
+    sessionList: async (workspace, cursor) => {
+      const all = sortedIndex().filter(
+        (x) => !x.archived && (workspace === null || x.workspace === workspace),
+      );
+      const start = cursor ? Number(cursor) || 0 : 0;
+      const end = start + MOCK_PAGE_SIZE;
+      return {
+        items: structuredClone(all.slice(start, end)),
+        nextCursor: end < all.length ? String(end) : undefined,
+      };
+    },
+    sessionSearch: async (workspace, query) => {
+      const q = query.trim().toLowerCase();
+      if (!q) return [];
+      return structuredClone(
+        sortedIndex()
+          .filter((x) => workspace === null || x.workspace === workspace)
+          .filter((x) =>
+            [x.name ?? "", x.title, ...(history.get(x.path) ?? []).map(messageText)].some((t) =>
+              t.toLowerCase().includes(q),
+            ),
+          )
+          .slice(0, MOCK_PAGE_SIZE),
+      );
+    },
+    sessionWatch: async (onChange) => {
+      indexListener = onChange;
+    },
     sessionOpen: async (workspace, sessionPath, onBatch) => {
       const key = `mock-${nextSession++}`;
+      const path = sessionPath || `${MOCK_SESSIONS_DIR}\\${key}.jsonl`;
       sessions.set(key, {
         key,
+        path,
         workspace,
         onBatch,
         seq: 0,
-        messages: [],
+        messages: history.get(path)?.slice() ?? [],
         queue: [],
         timer: undefined,
         streaming: false,
@@ -272,9 +352,7 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
         delivered: [],
         aborting: false,
       });
-      if (!sessionPath)
-        sessionIndex.push({ path: `${key}.jsonl`, workspace, updatedAt: now(), name: "新会话" });
-      return { sessionKey: key };
+      return { sessionKey: key, sessionId: sessionPath ? null : key };
     },
     sessionClose: async (sessionKey) => {
       const s = sessions.get(sessionKey);
@@ -284,10 +362,20 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       sessions.delete(sessionKey);
     },
     sessionDelete: async (path) => {
+      if ([...sessions.values()].some((s) => s.path === path && !s.closed))
+        throw new PlatformError("会话正在打开中，请先关闭再删除", SESSION_OPEN);
       const i = sessionIndex.findIndex((x) => x.path === path);
-      if (i >= 0) sessionIndex.splice(i, 1);
+      if (i < 0) throw new Error(`不是会话文件：${path}`);
+      sessionIndex.splice(i, 1);
+      history.delete(path);
+      notifyIndex();
     },
-    sessionArchive: async () => {},
+    sessionArchive: async (path, archived) => {
+      const entry = sessionIndex.find((x) => x.path === path);
+      if (!entry) throw new Error(`会话不在索引中：${path}`);
+      entry.archived = archived;
+      notifyIndex();
+    },
 
     coreSend: async (sessionKey, record) => {
       const s = session(sessionKey);

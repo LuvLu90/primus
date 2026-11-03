@@ -22,6 +22,8 @@ mod tray;
 mod updater;
 mod vault;
 
+use std::sync::Arc;
+
 use tauri::Manager;
 
 pub fn run() {
@@ -66,6 +68,23 @@ pub fn run() {
         }
     };
 
+    // 会话索引（第 10.2 节）：库文件打不开时退回内存库，本次运行内列表照常可用
+    let session_index = Arc::new(
+        session_index::SessionIndex::open(
+            &data_paths.app_dir().join("index.db"),
+            &data_paths.sessions_dir(),
+        )
+        .or_else(|e| {
+            eprintln!("会话索引库打不开，改用内存索引：{e}");
+            session_index::SessionIndex::open_in_memory(&data_paths.sessions_dir())
+        })
+        .unwrap_or_else(|e| {
+            platform::show_error(&format!("无法创建会话索引：{e}"));
+            std::process::exit(1);
+        }),
+    );
+    let index_notifier = Arc::new(fs_watch::IndexNotifier::default());
+
     tauri::Builder::default()
         // 单实例必须最先注册：第二个实例启动时把已有主窗口带到前台（第 2.2 节）
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
@@ -79,11 +98,15 @@ pub fn run() {
         // tauri.conf.json 中主窗口设 create: false，在这里按同一份配置创建并指定数据目录
         .setup({
             let webview_dir = data_paths.webview_dir();
+            let session_index = session_index.clone();
+            let index_notifier = index_notifier.clone();
             move |app| {
                 // 模型配置：校验内置配置（将来为账号服务下发），令牌写入保险库，生成 Core 的 models.json 与默认模型。
                 // 插件（含单实例）在 setup 之前初始化，到这里已确认是主实例。
                 // 失败不阻止启动：设置页与输入框据 models_get 的 error 提示，并可用 models_refresh 重试
                 app.state::<core_config::ModelConfigState>().refresh();
+                // 会话目录监听与首次全量扫描在后台线程进行，不阻塞窗口创建（第 10.2 节）
+                fs_watch::start(session_index, index_notifier);
                 let config = app
                     .config()
                     .app
@@ -102,8 +125,15 @@ pub fn run() {
         .manage(supervisor)
         .manage(sessions::AppSessions::default())
         .manage(model_config)
+        .manage(session_index)
+        .manage(index_notifier)
         .invoke_handler(tauri::generate_handler![
             commands::window_set_bounds,
+            commands::session_list,
+            commands::session_search,
+            commands::session_watch,
+            commands::session_archive,
+            commands::session_delete,
             commands::session_open,
             commands::session_close,
             commands::core_send,

@@ -15,7 +15,8 @@ import {
   type SessionStore,
 } from "@/stores/session-store";
 
-// 一个会话的生命周期：首次发送时打开会话（浏览器预览下由 mock 平台提供假 Core 事件流）。
+// 一个会话的生命周期：新会话首次发送时打开；历史会话挂载后立即打开并用 get_messages + get_state 加载历史
+// （浏览器预览下由 mock 平台提供假 Core 事件流）。
 // 批次先交给 RPC 客户端（id 关联、超时、缺口重建），去重后的记录在 requestAnimationFrame 中
 // 一次性合并进 store（第 16.4 节）。
 
@@ -52,7 +53,19 @@ export interface ChatSession {
   restart: () => Promise<void>;
 }
 
-export function useChatSession(): ChatSession {
+export interface ChatSessionOptions {
+  /** 打开的历史会话文件：挂载后立即打开并加载历史；新会话不传 */
+  sessionPath?: string | null;
+  /** 会话的工作区；不传时用输入框上方选中的工作区（未选为空，即直接对话） */
+  workspace?: string | null;
+  /** 会话已打开：薄壳给出的会话 ID（新会话）与实际使用的工作区 */
+  onOpened?: (opened: { sessionId: string | null; workspace: string }) => void;
+}
+
+export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
+  // 选项放进 ref：打开流程只在需要时读取最新值，不让回调随之重建
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
   const storeRef = useRef<SessionStore>(null);
   storeRef.current ??= createSessionStore();
   const store = storeRef.current;
@@ -118,13 +131,19 @@ export function useChatSession(): ChatSession {
     if (conn.current) return Promise.resolve();
     opening.current ??= (async () => {
       const platform = await getPlatform();
-      // 用输入框上方选中的工作区；未选择时直接对话，不隐式绑定最近的工作区（会话开始后工作区锁定）
-      const path = useAppStore.getState().workspace?.path ?? "";
+      // 历史会话用它自己的工作区；新会话用输入框上方选中的工作区，未选择时直接对话，
+      // 不隐式绑定最近的工作区（会话开始后工作区锁定）
+      const { sessionPath, workspace } = optionsRef.current;
+      const path = workspace ?? useAppStore.getState().workspace?.path ?? "";
       // 批次可能在 sessionOpen 返回前到达：先缓存，客户端建好后按序交付
       let client: RpcClient | undefined;
       const early: CoreBatch[] = [];
       const onBatch = (batch: CoreBatch) => (client ? client.receive(batch) : early.push(batch));
-      const { sessionKey } = await platform.sessionOpen(path, undefined, onBatch);
+      const { sessionKey, sessionId } = await platform.sessionOpen(
+        path,
+        sessionPath ?? undefined,
+        onBatch,
+      );
       if (disposed.current) {
         // 打开期间组件已卸载：立即关闭，避免会话泄漏
         void platform.sessionClose(sessionKey).catch(() => {});
@@ -166,26 +185,43 @@ export function useChatSession(): ChatSession {
       });
       for (const batch of early) client.receive(batch);
       conn.current = { platform, client };
+      optionsRef.current.onOpened?.({ sessionId: sessionId ?? null, workspace: path });
     })().finally(() => {
       opening.current = null;
     });
     return opening.current;
   }, [enqueue, setError, clearError, syncUnresponsive]);
 
-  // 卸载时关闭会话
+  // 卸载时关闭会话。推迟到下一个任务再关：React 开发模式（StrictMode）会立即卸载再挂载，
+  // 重新挂载时取消关闭，打开中的会话照常复用，不会对同一个会话文件重复打开
+  const closeTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => {
+    clearTimeout(closeTimer.current);
     disposed.current = false;
     return () => {
-      disposed.current = true;
-      opening.current = null;
-      const c = conn.current;
-      conn.current = null;
-      if (c) {
-        c.client.close();
-        void c.platform.sessionClose(c.client.sessionKey).catch(() => {});
-      }
+      closeTimer.current = setTimeout(() => {
+        disposed.current = true;
+        opening.current = null;
+        const c = conn.current;
+        conn.current = null;
+        if (c) {
+          c.client.close();
+          void c.platform.sessionClose(c.client.sessionKey).catch(() => {});
+        }
+      }, 0);
     };
   }, []);
+
+  // 历史会话：挂载后打开并加载历史（每个会话只加载一次；之后的重建由缺口检测与重启触发）
+  const historyPath = options.sessionPath ?? null;
+  const historyLoaded = useRef(false);
+  useEffect(() => {
+    if (!historyPath || historyLoaded.current) return;
+    historyLoaded.current = true;
+    ensureOpen()
+      .then(() => conn.current?.client.resync())
+      .catch(fail);
+  }, [historyPath, ensureOpen, fail]);
 
   const send = useCallback(
     async (message: string): Promise<boolean> => {

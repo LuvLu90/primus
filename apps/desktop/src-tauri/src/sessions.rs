@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -34,6 +34,11 @@ pub(crate) type AppSessions = Sessions<tauri::ipc::Channel<CoreBatch>>;
 /// 未选工作区时 Core 的工作目录（`users/<SID>` 下）。
 const DEFAULT_WORKSPACE_DIR: &str = "chat";
 
+/// 未选工作区时的默认工作目录 `users/<SID>/chat`（会话索引按它过滤“未选工作区”的会话）。
+pub(crate) fn default_workspace_dir(paths: &DataPaths) -> PathBuf {
+    paths.user_dir().join(DEFAULT_WORKSPACE_DIR)
+}
+
 #[derive(Debug)]
 pub(crate) enum SessionError {
     /// 会话不存在（未打开或已关闭）
@@ -44,6 +49,8 @@ pub(crate) enum SessionError {
     NotRunning(String),
     /// 会话正在重启
     Restarting(String),
+    /// 会话文件已被另一个打开中的会话使用（同一文件只能有一个 Core 写入）
+    InUse(PathBuf),
     Supervisor(SupervisorError),
     Bridge(BridgeError),
     Io(io::Error),
@@ -56,6 +63,7 @@ impl fmt::Display for SessionError {
             Self::Workspace(path) => write!(f, "工作区不存在：{}", path.display()),
             Self::NotRunning(key) => write!(f, "会话的内核未运行，请重启内核：{key}"),
             Self::Restarting(key) => write!(f, "会话的内核正在重启：{key}"),
+            Self::InUse(path) => write!(f, "会话已在其他标签中打开：{}", path.display()),
             Self::Supervisor(e) => write!(f, "{e}"),
             Self::Bridge(e) => write!(f, "{e}"),
             Self::Io(e) => write!(f, "{e}"),
@@ -137,7 +145,7 @@ impl<S: BatchSink + Clone> Sessions<S> {
         sink: S,
     ) -> Result<String, SessionError> {
         let cwd = if workspace.trim().is_empty() {
-            let dir = paths.user_dir().join(DEFAULT_WORKSPACE_DIR);
+            let dir = default_workspace_dir(paths);
             std::fs::create_dir_all(&dir)?;
             dir
         } else {
@@ -149,6 +157,11 @@ impl<S: BatchSink + Clone> Sessions<S> {
         let n = self.next.fetch_add(1, Ordering::Relaxed) + 1;
         let key = format!("s{n}");
         let session_file = session_file.filter(|p| !p.is_empty()).map(PathBuf::from);
+        if let Some(file) = &session_file
+            && self.is_using(file, None)
+        {
+            return Err(SessionError::InUse(file.clone()));
+        }
         let session_id = session_file.is_none().then(|| new_session_id(n));
         let opts = LaunchOptions {
             cwd,
@@ -222,6 +235,31 @@ impl<S: BatchSink + Clone> Sessions<S> {
             }
         }
         Ok(())
+    }
+
+    /// 薄壳为新会话定好的会话 ID（`--session-id`）；恢复已有会话文件时为 None。
+    pub(crate) fn session_id(&self, key: &str) -> Option<String> {
+        self.entries()
+            .get(key)
+            .and_then(|entry| entry.opts.session_id.clone())
+    }
+
+    /// 是否有打开中的会话使用这个会话文件或会话 ID（删除前检查）。新会话按薄壳定好的会话 ID 判断，
+    /// 恢复的会话按会话文件路径判断（路径按 `platform::path_key` 比较）。
+    pub(crate) fn is_using(&self, session_file: &Path, session_id: Option<&str>) -> bool {
+        let file_key = session_file.to_str().map(crate::platform::path_key);
+        self.entries().values().any(|entry| {
+            let same_file = file_key.is_some()
+                && entry
+                    .opts
+                    .session_file
+                    .as_deref()
+                    .and_then(Path::to_str)
+                    .map(crate::platform::path_key)
+                    == file_key;
+            let same_id = session_id.is_some() && entry.opts.session_id.as_deref() == session_id;
+            same_file || same_id
+        })
     }
 
     /// 关闭会话并结束其 Core；会话不存在时什么也不做。
@@ -479,6 +517,62 @@ process.stdin.on("data", (chunk) => {
         let argv = start["argv"].as_array()?;
         let i = argv.iter().position(|a| a == flag)?;
         argv.get(i + 1)?.as_str().map(str::to_owned)
+    }
+
+    fn idle_entry(session_file: Option<&str>, session_id: Option<&str>) -> Entry<Collect> {
+        Entry {
+            bridge: None,
+            restarting: false,
+            evicted: true,
+            last_seq: 0,
+            opts: LaunchOptions {
+                cwd: PathBuf::from("/w"),
+                session_file: session_file.map(PathBuf::from),
+                session_id: session_id.map(str::to_owned),
+                approve: false,
+                offline: false,
+                telemetry: false,
+            },
+            sink: Collect::default(),
+        }
+    }
+
+    #[test]
+    fn is_using_matches_session_file_or_id() {
+        let sessions = Sessions::<Collect>::new(BridgeConfig::default());
+        let file = std::env::temp_dir().join("sessions").join("a.jsonl");
+        sessions
+            .entries()
+            .insert("s1".into(), idle_entry(file.to_str(), None));
+        sessions
+            .entries()
+            .insert("s2".into(), idle_entry(None, Some("primus-new")));
+        assert!(sessions.is_using(&file, None));
+        assert!(sessions.is_using(Path::new("/elsewhere/b.jsonl"), Some("primus-new")));
+        assert!(!sessions.is_using(Path::new("/elsewhere/b.jsonl"), Some("other")));
+        assert!(!sessions.is_using(Path::new("/elsewhere/b.jsonl"), None));
+        sessions.entries().remove("s1");
+        assert!(!sessions.is_using(&file, None));
+    }
+
+    #[test]
+    fn opening_a_session_file_already_in_use_is_rejected() {
+        let tmp = TempDir::new();
+        let (supervisor, paths, sessions) = setup(&tmp);
+        let file = tmp.0.join("a.jsonl");
+        sessions
+            .entries()
+            .insert("s1".into(), idle_entry(file.to_str(), None));
+        let r = sessions.open(
+            &supervisor,
+            &paths,
+            tmp.0.to_str().unwrap(),
+            file.to_str(),
+            Collect::default(),
+        );
+        assert!(matches!(r, Err(SessionError::InUse(_))), "{r:?}");
+        assert!(supervisor.running_keys().is_empty());
+        assert_eq!(sessions.session_id("s1"), None);
     }
 
     #[test]

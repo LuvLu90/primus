@@ -368,6 +368,37 @@ describe("对话区（mock 事件流）", () => {
     }
   });
 
+  it("打开历史会话：挂载后立即恢复会话并显示历史消息，工作区锁定", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    setPlatformForTesting(platform);
+    const first = await platform.sessionOpen("C:\\work\\demo", undefined, () => {});
+    await platform.coreSend(first.sessionKey, { id: "h1", type: "prompt", message: "上次的问题" });
+    await waitFor(async () => expect((await platform.sessionList(null)).items).toHaveLength(1));
+    await new Promise((r) => setTimeout(r, 50));
+    await platform.sessionClose(first.sessionKey);
+    const [entry] = (await platform.sessionList(null)).items;
+    if (!entry) throw new Error("缺少索引条目");
+
+    const sessionOpen = vi.spyOn(platform, "sessionOpen");
+    render(
+      <ChatPanel
+        tab={{
+          id: "tab-h",
+          sessionPath: entry.path,
+          sessionId: entry.id,
+          workspace: entry.workspace,
+          running: false,
+        }}
+      />,
+    );
+    expect(await screen.findByText("上次的问题")).toBeTruthy();
+    expect(sessionOpen).toHaveBeenCalledTimes(1);
+    expect(sessionOpen.mock.calls[0]?.slice(0, 2)).toEqual(["C:\\work\\demo", entry.path]);
+    // 历史会话的工作区锁定显示，不出现选择文件夹条
+    expect(screen.queryByRole("button", { name: new RegExp(t.chooseFolder) })).toBeNull();
+    expect(screen.getByTitle(new RegExp(t.workspaceLocked)).textContent).toContain("demo");
+  });
+
   it("Shift+Enter 不发送；空内容不能发送", () => {
     render(<ChatPanel />);
     const input = screen.getByRole("textbox", { name: t.inputLabel });
