@@ -270,6 +270,11 @@ fn delete_session<S: BatchSink + Clone>(
     index
         .remove(session_path)
         .map_err(|e| CoreCommandError::new(None, e.to_string()))?;
+    // 移到回收站与删除索引之间，同一路径可能已出现新的会话文件并被监听器写入索引（刚被上面一并删掉）：
+    // 按路径的当前文件状态重新同步，文件不在则保持删除，有新文件则重新入索引。文件已移走，同步失败不算删除失败
+    if let Err(e) = index.update_file(path) {
+        eprintln!("会话删除后重新同步索引失败（{session_path}）：{e}");
+    }
     Ok(())
 }
 
@@ -370,6 +375,28 @@ mod tests {
             .unwrap();
             assert!(trashed.get());
             assert!(index.list(None, None).unwrap().items.is_empty());
+        }
+
+        #[test]
+        fn file_recreated_at_same_path_is_reindexed_after_delete() {
+            let (_tmp, dir, index, sessions) = setup();
+            let path = write_session(&dir, "a.jsonl");
+            index.sync_all().unwrap();
+            index.set_archived(&path, true).unwrap();
+            delete_session(&sessions, &index, &path, |p| {
+                std::fs::remove_file(p)?;
+                // 移走后、删除索引前，同一路径出现新的会话文件，监听器已把它写入索引
+                std::fs::write(
+                    p,
+                    "{\"type\":\"session\",\"id\":\"y\",\"timestamp\":\"2026-11-03T00:00:00.000Z\",\"cwd\":\"/w\"}\n",
+                )?;
+                index.update_file(p).map(|_| ()).map_err(io::Error::other)
+            })
+            .unwrap();
+            let items = index.list(None, None).unwrap().items;
+            assert_eq!(items.len(), 1, "同一路径的新会话文件应留在索引中");
+            assert_eq!(items[0].id, "y");
+            assert!(!items[0].archived, "新文件不继承旧文件的归档标记");
         }
 
         #[test]

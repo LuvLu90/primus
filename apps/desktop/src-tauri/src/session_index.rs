@@ -62,6 +62,21 @@ impl From<io::Error> for IndexError {
     }
 }
 
+/// 全量扫描中途失败。逐文件提交，失败前已写入的变化不回滚：`changed` 表示索引是否已经变了（调用方据此通知前端）。
+#[derive(Debug)]
+pub(crate) struct SyncError {
+    pub(crate) changed: bool,
+    pub(crate) error: IndexError,
+}
+
+impl fmt::Display for SyncError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.error.fmt(f)
+    }
+}
+
+impl std::error::Error for SyncError {}
+
 /// 列表与搜索返回给前端的一条会话。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -150,10 +165,17 @@ impl SessionIndex {
     }
 
     /// 全量扫描会话目录（递归，与监听范围一致）：更新有变化的文件，删除磁盘上已不存在的条目。返回索引是否有变化。
-    /// 目录读不了时整次扫描失败、索引保持原状（不把没读到的会话当作已删除）。
-    pub(crate) fn sync_all(&self) -> Result<bool, IndexError> {
-        let files = session_files(&self.sessions_dir)?;
+    /// 目录读不了时整次扫描失败、索引保持原状（不把没读到的会话当作已删除）。中途失败时错误里带上已写入的变化。
+    pub(crate) fn sync_all(&self) -> Result<bool, SyncError> {
         let mut changed = false;
+        match self.sync_all_into(&mut changed) {
+            Ok(()) => Ok(changed),
+            Err(error) => Err(SyncError { changed, error }),
+        }
+    }
+
+    fn sync_all_into(&self, changed: &mut bool) -> Result<(), IndexError> {
+        let files = session_files(&self.sessions_dir)?;
         let mut seen = HashSet::with_capacity(files.len());
         for file in files {
             let Some(key) = file.to_str().map(str::to_owned) else {
@@ -161,7 +183,7 @@ impl SessionIndex {
             };
             // 单个文件读不了（被占用、权限）不影响其他文件；下次事件或扫描再试
             match self.update_file(&file) {
-                Ok(change) => changed |= change.changed(),
+                Ok(change) => *changed |= change.changed(),
                 Err(IndexError::Io(_)) => {}
                 Err(e) => return Err(e),
             }
@@ -181,9 +203,9 @@ impl SessionIndex {
             stale
         };
         for path in stale {
-            changed |= self.remove(&path)?;
+            *changed |= self.remove(&path)?;
         }
-        Ok(changed)
+        Ok(())
     }
 
     /// 按一个文件的当前状态更新索引：不存在则删除条目，有变化则增量或整份解析。
@@ -408,6 +430,12 @@ impl SessionIndex {
             .collect::<Result<Vec<_>, _>>()?
         };
         Ok(rows)
+    }
+
+    /// 测试用：直接执行 SQL（构造索引写入失败等）。
+    #[cfg(test)]
+    pub(crate) fn execute_batch_for_test(&self, sql: &str) {
+        self.conn().execute_batch(sql).unwrap();
     }
 
     fn load_state(&self, path: &str) -> Result<Option<RowState>, IndexError> {
@@ -1160,6 +1188,31 @@ mod tests {
         let items = index.list(None, None).unwrap().items;
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].id, "b");
+    }
+
+    #[test]
+    fn sync_all_failure_reports_changes_already_written() {
+        let (dir, index) = setup();
+        // 根目录的文件先于子目录处理：a 先写入，随后 bad 写入失败（非 IO 错误）中止扫描
+        let a = dir.0.join("a.jsonl");
+        write_lines(&a, &[header("a", "/w", TS), user("1", 1)]);
+        let sub = dir.0.join("sub");
+        fs::create_dir(&sub).unwrap();
+        write_lines(
+            &sub.join("bad.jsonl"),
+            &[header("bad", "/w", TS), user("2", 2)],
+        );
+        index.execute_batch_for_test(
+            "CREATE TEMP TRIGGER fail_bad BEFORE INSERT ON sessions WHEN NEW.id = 'bad'
+             BEGIN SELECT RAISE(ABORT, 'boom'); END;",
+        );
+        let err = index.sync_all().unwrap_err();
+        assert!(matches!(err.error, IndexError::Sqlite(_)));
+        assert!(err.changed, "失败前已写入的变化应报告");
+        assert_eq!(index.list(None, None).unwrap().items.len(), 1);
+        index.execute_batch_for_test("DROP TRIGGER fail_bad;");
+        assert!(index.sync_all().unwrap());
+        assert_eq!(index.list(None, None).unwrap().items.len(), 2);
     }
 
     #[test]

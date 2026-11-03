@@ -53,9 +53,14 @@ pub(crate) fn path_key(path: &str) -> String {
     path_key_for(path, cfg!(windows))
 }
 
-/// 按文件身份比较用的键（会话文件占用检查）：先解析符号链接、`.` 段与 Windows 短名（`canonicalize`），
-/// 解析不了（文件不存在等）时用原路径；Windows 上去掉 `canonicalize` 加的 `\\?\` 前缀，再按 [`path_key`] 规范化。
+/// 按文件身份比较用的键（会话文件占用检查）：文件存在时用文件系统身份（跟随符号链接；Unix 为 dev + ino，
+/// Windows 为卷序列号 + 文件索引），同一文件的硬链接、符号链接、`.` 段与短名得到同一个键。取不到身份
+/// （文件不存在等）时退回路径键：先解析符号链接、`.` 段与 Windows 短名（`canonicalize`），解析不了时用原路径；
+/// Windows 上去掉 `canonicalize` 加的 `\\?\` 前缀，再按 [`path_key`] 规范化。
 pub(crate) fn file_identity_key(path: &Path) -> Option<String> {
+    if let Some(id) = file_system_id(path) {
+        return Some(id);
+    }
     let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     resolved
         .to_str()
@@ -742,6 +747,43 @@ mod windows_impl {
         Ok((control & SE_DACL_PROTECTED != 0, aces))
     }
 
+    /// 文件系统身份（[`file_identity_key`]）：卷序列号 + 64 位文件索引，跟随符号链接。只要 `FILE_READ_ATTRIBUTES`，
+    /// 共享读写删除，不与 Core 对会话文件的打开冲突。打不开或查询失败时为 None。
+    pub(crate) fn file_system_id(path: &Path) -> Option<String> {
+        let wide_path = wide(path);
+        if wide_path[..wide_path.len() - 1].contains(&0) {
+            // 路径含 NUL 会被截断成另一个路径
+            return None;
+        }
+        // SAFETY: wide_path 以 NUL 结尾
+        let handle = unsafe {
+            CreateFileW(
+                wide_path.as_ptr(),
+                FILE_READ_ATTRIBUTES,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                null(),
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS,
+                null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return None;
+        }
+        let handle = OwnedHandle(handle);
+        // SAFETY: 全零是 BY_HANDLE_FILE_INFORMATION 的合法初值
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        // SAFETY: 句柄有效，info 指向有效内存
+        if unsafe { GetFileInformationByHandle(handle.0, &mut info) } == 0 {
+            return None;
+        }
+        let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
+        Some(format!(
+            "file-id:{:08x}:{index:016x}",
+            info.dwVolumeSerialNumber
+        ))
+    }
+
     /// 把文件移到回收站（会话删除，ADR 0006）。`path` 须为不带 `\\?\` 前缀的绝对路径。
     pub(crate) fn move_to_trash(path: &Path) -> io::Result<()> {
         use windows_sys::Win32::UI::Shell::{
@@ -779,6 +821,22 @@ mod windows_impl {
 #[cfg(not(windows))]
 mod fallback_impl {
     use super::*;
+
+    /// 文件系统身份（[`file_identity_key`]）：Unix 为 dev + ino，跟随符号链接；取不到时为 None。
+    pub(crate) fn file_system_id(path: &Path) -> Option<String> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::metadata(path)
+                .ok()
+                .map(|meta| format!("file-id:{:x}:{:x}", meta.dev(), meta.ino()))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = path;
+            None
+        }
+    }
 
     /// 非 Windows：用 `uid-<uid>` 作为用户子目录名（Linux 读 /proc/self 的属主；完整实现见 P3）。
     pub(crate) fn current_user_id() -> io::Result<String> {
@@ -984,6 +1042,26 @@ mod tests {
         // 不存在的文件：用原路径
         let missing = dir.join("missing.jsonl");
         assert_eq!(file_identity_key(&missing), missing.to_str().map(path_key));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn file_identity_key_matches_hard_links_only_for_the_same_file() {
+        let dir = std::env::temp_dir().join(format!("primus-fik-hl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.jsonl");
+        std::fs::write(&file, "x").unwrap();
+        let link = dir.join("b.jsonl");
+        std::fs::hard_link(&file, &link).unwrap();
+        let other = dir.join("c.jsonl");
+        std::fs::write(&other, "x").unwrap();
+        let key = file_identity_key(&file);
+        assert!(key.is_some());
+        // 同一文件的两个硬链接名：同一个键
+        assert_eq!(file_identity_key(&link), key);
+        // 内容相同的另一个文件：不同的键
+        assert_ne!(file_identity_key(&other), key);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
