@@ -1,7 +1,7 @@
 {
   "$comment": "技术方案第 2.4 节版本基线。升级时先改这里（并同步技术方案），再改各清单文件；scripts/check-versions.mjs 在 CI 中逐项核对。",
   "app": {
-    "primus": "0.0.4"
+    "primus": "0.0.5"
   },
   "toolchain": {
     "node": "24.22.1",

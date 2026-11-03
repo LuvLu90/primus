@@ -3,7 +3,7 @@
   "productName": "Primus",
   "mainBinaryName": "Primus",
   "identifier": "com.primus.desktop",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "build": {
     "frontendDist": "../out",
     "devUrl": "http://localhost:3000",
