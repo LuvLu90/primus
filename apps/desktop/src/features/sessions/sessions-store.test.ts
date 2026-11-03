@@ -107,6 +107,33 @@ describe("会话标签", () => {
     expect(store().openSession(session(1))).toBe(true);
   });
 
+  it("新建或打开因标签已满被拒绝时记下提示；成功打开、关闭标签或有标签结束运行时清除", () => {
+    for (let i = 1; i <= MAX_TABS; i++) {
+      store().openSession(session(i));
+      store().setRunning(store().activeTabId, true);
+    }
+    expect(store().tabsFull).toBe(false);
+    expect(store().newTab()).toBe(false);
+    expect(store().tabsFull).toBe(true);
+    // 切到已打开的会话成功：提示清除
+    expect(store().openSession(session(1))).toBe(true);
+    expect(store().tabsFull).toBe(false);
+
+    expect(store().openSession(session(MAX_TABS + 1))).toBe(false);
+    expect(store().tabsFull).toBe(true);
+    // 仍在运行的状态再设一次不清除
+    store().setRunning(store().tabs[0]?.id ?? "", true);
+    expect(store().tabsFull).toBe(true);
+    store().setRunning(store().tabs[0]?.id ?? "", false);
+    expect(store().tabsFull).toBe(false);
+
+    store().setRunning(store().tabs[0]?.id ?? "", true);
+    expect(store().newTab()).toBe(false);
+    expect(store().tabsFull).toBe(true);
+    store().closeTab(store().tabs[1]?.id ?? "");
+    expect(store().tabsFull).toBe(false);
+  });
+
   it("运行状态不变时不产生新的标签数组", () => {
     const before = store().tabs;
     store().setRunning(before[0]?.id ?? "", false);

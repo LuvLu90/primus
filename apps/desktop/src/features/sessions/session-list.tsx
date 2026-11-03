@@ -60,6 +60,7 @@ export function SessionList() {
   const activeTabId = useSessionsStore((s) => s.activeTabId);
   const openSession = useSessionsStore((s) => s.openSession);
   const closeTab = useSessionsStore((s) => s.closeTab);
+  const tabsFull = useSessionsStore((s) => s.tabsFull);
 
   const searching = search.results !== null;
   const rows = search.results ?? index.items;
@@ -114,7 +115,9 @@ export function SessionList() {
   const emptyText = searching
     ? search.pending
       ? t.searching
-      : t.noResults
+      : search.error
+        ? null
+        : t.noResults
     : index.loading
       ? t.loading
       : t.empty;
@@ -133,22 +136,36 @@ export function SessionList() {
         />
       </label>
 
-      {(listError || actionError) && (
+      {actionError && (
+        <div role="alert" className="flex items-center gap-2 px-1 text-xs text-danger">
+          <span className="min-w-0 flex-1 break-words">{actionError}</span>
+        </div>
+      )}
+
+      {listError && (
         <div role="alert" className="flex items-center gap-2 px-1 text-xs text-danger">
           <span className="min-w-0 flex-1 break-words">
-            {actionError ?? `${t.loadFailed}：${listError}`}
+            {`${searching ? t.searchFailed : t.loadFailed}：${listError}`}
           </span>
-          {!actionError && !searching && (
-            <button type="button" onClick={index.reload} className="shrink-0 underline">
-              {t.retry}
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={searching ? search.retry : index.reload}
+            className="shrink-0 underline"
+          >
+            {t.retry}
+          </button>
         </div>
+      )}
+
+      {tabsFull && (
+        <p role="status" className="px-1 text-xs text-muted">
+          {t.tabsFull}
+        </p>
       )}
 
       <div ref={scrollRef} className="scroll-thin -mx-1 min-h-0 flex-1 overflow-y-auto px-1">
         {rows.length === 0 ? (
-          <p className="px-2 py-3 text-xs text-muted">{emptyText}</p>
+          emptyText && <p className="px-2 py-3 text-xs text-muted">{emptyText}</p>
         ) : (
           <ul
             aria-label={searching ? t.searchResults : strings.layout.sessions}

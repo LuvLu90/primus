@@ -203,6 +203,8 @@ export const strings = {
     searchResults: "搜索结果",
     loading: "正在加载…",
     loadFailed: "会话列表加载失败",
+    searchFailed: "搜索失败",
+    tabsFull: "标签已满，请关闭一个标签，或等任一会话结束运行",
     retry: "重试",
     running: "运行中",
     archived: "已归档",

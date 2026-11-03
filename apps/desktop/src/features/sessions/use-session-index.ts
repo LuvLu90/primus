@@ -156,6 +156,8 @@ export interface SessionSearchView {
   pending: boolean;
   /** 当前查询的搜索错误（此时 `results` 为空数组） */
   error?: string;
+  /** 按当前查询重新搜索（搜索出错后重试用） */
+  retry: () => void;
 }
 
 /** 搜索：输入停顿 200ms 后查询。`version` 变化（索引有更新）时按同一查询重新查询，期间保留该查询已有的结果 */
@@ -166,8 +168,14 @@ export function useSessionSearch(query: string, version: number): SessionSearchV
     results: SessionSummary[];
     error?: string;
   }>();
+  // 每次重试加一：查询与索引版本都没变时也能重新搜索
+  const [attempt, setAttempt] = useState(0);
+  const retry = useCallback(() => {
+    setSettled(undefined);
+    setAttempt((n) => n + 1);
+  }, []);
   const q = query.trim();
-  // biome-ignore lint/correctness/useExhaustiveDependencies: version 只用来在索引更新后重新查询
+  // biome-ignore lint/correctness/useExhaustiveDependencies: version 与 attempt 只用来在索引更新或重试时重新查询
   useEffect(() => {
     if (!q) {
       setSettled(undefined);
@@ -188,8 +196,8 @@ export function useSessionSearch(query: string, version: number): SessionSearchV
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [q, version]);
-  if (!q) return { results: null, pending: false };
-  if (settled?.query !== q) return { results: [], pending: true };
-  return { results: settled.results, pending: false, error: settled.error };
+  }, [q, version, attempt]);
+  if (!q) return { results: null, pending: false, retry };
+  if (settled?.query !== q) return { results: [], pending: true, retry };
+  return { results: settled.results, pending: false, error: settled.error, retry };
 }

@@ -1,9 +1,9 @@
 //! 会话索引（第 10.2 节、ADR 0006）：扫描会话目录，解析 JSONL 头部、`session_info` 与消息，写入
 //! `users/<SID>/app/index.db`（SQLite），并对消息文本建立 FTS5 全文索引（trigram 分词，可做中文子串匹配）。
 //!
-//! - 会话文件只追加：记住解析到的字节偏移（只算到最后一个 `\n`）与已解析部分的指纹（首尾各 4KB 的哈希），
-//!   文件变大且指纹不变时从偏移处继续；变小、文件头或指纹变了（被改写）时整份重解析。大小与修改时间都没变时
-//!   也核对指纹，同尺寸、同修改时间的改写不会被漏掉。
+//! - 会话文件只追加：记住解析到的字节偏移（只算到最后一个 `\n`）与已解析部分的指纹（完整已解析部分的流式
+//!   哈希），文件变大且指纹不变时从偏移处继续，新指纹接着旧哈希状态算，不重复读；变小、文件头或指纹变了
+//!   （任何位置被改写）时整份重解析。大小与修改时间都没变时也核对指纹，同尺寸、同修改时间的改写不会被漏掉。
 //! - 逐行按 `\n` 切分并去掉 `\r`（与第 5.4 节分帧规则一致），解析不了的行跳过。
 //! - 索引是会话文件的派生数据：`schema_version` 不符或数据库损坏时重建；归档标记存在独立的 `archived` 表，
 //!   因版本变化重建时保留。
@@ -25,13 +25,13 @@ pub(crate) const PAGE_SIZE: usize = 50;
 /// 搜索结果上限。
 pub(crate) const SEARCH_LIMIT: usize = 50;
 /// 索引结构版本；改表结构时加一，旧库整体重建（`archived` 表保留）。
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 /// 列表标题（首条用户消息）最多保留的字符数。
 const TITLE_CHARS: usize = 200;
 /// trigram 分词器能匹配的最短查询（字符数）；更短的查询改为对标题做子串匹配。
 const TRIGRAM_MIN_CHARS: usize = 3;
-/// 已解析部分的指纹取首尾各多少字节。
-const FINGERPRINT_SPAN: u64 = 4096;
+/// 计算已解析部分指纹时每次读取的字节数。
+const FINGERPRINT_CHUNK: usize = 64 * 1024;
 
 #[derive(Debug)]
 pub(crate) enum IndexError {
@@ -204,26 +204,28 @@ impl SessionIndex {
         let mtime = mtime_ms(&meta);
         let existing = self.load_state(key)?;
         let mut file = File::open(path)?;
-        // 已解析部分是否原样未动：文件头的会话 ID 与已解析部分的指纹都和记录一致
-        let mut prefix_intact = |state: &RowState| {
-            size >= state.parsed_offset
-                && prefix_fingerprint(&mut file, state.parsed_offset).ok()
-                    == Some(state.fingerprint)
-                && read_header_id(&mut file).ok().flatten().as_deref()
-                    == Some(state.meta.id.as_str())
-        };
-        if let Some(state) = &existing
+        // 已解析部分是否原样未动：文件头的会话 ID 与完整已解析部分的指纹都和记录一致（读一遍已解析部分）
+        let intact = existing
+            .as_ref()
+            .is_some_and(|state| prefix_intact(&mut file, size, state));
+        if intact
+            && let Some(state) = &existing
             && state.file_size == size
             && state.file_mtime == mtime
-            && prefix_intact(state)
         {
             return Ok(Change::Unchanged);
         }
-        // 增量：文件只追加，从上次解析到的完整行之后继续；已解析部分变了（变小、文件头或内容被改写）则整份重解析
-        let resume = existing.filter(|state| prefix_intact(state));
-        let (mut meta_acc, offset, full) = match resume {
-            Some(state) => (Some(state.meta), state.parsed_offset, false),
-            None => (None, 0, true),
+        // 增量：文件只追加，从上次解析到的完整行之后继续，指纹接着旧哈希状态算；
+        // 已解析部分变了（变小、文件头或任何位置被改写）则整份重解析
+        let resume = existing.filter(|_| intact);
+        let (mut meta_acc, offset, mut hash, full) = match resume {
+            Some(state) => (
+                Some(state.meta),
+                state.parsed_offset,
+                Fnv1a(state.fingerprint as u64),
+                false,
+            ),
+            None => (None, 0, Fnv1a::default(), true),
         };
         file.seek(SeekFrom::Start(offset as u64))?;
         let mut reader = BufReader::new(file);
@@ -238,6 +240,7 @@ impl SessionIndex {
                 break;
             }
             parsed += n as i64;
+            hash.write(&line);
             line.pop();
             if line.last() == Some(&b'\r') {
                 line.pop();
@@ -258,7 +261,7 @@ impl SessionIndex {
             // 还没有完整的会话头（空文件或第一行未写完）：先不入索引
             return self.remove(key).map(removed);
         };
-        let fingerprint = prefix_fingerprint(reader.get_mut(), parsed)?;
+        let fingerprint = hash.0 as i64;
 
         let mut conn = self.conn();
         let tx = conn.transaction()?;
@@ -730,19 +733,26 @@ fn session_files(dir: &Path) -> io::Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-/// 已解析部分 `[0, len)` 的指纹：长度与首尾各 [`FINGERPRINT_SPAN`] 字节的 FNV-1a 哈希。文件比 `len` 短时报错。
+/// 记录的已解析部分是否原样未动：文件不比已解析部分短，完整已解析部分的指纹与文件头会话 ID 都和记录一致。
+fn prefix_intact(file: &mut File, size: i64, state: &RowState) -> bool {
+    size >= state.parsed_offset
+        && prefix_fingerprint(file, state.parsed_offset).ok() == Some(state.fingerprint)
+        && read_header_id(file).ok().flatten().as_deref() == Some(state.meta.id.as_str())
+}
+
+/// 已解析部分 `[0, len)` 的指纹：这段字节的 FNV-1a 哈希（与解析时逐行累加的结果相同，任何位置的改写都会改变它）。
+/// 文件比 `len` 短时报错。
 fn prefix_fingerprint(file: &mut File, len: i64) -> io::Result<i64> {
-    let len = u64::try_from(len).unwrap_or_default();
+    let mut left = u64::try_from(len).unwrap_or_default();
     let mut hash = Fnv1a::default();
-    hash.write(&len.to_le_bytes());
-    let head = len.min(FINGERPRINT_SPAN);
-    let tail = len.saturating_sub(FINGERPRINT_SPAN).max(head);
-    let mut buf = vec![0; FINGERPRINT_SPAN as usize];
-    for (start, n) in [(0, head), (tail, len - tail)] {
-        let chunk = &mut buf[..n as usize];
-        file.seek(SeekFrom::Start(start))?;
+    let mut buf = vec![0; FINGERPRINT_CHUNK];
+    file.seek(SeekFrom::Start(0))?;
+    while left > 0 {
+        let n = left.min(FINGERPRINT_CHUNK as u64) as usize;
+        let chunk = &mut buf[..n];
         file.read_exact(chunk)?;
         hash.write(chunk);
+        left -= n as u64;
     }
     Ok(hash.0 as i64)
 }
@@ -1212,6 +1222,71 @@ mod tests {
         assert_eq!(index.update_file(&p).unwrap(), Change::Unchanged);
     }
 
+    /// 超过 8KB、只有中间某段被改写的文件（首尾内容不变）
+    fn large_lines(middle: &str) -> Vec<String> {
+        let mut lines = vec![header("big", "/w", TS)];
+        for i in 0..120 {
+            lines.push(user(
+                &format!("填充内容第{i:03}行，用来把文件撑到八千字节以上"),
+                i + 1,
+            ));
+        }
+        lines.push(user(middle, 500));
+        for i in 0..120 {
+            lines.push(user(
+                &format!("尾部内容第{i:03}行，用来把文件撑到八千字节以上"),
+                i + 600,
+            ));
+        }
+        lines
+    }
+
+    #[test]
+    fn large_file_middle_rewrite_same_size_same_mtime_is_detected() {
+        let (dir, index) = setup();
+        let p = dir.0.join("big.jsonl");
+        let fixed = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        let set_mtime = |p: &Path| {
+            fs::OpenOptions::new()
+                .write(true)
+                .open(p)
+                .unwrap()
+                .set_modified(fixed)
+                .unwrap();
+        };
+        write_lines(&p, &large_lines("中段旧正文甲乙丙"));
+        set_mtime(&p);
+        index.update_file(&p).unwrap();
+        let before = fs::metadata(&p).unwrap().len();
+        assert!(before > 3 * 8192, "测试文件应明显超过 8KB");
+        // 只改中间一行，字节数不变；首尾都离改动处超过 4KB
+        write_lines(&p, &large_lines("中段新正文丁戊己"));
+        set_mtime(&p);
+        assert_eq!(fs::metadata(&p).unwrap().len(), before);
+        assert_eq!(index.update_file(&p).unwrap(), Change::Updated);
+        assert!(index.search(None, "中段旧正文").unwrap().is_empty());
+        assert_eq!(index.search(None, "中段新正文").unwrap().len(), 1);
+        assert_eq!(index.update_file(&p).unwrap(), Change::Unchanged);
+    }
+
+    #[test]
+    fn large_file_middle_rewrite_with_append_is_fully_reparsed() {
+        let (dir, index) = setup();
+        let p = dir.0.join("big.jsonl");
+        write_lines(&p, &large_lines("中段旧正文甲乙丙"));
+        index.update_file(&p).unwrap();
+        // 中间段被改写，同时文件变长：不能从旧偏移续读
+        let mut lines = large_lines("中段新正文丁戊己");
+        lines.push(assistant("追加的回答", 900));
+        write_lines(&p, &lines);
+        bump_mtime(&p, 5);
+        assert_eq!(index.update_file(&p).unwrap(), Change::Updated);
+        assert!(index.search(None, "中段旧正文").unwrap().is_empty());
+        assert_eq!(index.search(None, "中段新正文").unwrap().len(), 1);
+        assert_eq!(index.search(None, "追加的回答").unwrap().len(), 1);
+        assert_eq!(index.list(None, None).unwrap().items[0].message_count, 242);
+    }
+
     #[test]
     fn same_id_longer_rewrite_is_fully_reparsed() {
         let (dir, index) = setup();
@@ -1249,6 +1324,13 @@ mod tests {
         assert_eq!(s.message_count, 2);
         assert_eq!(index.search(None, "第一句").unwrap().len(), 1);
         assert_eq!(index.search(None, "追加的回答").unwrap().len(), 1);
+        // 续读后记下的指纹等于完整已解析部分的哈希：再次检查不变，再追加仍能续读
+        assert_eq!(index.update_file(&p).unwrap(), Change::Unchanged);
+        append(&p, &format!("{}\n", user("第二次追加", 3)));
+        bump_mtime(&p, 10);
+        assert_eq!(index.update_file(&p).unwrap(), Change::Updated);
+        assert_eq!(index.list(None, None).unwrap().items[0].message_count, 3);
+        assert_eq!(index.update_file(&p).unwrap(), Change::Unchanged);
     }
 
     fn seed(index: &SessionIndex, dir: &Path, n: usize, cwd: &str) -> Vec<String> {
