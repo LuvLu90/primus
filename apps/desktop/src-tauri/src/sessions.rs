@@ -110,14 +110,14 @@ struct Entry<S> {
     /// 下一座桥第一批之前的序号（重启失败时保留旧桥的最后序号）
     last_seq: u64,
     opts: LaunchOptions,
-    /// 恢复的会话文件的身份键（`platform::file_identity_key`，打开时算好）；新会话为 None
-    file_key: Option<String>,
+    /// 恢复的会话文件的键（`platform::file_keys`：文件系统身份与路径键，打开时算好）；新会话为空
+    file_keys: Vec<String>,
     sink: S,
 }
 
 pub(crate) struct Sessions<S> {
     entries: Mutex<HashMap<String, Entry<S>>>,
-    /// 正在删除（移到回收站）的会话文件身份键。只在持有 `entries` 锁时加入与检查（锁顺序：entries → deleting），
+    /// 正在删除（移到回收站）的会话文件的键（`platform::file_keys`）。只在持有 `entries` 锁时加入与检查（锁顺序：entries → deleting），
     /// 删除结束后单独加锁移除
     deleting: Mutex<HashSet<String>>,
     next: AtomicU64,
@@ -171,11 +171,13 @@ impl<S: BatchSink + Clone> Sessions<S> {
         let key = format!("s{n}");
         let session_file = session_file.filter(|p| !p.is_empty()).map(PathBuf::from);
         let session_id = session_file.is_none().then(|| new_session_id(n));
-        // 恢复已有会话文件：按文件身份（解析符号链接、`.` 段、短名）比较，并读出文件头的会话 ID——
-        // 这个文件可能是某个打开中的新会话由 Core 写下的（那条登记只有会话 ID、没有会话文件）
-        let file_key = session_file
+        // 恢复已有会话文件：按文件身份与路径（解析符号链接、`.` 段、短名）比较，并读出文件头的会话 ID——
+        // 这个文件可能是某个打开中的新会话由 Core 写下的（那条登记只有会话 ID、没有会话文件）。
+        // 身份查询失败时只有路径键，照常登记：之后同一文件取得身份时仍按路径键对上
+        let file_keys = session_file
             .as_deref()
-            .and_then(crate::platform::file_identity_key);
+            .map(crate::platform::file_keys)
+            .unwrap_or_default();
         let file_id = session_file
             .as_deref()
             .and_then(crate::session_index::session_file_id);
@@ -193,13 +195,11 @@ impl<S: BatchSink + Clone> Sessions<S> {
         {
             let mut entries = self.entries();
             if let Some(file) = &opts.session_file {
-                if using(&entries, file_key.as_deref(), file_id.as_deref()) {
+                if using(&entries, &file_keys, file_id.as_deref()) {
                     return Err(SessionError::InUse(file.clone()));
                 }
-                if file_key
-                    .as_ref()
-                    .is_some_and(|k| self.deleting().contains(k))
-                {
+                let deleting = self.deleting();
+                if file_keys.iter().any(|k| deleting.contains(k)) {
                     return Err(SessionError::Deleting(file.clone()));
                 }
             }
@@ -211,7 +211,7 @@ impl<S: BatchSink + Clone> Sessions<S> {
                     evicted: false,
                     last_seq: 0,
                     opts: opts.clone(),
-                    file_key,
+                    file_keys,
                     sink: sink.clone(),
                 },
             );
@@ -277,11 +277,11 @@ impl<S: BatchSink + Clone> Sessions<S> {
     }
 
     /// 是否有打开中的会话使用这个会话文件或会话 ID。新会话按薄壳定好的会话 ID 判断，
-    /// 恢复的会话按会话文件身份判断（`platform::file_identity_key`）。
+    /// 恢复的会话按会话文件的身份或路径判断（`platform::file_keys`）。
     #[cfg(test)]
     pub(crate) fn is_using(&self, session_file: &Path, session_id: Option<&str>) -> bool {
-        let file_key = crate::platform::file_identity_key(session_file);
-        using(&self.entries(), file_key.as_deref(), session_id)
+        let file_keys = crate::platform::file_keys(session_file);
+        using(&self.entries(), &file_keys, session_id)
     }
 
     /// 删除会话文件：占用检查（同 [`Self::is_using`]）通过时在同一次加锁内把文件登记为“删除中”，然后在锁外执行
@@ -293,22 +293,22 @@ impl<S: BatchSink + Clone> Sessions<S> {
         session_id: Option<&str>,
         delete: impl FnOnce() -> T,
     ) -> Option<T> {
-        let file_key = crate::platform::file_identity_key(session_file);
+        let file_keys = crate::platform::file_keys(session_file);
         {
             let entries = self.entries();
-            if using(&entries, file_key.as_deref(), session_id) {
+            if using(&entries, &file_keys, session_id) {
                 return None;
             }
-            if let Some(k) = &file_key
-                && !self.deleting().insert(k.clone())
-            {
+            let mut deleting = self.deleting();
+            if file_keys.iter().any(|k| deleting.contains(k)) {
                 // 同一文件已在删除中：按占用处理
                 return None;
             }
+            deleting.extend(file_keys.iter().cloned());
         }
         let _release = DeletingGuard {
             sessions: self,
-            key: file_key,
+            keys: file_keys,
         };
         Some(delete())
     }
@@ -472,9 +472,9 @@ impl<S: BatchSink + Clone> Sessions<S> {
             offline: false,
             telemetry: false,
         };
-        let file_key = session_file
-            .map(Path::new)
-            .and_then(crate::platform::file_identity_key);
+        let file_keys = session_file
+            .map(|p| crate::platform::file_keys(Path::new(p)))
+            .unwrap_or_default();
         self.entries.lock().unwrap().insert(
             key.to_owned(),
             Entry {
@@ -483,7 +483,7 @@ impl<S: BatchSink + Clone> Sessions<S> {
                 evicted: true,
                 last_seq: 0,
                 opts,
-                file_key,
+                file_keys,
                 sink,
             },
         );
@@ -498,17 +498,18 @@ impl<S: BatchSink + Clone> Sessions<S> {
 /// 删除结束（含 panic）时撤销“删除中”登记。
 struct DeletingGuard<'a, S> {
     sessions: &'a Sessions<S>,
-    key: Option<String>,
+    keys: Vec<String>,
 }
 
 impl<S> Drop for DeletingGuard<'_, S> {
     fn drop(&mut self) {
-        if let Some(k) = &self.key {
-            self.sessions
-                .deleting
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .remove(k);
+        let mut deleting = self
+            .sessions
+            .deleting
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        for k in &self.keys {
+            deleting.remove(k);
         }
     }
 }
@@ -539,15 +540,15 @@ fn new_session_id(n: u64) -> String {
     format!("primus-{nanos:x}-{n}")
 }
 
-/// 是否有打开中的会话在使用这个会话文件或会话 ID（调用方持有 `entries` 锁）。`file_key` 为会话文件的身份键，
-/// 与恢复的会话登记的文件比较；`session_id` 为该文件的会话 ID，与新会话（薄壳定好 ID、文件由 Core 创建）比较。
+/// 是否有打开中的会话在使用这个会话文件或会话 ID（调用方持有 `entries` 锁）。`file_keys` 为会话文件的键
+/// （`platform::file_keys`），与恢复的会话登记的键有任一相同即为同一文件；`session_id` 为该文件的会话 ID，与新会话（薄壳定好 ID、文件由 Core 创建）比较。
 fn using<S>(
     entries: &HashMap<String, Entry<S>>,
-    file_key: Option<&str>,
+    file_keys: &[String],
     session_id: Option<&str>,
 ) -> bool {
     entries.values().any(|entry| {
-        let same_file = file_key.is_some() && entry.file_key.as_deref() == file_key;
+        let same_file = crate::platform::keys_overlap(&entry.file_keys, file_keys);
         let same_id = session_id.is_some() && entry.opts.session_id.as_deref() == session_id;
         same_file || same_id
     })
@@ -657,9 +658,9 @@ process.stdin.on("data", (chunk) => {
                 offline: false,
                 telemetry: false,
             },
-            file_key: session_file
-                .map(Path::new)
-                .and_then(crate::platform::file_identity_key),
+            file_keys: session_file
+                .map(|p| crate::platform::file_keys(Path::new(p)))
+                .unwrap_or_default(),
             sink: Collect::default(),
         }
     }
@@ -750,6 +751,35 @@ process.stdin.on("data", (chunk) => {
         );
         assert!(matches!(r, Err(SessionError::InUse(_))), "{r:?}");
         assert!(sessions.is_using(&dotted, None));
+    }
+
+    #[test]
+    fn entry_registered_without_file_identity_still_blocks_open_and_delete() {
+        let tmp = TempDir::new();
+        let (supervisor, paths, sessions) = setup(&tmp);
+        let file = tmp.0.join("a.jsonl");
+        std::fs::write(&file, "{\"type\":\"session\",\"id\":\"a\"}\n").unwrap();
+        // 登记时身份查询失败（只有路径键）；之后同一文件能取得文件系统身份
+        let mut entry = idle_entry(file.to_str(), None);
+        entry.file_keys = crate::platform::file_keys_with(&file, |_| None);
+        assert!(entry.file_keys.iter().all(|k| !k.starts_with("file-id:")));
+        sessions.entries().insert("s1".into(), entry);
+        assert!(sessions.is_using(&file, None));
+        let r = sessions.open(
+            &supervisor,
+            &paths,
+            tmp.0.to_str().unwrap(),
+            file.to_str(),
+            Collect::default(),
+        );
+        assert!(matches!(r, Err(SessionError::InUse(_))), "{r:?}");
+        assert!(supervisor.running_keys().is_empty());
+        assert!(
+            sessions
+                .delete_unless_using(&file, None, || panic!("不应执行删除"))
+                .is_none()
+        );
+        assert!(file.exists());
     }
 
     #[test]
@@ -1117,7 +1147,7 @@ process.stdin.on("data", (chunk) => {
             evicted: false,
             last_seq: 0,
             opts: test_opts(),
-            file_key: None,
+            file_keys: Vec::new(),
             sink: Collect::default(),
         }
     }
@@ -1140,7 +1170,7 @@ process.stdin.on("data", (chunk) => {
                     offline: false,
                     telemetry: false,
                 },
-                file_key: None,
+                file_keys: Vec::new(),
                 sink: Collect::default(),
             },
         );

@@ -6,17 +6,19 @@
 //! - 监听器报错或提示丢了事件（`need_rescan`）时改做一次全量扫描。重命名（含目录重命名）、目录删除与目录创建
 //!   也改做全量扫描：notify 对这类事件只报告目录本身，不逐个报告其中的会话文件（Windows 上移入的目录只报告 `Create`）。
 //! - 全量扫描（含启动时的首次扫描）失败时按退避重新安排全量扫描，直到成功；失败前已写入的变化照常通知前端。
+//! - 监听线程之外的单文件更新失败（如会话删除后的重新同步）经 [`IndexNotifier::request_rescan`] 请求一次全量扫描，
+//!   沿用同一套合并与退避重试。
 //! - 监听工作区文件（文件树，第 15.2 节）以后在这里按监听目标扩展。
 
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use notify::event::{CreateKind, EventKind, ModifyKind, RemoveKind};
+use notify::event::{CreateKind, EventKind, Flag, ModifyKind, RemoveKind};
 use notify::{Event, RecursiveMode, Watcher};
 
 use crate::session_index::SessionIndex;
@@ -35,16 +37,34 @@ pub(crate) struct IndexChanged {
 
 type Listener = Box<dyn Fn(IndexChanged) + Send + Sync>;
 
-/// 索引变化的通知出口：同一时刻只有一个监听者（前端再次注册时替换）。
+/// 索引变化的通知出口：同一时刻只有一个监听者（前端再次注册时替换）。也是向监听线程请求全量扫描的入口。
 #[derive(Default)]
 pub(crate) struct IndexNotifier {
     listener: Mutex<Option<Listener>>,
     seq: AtomicU64,
+    /// 监听线程的事件通道（监听建立后设置）：请求全量扫描时送入一条 `Rescan` 事件
+    rescan: Mutex<Option<Sender<notify::Result<Event>>>>,
 }
 
 impl IndexNotifier {
     pub(crate) fn set_listener(&self, listener: impl Fn(IndexChanged) + Send + Sync + 'static) {
         *self.listener.lock().unwrap_or_else(PoisonError::into_inner) = Some(Box::new(listener));
+    }
+
+    pub(crate) fn set_rescanner(&self, tx: Sender<notify::Result<Event>>) {
+        *self.rescan.lock().unwrap_or_else(PoisonError::into_inner) = Some(tx);
+    }
+
+    /// 请求监听线程做一次全量扫描（合并窗口后执行，失败按退避重试直到成功）。监听未建立时返回 false。
+    pub(crate) fn request_rescan(&self) -> bool {
+        self.rescan
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(|tx| {
+                tx.send(Ok(Event::new(EventKind::Other).set_flag(Flag::Rescan)))
+                    .is_ok()
+            })
     }
 
     pub(crate) fn notify(&self) {
@@ -67,12 +87,14 @@ pub(crate) fn start(index: Arc<SessionIndex>, notifier: Arc<IndexNotifier>) -> J
             if let Err(e) = std::fs::create_dir_all(index.sessions_dir()) {
                 eprintln!("无法创建会话目录：{e}");
             }
+            let rescan_tx = tx.clone();
             let watcher = notify::recommended_watcher(tx).and_then(|mut w| {
                 w.watch(index.sessions_dir(), RecursiveMode::Recursive)?;
                 Ok(w)
             });
-            if let Err(e) = &watcher {
-                eprintln!("会话目录监听启动失败，会话列表不会自动刷新：{e}");
+            match &watcher {
+                Ok(_) => notifier.set_rescanner(rescan_tx),
+                Err(e) => eprintln!("会话目录监听启动失败，会话列表不会自动刷新：{e}"),
             }
             let scanned = scan(&index, &notifier);
             if let Ok(watcher) = watcher {
@@ -139,12 +161,7 @@ fn run(
                 if event.need_rescan() || needs_full_scan(&event) {
                     rescan = true;
                 }
-                pending.extend(
-                    event
-                        .paths
-                        .into_iter()
-                        .filter(|p| p.extension().is_some_and(|e| e == "jsonl")),
-                );
+                pending.extend(event.paths.into_iter().filter(|p| is_session_path(p)));
             }
             Some(Err(e)) => {
                 eprintln!("会话目录监听出错，改为全量扫描：{e}");
@@ -179,19 +196,27 @@ fn next_retry(failed: bool, delay: &mut Duration, base: Duration) -> Option<Inst
     }
 }
 
-/// 只报告目录、不报告其中文件的事件：重命名（文件或目录，旧新路径不一定成对到达）、目录删除，
-/// 以及路径不是会话文件的删除与非文件创建（Windows 不区分文件与目录，移入的已含会话文件的目录只报告目录本身的
-/// `Create`）。明确是文件的创建（Linux、macOS 的 `CreateKind::File`）不触发。
+/// 只报告目录、不报告其中文件的事件：重命名（文件或目录，旧新路径不一定成对到达）、目录创建与删除，
+/// 以及路径不是会话文件的删除。不区分文件与目录的创建（Windows 的 `CreateKind::Any`：移入的已含会话文件的目录
+/// 只报告目录本身的 `Create`）按路径的实际类型判断：不是普通文件（目录，名字以 `.jsonl` 结尾的也算；或已不在、
+/// 无法判断）都做全量扫描。明确是文件的创建（Linux、macOS 的 `CreateKind::File`）不触发。
 fn needs_full_scan(event: &Event) -> bool {
     match event.kind {
-        EventKind::Modify(ModifyKind::Name(_)) | EventKind::Remove(RemoveKind::Folder) => true,
+        EventKind::Modify(ModifyKind::Name(_))
+        | EventKind::Create(CreateKind::Folder)
+        | EventKind::Remove(RemoveKind::Folder) => true,
         EventKind::Create(CreateKind::File) => false,
-        EventKind::Create(_) | EventKind::Remove(_) => event
-            .paths
-            .iter()
-            .any(|p| !p.extension().is_some_and(|e| e == "jsonl")),
+        EventKind::Create(_) => event.paths.iter().any(|p| {
+            !is_session_path(p)
+                || !std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_file())
+        }),
+        EventKind::Remove(_) => event.paths.iter().any(|p| !is_session_path(p)),
         _ => false,
     }
+}
+
+fn is_session_path(path: &std::path::Path) -> bool {
+    path.extension().is_some_and(|e| e == "jsonl")
 }
 
 /// 处理攒下的事件；返回全量扫描是否失败（失败时已重新标记全量扫描）。
@@ -231,7 +256,6 @@ fn flush(
 mod tests {
     use super::*;
     use crate::supervisor::tests::TempDir;
-    use notify::event::{CreateKind, Flag};
     use std::sync::mpsc::Sender;
 
     fn session_file(dir: &std::path::Path, name: &str, id: &str) -> PathBuf {
@@ -262,6 +286,49 @@ mod tests {
             Event::new(EventKind::Create(CreateKind::File)).add_path(path)
         ))
         .unwrap();
+    }
+
+    #[test]
+    fn requested_rescan_runs_and_retries_until_it_succeeds() {
+        let dir = TempDir::new();
+        let index = Arc::new(SessionIndex::open_in_memory(&dir.0).unwrap());
+        session_file(&dir.0, "a.jsonl", "a");
+        let (notifier, seen) = recorder();
+        // 监听未建立：请求不送达
+        assert!(!notifier.request_rescan());
+        let (tx, rx) = mpsc::channel();
+        notifier.set_rescanner(tx);
+        // 索引暂时写不进去：请求的全量扫描失败后按退避重试
+        index.execute_batch_for_test(
+            "CREATE TEMP TRIGGER fail_all BEFORE INSERT ON sessions
+             BEGIN SELECT RAISE(ABORT, 'boom'); END;",
+        );
+        let worker = {
+            let index = index.clone();
+            let notifier = notifier.clone();
+            std::thread::spawn(move || {
+                run(
+                    &rx,
+                    &index,
+                    &notifier,
+                    Duration::from_millis(10),
+                    Duration::from_millis(10),
+                    false,
+                )
+            })
+        };
+        assert!(notifier.request_rescan());
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(index.list(None, None).unwrap().items.is_empty());
+        index.execute_batch_for_test("DROP TRIGGER fail_all;");
+        assert!(
+            wait_until(|| index.list(None, None).unwrap().items.len() == 1),
+            "请求的全量扫描失败后没有重试"
+        );
+        assert!(wait_until(|| !seen.lock().unwrap().is_empty()));
+        // 通道由通知出口持有：撤下后循环结束
+        *notifier.rescan.lock().unwrap() = None;
+        worker.join().unwrap();
     }
 
     #[test]
@@ -440,29 +507,48 @@ mod tests {
 
     #[test]
     fn directory_creation_triggers_full_scan() {
+        // Windows 上移入已含会话文件的目录只报告目录本身的 Create（不区分文件与目录）；目录名可能以 `.jsonl` 结尾
+        for (name, kind) in [
+            ("moved", CreateKind::Any),
+            ("moved.jsonl", CreateKind::Any),
+            ("folder.jsonl", CreateKind::Folder),
+        ] {
+            let dir = TempDir::new();
+            let index = SessionIndex::open_in_memory(&dir.0).unwrap();
+            let sub = dir.0.join(name);
+            std::fs::create_dir(&sub).unwrap();
+            session_file(&sub, "a.jsonl", "a");
+            let (notifier, seen) = recorder();
+            let (tx, rx) = mpsc::channel();
+            tx.send(Ok(Event::new(EventKind::Create(kind)).add_path(sub)))
+                .unwrap();
+            drop(tx);
+            run(
+                &rx,
+                &index,
+                &notifier,
+                Duration::from_millis(10),
+                Duration::from_millis(10),
+                false,
+            );
+            assert_eq!(index.list(None, None).unwrap().items.len(), 1, "{name}");
+            assert_eq!(seen.lock().unwrap().len(), 1, "{name}");
+        }
+    }
+
+    #[test]
+    fn creation_of_unknown_kind_scans_unless_it_is_a_session_file() {
         let dir = TempDir::new();
-        let index = SessionIndex::open_in_memory(&dir.0).unwrap();
-        let sub = dir.0.join("moved");
-        std::fs::create_dir(&sub).unwrap();
-        session_file(&sub, "a.jsonl", "a");
-        let (notifier, seen) = recorder();
-        let (tx, rx) = mpsc::channel();
-        // Windows 上移入已含会话文件的目录只报告目录本身的 Create（不区分文件与目录）
-        tx.send(Ok(
-            Event::new(EventKind::Create(CreateKind::Any)).add_path(sub)
-        ))
-        .unwrap();
-        drop(tx);
-        run(
-            &rx,
-            &index,
-            &notifier,
-            Duration::from_millis(10),
-            Duration::from_millis(10),
-            false,
-        );
-        assert_eq!(index.list(None, None).unwrap().items.len(), 1);
-        assert_eq!(seen.lock().unwrap().len(), 1);
+        let file = session_file(&dir.0, "a.jsonl", "a");
+        let create_any = |p: PathBuf| Event::new(EventKind::Create(CreateKind::Any)).add_path(p);
+        // 已确认是普通文件的会话文件：增量更新即可
+        assert!(!needs_full_scan(&create_any(file)));
+        // 已不在（无法判断是文件还是目录）：保守地全量扫描
+        assert!(needs_full_scan(&create_any(dir.0.join("gone.jsonl"))));
+        // 明确是文件的创建不看磁盘
+        assert!(!needs_full_scan(
+            &Event::new(EventKind::Create(CreateKind::File)).add_path(dir.0.join("gone.jsonl"))
+        ));
     }
 
     fn wait_until(mut done: impl FnMut() -> bool) -> bool {

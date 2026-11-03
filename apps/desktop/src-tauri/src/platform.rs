@@ -53,18 +53,41 @@ pub(crate) fn path_key(path: &str) -> String {
     path_key_for(path, cfg!(windows))
 }
 
-/// 按文件身份比较用的键（会话文件占用检查）：文件存在时用文件系统身份（跟随符号链接；Unix 为 dev + ino，
-/// Windows 为卷序列号 + 文件索引），同一文件的硬链接、符号链接、`.` 段与短名得到同一个键。取不到身份
-/// （文件不存在等）时退回路径键：先解析符号链接、`.` 段与 Windows 短名（`canonicalize`），解析不了时用原路径；
-/// Windows 上去掉 `canonicalize` 加的 `\\?\` 前缀，再按 [`path_key`] 规范化。
-pub(crate) fn file_identity_key(path: &Path) -> Option<String> {
-    if let Some(id) = file_system_id(path) {
-        return Some(id);
+/// 按文件比较用的一组键（会话文件占用检查）：两组键有任一相同即视为同一文件（[`keys_overlap`]）。
+///
+/// - 文件系统身份（文件存在时；跟随符号链接；Unix 为 dev + ino，Windows 为卷序列号 + 文件索引）：同一文件的
+///   硬链接、符号链接、`.` 段与短名得到同一个键。
+/// - 路径键：先解析符号链接、`.` 段与 Windows 短名（`canonicalize`），解析得到的路径与原路径各一个
+///   （Windows 上去掉 `canonicalize` 加的 `\\?\` 前缀），再按 [`path_key`] 规范化。
+///
+/// 路径键总是带上：登记时身份查询失败（文件暂不存在、临时打不开）的条目只有路径键，之后同一文件取得身份时
+/// 两边仍能按路径键对上，不会因为键的种类不同而把同一文件当作两个。
+pub(crate) fn file_keys(path: &Path) -> Vec<String> {
+    file_keys_with(path, file_system_id)
+}
+
+/// [`file_keys`] 的实现；`identity` 可替换，便于测试模拟身份查询失败。
+pub(crate) fn file_keys_with(
+    path: &Path,
+    identity: impl FnOnce(&Path) -> Option<String>,
+) -> Vec<String> {
+    let mut keys = Vec::with_capacity(3);
+    keys.extend(identity(path));
+    let resolved = std::fs::canonicalize(path).ok();
+    for p in resolved.as_deref().into_iter().chain([path]) {
+        if let Some(p) = p.to_str() {
+            let key = path_key(strip_verbatim_prefix(p, cfg!(windows)));
+            if !keys.contains(&key) {
+                keys.push(key);
+            }
+        }
     }
-    let resolved = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    resolved
-        .to_str()
-        .map(|p| path_key(strip_verbatim_prefix(p, cfg!(windows))))
+    keys
+}
+
+/// 两组 [`file_keys`] 是否指向同一文件（有任一相同的键）。
+pub(crate) fn keys_overlap(a: &[String], b: &[String]) -> bool {
+    a.iter().any(|k| b.contains(k))
 }
 
 /// 去掉 Windows 的 `\\?\` 前缀（`\\?\UNC\` 网络路径保留原样，二者都经 `canonicalize` 时仍一致）。
@@ -747,7 +770,7 @@ mod windows_impl {
         Ok((control & SE_DACL_PROTECTED != 0, aces))
     }
 
-    /// 文件系统身份（[`file_identity_key`]）：卷序列号 + 64 位文件索引，跟随符号链接。只要 `FILE_READ_ATTRIBUTES`，
+    /// 文件系统身份（[`file_keys`]）：卷序列号 + 64 位文件索引，跟随符号链接。只要 `FILE_READ_ATTRIBUTES`，
     /// 共享读写删除，不与 Core 对会话文件的打开冲突。打不开或查询失败时为 None。
     pub(crate) fn file_system_id(path: &Path) -> Option<String> {
         let wide_path = wide(path);
@@ -822,7 +845,7 @@ mod windows_impl {
 mod fallback_impl {
     use super::*;
 
-    /// 文件系统身份（[`file_identity_key`]）：Unix 为 dev + ino，跟随符号链接；取不到时为 None。
+    /// 文件系统身份（[`file_keys`]）：Unix 为 dev + ino，跟随符号链接；取不到时为 None。
     pub(crate) fn file_system_id(path: &Path) -> Option<String> {
         #[cfg(unix)]
         {
@@ -1017,7 +1040,7 @@ mod tests {
     }
 
     #[test]
-    fn file_identity_key_resolves_dot_segments_and_symlinks() {
+    fn file_keys_resolve_dot_segments_and_symlinks() {
         let dir = std::env::temp_dir().join(format!("primus-fik-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         let file = dir.join("sub").join("a.jsonl");
@@ -1028,25 +1051,34 @@ mod tests {
             .join("..")
             .join("sub")
             .join("a.jsonl");
-        assert_eq!(file_identity_key(&dotted), file_identity_key(&file));
+        assert!(keys_overlap(&file_keys(&dotted), &file_keys(&file)));
+        // 身份取不到时也按解析后的路径对上
+        let no_id = |_: &Path| None;
+        assert!(keys_overlap(
+            &file_keys_with(&dotted, no_id),
+            &file_keys(&file)
+        ));
         #[cfg(unix)]
         {
             let link = dir.join("link");
             let _ = std::fs::remove_file(&link);
             std::os::unix::fs::symlink(dir.join("sub"), &link).unwrap();
-            assert_eq!(
-                file_identity_key(&link.join("a.jsonl")),
-                file_identity_key(&file)
-            );
+            assert!(keys_overlap(
+                &file_keys(&link.join("a.jsonl")),
+                &file_keys(&file)
+            ));
         }
-        // 不存在的文件：用原路径
+        // 不存在的文件：只有原路径
         let missing = dir.join("missing.jsonl");
-        assert_eq!(file_identity_key(&missing), missing.to_str().map(path_key));
+        assert_eq!(
+            file_keys(&missing),
+            vec![path_key(missing.to_str().unwrap())]
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn file_identity_key_matches_hard_links_only_for_the_same_file() {
+    fn file_keys_match_hard_links_only_for_the_same_file() {
         let dir = std::env::temp_dir().join(format!("primus-fik-hl-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -1056,12 +1088,29 @@ mod tests {
         std::fs::hard_link(&file, &link).unwrap();
         let other = dir.join("c.jsonl");
         std::fs::write(&other, "x").unwrap();
-        let key = file_identity_key(&file);
-        assert!(key.is_some());
-        // 同一文件的两个硬链接名：同一个键
-        assert_eq!(file_identity_key(&link), key);
-        // 内容相同的另一个文件：不同的键
-        assert_ne!(file_identity_key(&other), key);
+        let keys = file_keys(&file);
+        assert!(file_system_id(&file).is_some());
+        // 同一文件的两个硬链接名：身份键相同
+        assert!(keys_overlap(&file_keys(&link), &keys));
+        // 内容相同的另一个文件：没有相同的键
+        assert!(!keys_overlap(&file_keys(&other), &keys));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn file_keys_match_across_identity_lookup_failure() {
+        let dir = std::env::temp_dir().join(format!("primus-fik-nf-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("a.jsonl");
+        // 登记时文件还不存在（或身份查询失败）：只有路径键
+        let before = file_keys(&file);
+        std::fs::write(&file, "x").unwrap();
+        let failed = file_keys_with(&file, |_| None);
+        let after = file_keys(&file);
+        assert!(after.iter().any(|k| k.starts_with("file-id:")));
+        assert!(keys_overlap(&before, &after));
+        assert!(keys_overlap(&failed, &after));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

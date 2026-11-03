@@ -217,6 +217,7 @@ pub(crate) fn session_delete(
     delete_session(
         &sessions,
         &index,
+        &notifier,
         &session_path,
         crate::platform::move_to_trash,
     )?;
@@ -230,6 +231,7 @@ pub(crate) fn session_delete(
 fn delete_session<S: BatchSink + Clone>(
     sessions: &Sessions<S>,
     index: &SessionIndex,
+    notifier: &IndexNotifier,
     session_path: &str,
     trash: impl FnOnce(&Path) -> io::Result<()>,
 ) -> Result<(), CoreCommandError> {
@@ -271,9 +273,13 @@ fn delete_session<S: BatchSink + Clone>(
         .remove(session_path)
         .map_err(|e| CoreCommandError::new(None, e.to_string()))?;
     // 移到回收站与删除索引之间，同一路径可能已出现新的会话文件并被监听器写入索引（刚被上面一并删掉）：
-    // 按路径的当前文件状态重新同步，文件不在则保持删除，有新文件则重新入索引。文件已移走，同步失败不算删除失败
+    // 按路径的当前文件状态重新同步，文件不在则保持删除，有新文件则重新入索引。文件已移走，同步失败不算删除失败；
+    // 失败时请监听线程做一次全量扫描（失败按退避重试），保证新文件最终回到索引
     if let Err(e) = index.update_file(path) {
-        eprintln!("会话删除后重新同步索引失败（{session_path}）：{e}");
+        eprintln!("会话删除后重新同步索引失败（{session_path}），改为全量扫描：{e}");
+        if !notifier.request_rescan() {
+            eprintln!("会话目录监听未建立，无法安排全量扫描");
+        }
     }
     Ok(())
 }
@@ -368,7 +374,7 @@ mod tests {
             .unwrap();
             index.sync_all().unwrap();
             let trashed = Cell::new(false);
-            delete_session(&sessions, &index, &path, |p| {
+            delete_session(&sessions, &index, &IndexNotifier::default(), &path, |p| {
                 trashed.set(true);
                 std::fs::remove_file(p)
             })
@@ -383,7 +389,7 @@ mod tests {
             let path = write_session(&dir, "a.jsonl");
             index.sync_all().unwrap();
             index.set_archived(&path, true).unwrap();
-            delete_session(&sessions, &index, &path, |p| {
+            delete_session(&sessions, &index, &IndexNotifier::default(), &path, |p| {
                 std::fs::remove_file(p)?;
                 // 移走后、删除索引前，同一路径出现新的会话文件，监听器已把它写入索引
                 std::fs::write(
@@ -397,6 +403,43 @@ mod tests {
             assert_eq!(items.len(), 1, "同一路径的新会话文件应留在索引中");
             assert_eq!(items[0].id, "y");
             assert!(!items[0].archived, "新文件不继承旧文件的归档标记");
+        }
+
+        #[test]
+        fn failed_resync_after_delete_requests_full_scan() {
+            let (_tmp, dir, index, sessions) = setup();
+            let path = write_session(&dir, "a.jsonl");
+            index.sync_all().unwrap();
+            let notifier = IndexNotifier::default();
+            let (tx, rx) = std::sync::mpsc::channel();
+            notifier.set_rescanner(tx);
+            // 删除后的重新同步写不进索引（同一路径的新文件 `y`）
+            index.execute_batch_for_test(
+                "CREATE TEMP TRIGGER fail_y BEFORE INSERT ON sessions WHEN NEW.id = 'y'
+                 BEGIN SELECT RAISE(ABORT, 'boom'); END;",
+            );
+            delete_session(&sessions, &index, &notifier, &path, |p| {
+                std::fs::remove_file(p)?;
+                std::fs::write(
+                    p,
+                    "{\"type\":\"session\",\"id\":\"y\",\"timestamp\":\"2026-11-03T00:00:00.000Z\",\"cwd\":\"/w\"}\n",
+                )
+            })
+            .unwrap();
+            assert!(index.list(None, None).unwrap().items.is_empty());
+            // 请求了一次全量扫描（由监听线程执行并按退避重试）
+            let event = rx.try_recv().expect("应请求全量扫描").unwrap();
+            assert!(event.need_rescan());
+            index.execute_batch_for_test("DROP TRIGGER fail_y;");
+            index.sync_all().unwrap();
+            assert_eq!(index.list(None, None).unwrap().items[0].id, "y");
+            // 重新同步成功时不请求
+            let path_b = write_session(&dir, "b.jsonl");
+            delete_session(&sessions, &index, &notifier, &path_b, |p| {
+                std::fs::remove_file(p)
+            })
+            .unwrap();
+            assert!(rx.try_recv().is_err());
         }
 
         #[test]
@@ -415,7 +458,8 @@ mod tests {
                 dir.to_str().unwrap(),
             ] {
                 assert!(
-                    delete_session(&sessions, &index, bad, never).is_err(),
+                    delete_session(&sessions, &index, &IndexNotifier::default(), bad, never)
+                        .is_err(),
                     "{bad}"
                 );
             }
@@ -430,7 +474,16 @@ mod tests {
             let link = dir.join("link.jsonl");
             std::os::unix::fs::symlink(&target, &link).unwrap();
             let never = |_: &Path| -> io::Result<()> { panic!("不应移到回收站") };
-            assert!(delete_session(&sessions, &index, link.to_str().unwrap(), never).is_err());
+            assert!(
+                delete_session(
+                    &sessions,
+                    &index,
+                    &IndexNotifier::default(),
+                    link.to_str().unwrap(),
+                    never
+                )
+                .is_err()
+            );
         }
 
         #[test]
@@ -441,12 +494,14 @@ mod tests {
             let never = |_: &Path| -> io::Result<()> { panic!("不应移到回收站") };
             // 恢复的会话按文件登记
             sessions.insert_idle_for_test("s1", Some(&path), None, NoSink);
-            let err = delete_session(&sessions, &index, &path, never).unwrap_err();
+            let err = delete_session(&sessions, &index, &IndexNotifier::default(), &path, never)
+                .unwrap_err();
             assert_eq!(err.code, Some("sessionOpen"));
             // 新会话只按会话 ID（文件头的 `x`）登记
             sessions.close_for_test("s1");
             sessions.insert_idle_for_test("s2", None, Some("x"), NoSink);
-            let err = delete_session(&sessions, &index, &path, never).unwrap_err();
+            let err = delete_session(&sessions, &index, &IndexNotifier::default(), &path, never)
+                .unwrap_err();
             assert_eq!(err.code, Some("sessionOpen"));
             assert!(Path::new(&path).exists());
             assert_eq!(index.list(None, None).unwrap().items.len(), 1);
@@ -459,8 +514,10 @@ mod tests {
             std::fs::write(&path, format!("{}{}\n", std::fs::read_to_string(&path).unwrap(),
                 "{\"type\":\"message\",\"id\":\"m\",\"parentId\":null,\"timestamp\":\"2026-11-03T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"hi\",\"timestamp\":1}}")).unwrap();
             index.sync_all().unwrap();
-            let err = delete_session(&sessions, &index, &path, |_| Err(io::Error::other("busy")))
-                .unwrap_err();
+            let err = delete_session(&sessions, &index, &IndexNotifier::default(), &path, |_| {
+                Err(io::Error::other("busy"))
+            })
+            .unwrap_err();
             assert_eq!(err.code, None);
             assert_eq!(index.list(None, None).unwrap().items.len(), 1);
         }
