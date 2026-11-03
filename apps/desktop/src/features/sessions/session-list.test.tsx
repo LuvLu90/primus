@@ -4,7 +4,7 @@ import { type Platform, type SessionSummary, setPlatformForTesting } from "@/lib
 import { createMockPlatform } from "@/lib/platform/mock";
 import { strings } from "@/lib/strings";
 import { relativeTime, SessionList } from "./session-list";
-import { createInitialSessionsState, useSessionsStore } from "./sessions-store";
+import { createInitialSessionsState, MAX_TABS, useSessionsStore } from "./sessions-store";
 
 const t = strings.sessions;
 const NOW = Date.UTC(2026, 10, 3, 4, 0, 0);
@@ -187,9 +187,11 @@ describe("会话列表", () => {
     expect(await screen.findByRole("button", { name: /^登录排查/ })).toBeTruthy();
   });
 
-  it("搜索失败时显示搜索错误，不显示未筛选的列表", async () => {
+  it("搜索失败时显示搜索错误与重试，不显示未筛选的列表或“没有找到”；重试按当前查询重新搜索", async () => {
+    let fail = true;
     const sessionSearch = vi.fn(async () => {
-      throw new Error("搜索出错");
+      if (fail) throw new Error("搜索出错");
+      return [summary(9, { title: "数据库迁移" })];
     });
     withIndex({ sessionList: async () => ({ items: [summary(1)] }), sessionSearch });
     render(<SessionList />);
@@ -197,8 +199,34 @@ describe("会话列表", () => {
     fireEvent.change(screen.getByRole("searchbox", { name: strings.layout.searchSessions }), {
       target: { value: "迁移" },
     });
-    expect((await screen.findByRole("alert")).textContent).toContain("搜索出错");
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain(t.searchFailed);
+    expect(alert.textContent).toContain("搜索出错");
     expect(screen.queryByRole("button", { name: /^第 1 个会话/ })).toBeNull();
+    expect(screen.queryByText(t.noResults)).toBeNull();
+
+    fail = false;
+    fireEvent.click(screen.getByRole("button", { name: t.retry }));
+    expect(await screen.findByRole("button", { name: /^数据库迁移/ })).toBeTruthy();
+    expect(sessionSearch).toHaveBeenCalledTimes(2);
+    expect(sessionSearch).toHaveBeenLastCalledWith(null, "迁移");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("标签已满时点击未打开的会话给出提示，关闭一个标签后提示消失", async () => {
+    withIndex({ sessionList: async () => ({ items: [summary(1), summary(99)] }) });
+    const store = useSessionsStore.getState;
+    for (let i = 1; i <= MAX_TABS; i++) {
+      store().openSession(summary(i));
+      store().setRunning(store().activeTabId, true);
+    }
+    render(<SessionList />);
+    fireEvent.click(await screen.findByRole("button", { name: /^第 99 个会话/ }));
+    expect((await screen.findByRole("status")).textContent).toBe(t.tabsFull);
+    expect(store().tabs.some((x) => x.sessionPath === summary(99).path)).toBe(false);
+
+    act(() => store().closeTab(store().tabs[0]?.id ?? ""));
+    await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
   });
 
   it("删除前确认，确认后移到回收站；打开中的会话不能删除", async () => {

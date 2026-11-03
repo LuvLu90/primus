@@ -24,6 +24,8 @@ export interface ChatTab {
 export interface SessionsState {
   tabs: ChatTab[];
   activeTabId: string;
+  /** 最近一次新建或打开因标签已满被拒绝：会话列表据此提示；之后成功打开、关闭标签或有标签结束运行时清除 */
+  tabsFull: boolean;
   /**
    * 新会话：已有尚未打开的空标签时直接切到它，否则新建。标签已达上限且都关不掉（当前或运行中）时不新建，
    * 返回 false
@@ -85,9 +87,12 @@ function withTab(tabs: ChatTab[], tab: ChatTab): ChatTab[] | null {
   return result.length > MAX_TABS ? null : result;
 }
 
-export function createInitialSessionsState(): Pick<SessionsState, "tabs" | "activeTabId"> {
+export function createInitialSessionsState(): Pick<
+  SessionsState,
+  "tabs" | "activeTabId" | "tabsFull"
+> {
   const first = newTabState();
-  return { tabs: [first], activeTabId: first.id };
+  return { tabs: [first], activeTabId: first.id, tabsFull: false };
 }
 
 export const useSessionsStore = create<SessionsState>()((set, get) => ({
@@ -96,20 +101,23 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
   newTab: () => {
     const blank = get().tabs.find(isBlank);
     if (blank) {
-      set({ activeTabId: blank.id });
+      set({ activeTabId: blank.id, tabsFull: false });
       return true;
     }
     const tab = newTabState();
     const tabs = withTab(get().tabs, tab);
-    if (!tabs) return false;
-    set({ tabs, activeTabId: tab.id });
+    if (!tabs) {
+      set({ tabsFull: true });
+      return false;
+    }
+    set({ tabs, activeTabId: tab.id, tabsFull: false });
     return true;
   },
 
   openSession: (session) => {
     const existing = findTab(get().tabs, session);
     if (existing) {
-      set({ activeTabId: existing.id });
+      set({ activeTabId: existing.id, tabsFull: false });
       return true;
     }
     const tab: ChatTab = {
@@ -119,8 +127,11 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
       workspace: session.workspace,
     };
     const tabs = withTab(get().tabs, tab);
-    if (!tabs) return false;
-    set({ tabs, activeTabId: tab.id });
+    if (!tabs) {
+      set({ tabsFull: true });
+      return false;
+    }
+    set({ tabs, activeTabId: tab.id, tabsFull: false });
     return true;
   },
 
@@ -135,12 +146,12 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
       const tabs = s.tabs.filter((t) => t.id !== tabId);
       if (tabs.length === 0) {
         const blank = newTabState();
-        return { tabs: [blank], activeTabId: blank.id };
+        return { tabs: [blank], activeTabId: blank.id, tabsFull: false };
       }
       // 关掉当前标签时切到它右边的标签（没有则左边）
       const neighbor = tabs[Math.min(i, tabs.length - 1)];
       const activeTabId = s.activeTabId === tabId && neighbor ? neighbor.id : s.activeTabId;
-      return { tabs, activeTabId };
+      return { tabs, activeTabId, tabsFull: false };
     }),
 
   setOpening: (tabId, opening) =>
@@ -160,7 +171,11 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
   setRunning: (tabId, running) =>
     set((s) =>
       s.tabs.some((t) => t.id === tabId && t.running !== running)
-        ? { tabs: s.tabs.map((t) => (t.id === tabId ? { ...t, running } : t)) }
+        ? {
+            tabs: s.tabs.map((t) => (t.id === tabId ? { ...t, running } : t)),
+            // 有标签结束运行后再新建或打开就能腾出位置，提示随之失效
+            tabsFull: running ? s.tabsFull : false,
+          }
         : s,
     ),
 }));

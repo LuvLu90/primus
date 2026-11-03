@@ -15,9 +15,9 @@
 ## 决策
 
 ### 索引（`session_index`，rusqlite bundled）
-- 数据库：`users/<SID>/app/index.db`，`PRAGMA journal_mode=WAL`、`synchronous=NORMAL`；`meta` 表记 `schema_version`（当前 2），版本不符时重建派生表（索引可以随时从会话文件重建，不做迁移）。
-- `sessions` 表：`path`（主键，会话文件绝对路径）、`id`、`workspace`（文件头 `cwd` 原样）、`workspace_key`（比较用的规范化路径）、`name`（最新 `session_info.name`，空串视为清除）、`first_message`（首条用户消息文本，截取 200 字）、`created_at`、`updated_at`（最后一条 user/assistant 消息的时间，没有则取文件头时间，毫秒）、`message_count`、`parent_path`、`file_size`、`file_mtime`、`parsed_offset`、`fingerprint`（已解析部分首尾各 4KB 与长度的 FNV-1a 哈希）。列表索引 `(updated_at DESC, path DESC)`、`(workspace_key, updated_at DESC, path DESC)`。归档标记单独放在 `archived(path)` 表。
-- 增量解析：文件只追加，所以记住已解析到的字节偏移（只算到最后一个 `\n` 为止，半行留到下次）。文件变大且已解析部分的指纹与文件头 ID 不变时从偏移处继续读；文件变小、文件头或指纹变了（已解析部分被改写）或记录缺失时整份重新解析。大小与修改时间都没变时也核对指纹，同尺寸、同修改时间的改写不会被漏掉。逐行按 `\n` 切分并去掉 `\r`，与第 5.4 节的分帧规则一致；解析不了的行跳过（与 Core 的容错一致）。
+- 数据库：`users/<SID>/app/index.db`，`PRAGMA journal_mode=WAL`、`synchronous=NORMAL`；`meta` 表记 `schema_version`（当前 3），版本不符时重建派生表（索引可以随时从会话文件重建，不做迁移）。
+- `sessions` 表：`path`（主键，会话文件绝对路径）、`id`、`workspace`（文件头 `cwd` 原样）、`workspace_key`（比较用的规范化路径）、`name`（最新 `session_info.name`，空串视为清除）、`first_message`（首条用户消息文本，截取 200 字）、`created_at`、`updated_at`（文件头时间与最后一条带时间的 user/assistant 消息时间中较晚者，毫秒；没有带时间的消息时为文件头时间）、`message_count`、`parent_path`、`file_size`、`file_mtime`、`parsed_offset`、`fingerprint`（完整已解析部分 `[0, parsed_offset)` 的 FNV-1a 哈希）。列表索引 `(updated_at DESC, path DESC)`、`(workspace_key, updated_at DESC, path DESC)`。归档标记单独放在 `archived(path)` 表。
+- 增量解析：文件只追加，所以记住已解析到的字节偏移（只算到最后一个 `\n` 为止，半行留到下次）。每次检查都把已解析部分完整读一遍算指纹（顺序读、64KB 一块）：文件变大且指纹与文件头 ID 不变时从偏移处继续读，新的指纹接着记录的哈希状态对新增的完整行累加，不再重复读；文件变小、文件头或指纹变了（已解析部分任何位置被改写，包括超过 8KB 的文件只改中间段）或记录缺失时整份重新解析。大小与修改时间都没变时也核对指纹，所以同尺寸、同修改时间的改写也不会被漏掉；代价是每次检查读一遍已解析部分，会话文件从页缓存顺序读，对桌面端可以接受。指纹算法变化时 `schema_version` 加一，旧库按版本不符重建（`archived` 保留）。逐行按 `\n` 切分并去掉 `\r`，与第 5.4 节的分帧规则一致；解析不了的行跳过（与 Core 的容错一致）。
 - 全文索引：单独一张 FTS5 虚表 `session_text`（`path UNINDEXED, body`），分词器 `trigram`（SQLite 3.34 起内置，可做中文子串匹配）。每次增量解析把新增的 user/assistant 文本作为一行追加，整份重解析时先删后插。搜索词不足 3 个字符时 trigram 无法匹配，改为对 `name` 与 `first_message` 做 `LIKE` 子串查询；`LIKE` 的 `%`、`_`、`\` 转义。搜索结果按 `updated_at` 倒序，最多 50 条。
 - 分页：键集分页，游标为上一页最后一条的 `updated_at` 与 `path`（编码为 `<毫秒>:<路径>` 的字符串，前端只原样传回）；每页 50 条。
 - 工作区：`session_list` / `session_search` 的 `workspace` 为 `null` 时返回全部工作区的会话（左栏默认如此，每行显示所属工作区）；为字符串时按 `workspace_key` 过滤，空串表示“未选工作区”的默认目录 `users/<SID>/chat`（与 `session_open` 一致）。`workspace_key` 的规范化（Windows 上统一分隔符为 `\`、去掉末尾分隔符、转小写）放在 `platform` 模块。
