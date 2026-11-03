@@ -269,6 +269,34 @@ describe("会话列表", () => {
     expect((await screen.findByRole("alert")).textContent).toContain("会话不在索引中");
     expect(sessionArchive).toHaveBeenCalledWith("/data/sessions/1.jsonl", true);
   });
+  it("归档失败的提示不遮住随后的搜索错误与重试", async () => {
+    const sessionArchive = vi.fn(async () => {
+      throw new Error("会话不在索引中");
+    });
+    const sessionSearch = vi.fn(async () => {
+      throw new Error("搜索出错");
+    });
+    withIndex({
+      sessionList: async () => ({ items: [summary(1)] }),
+      sessionArchive,
+      sessionSearch,
+    });
+    render(<SessionList />);
+    fireEvent.keyDown(
+      await screen.findByRole("button", { name: `${t.moreActions}：第 1 个会话` }),
+      { key: "Enter" },
+    );
+    fireEvent.click(await screen.findByRole("menuitem", { name: t.archive }));
+    expect((await screen.findByRole("alert")).textContent).toContain("会话不在索引中");
+
+    fireEvent.change(screen.getByRole("searchbox", { name: strings.layout.searchSessions }), {
+      target: { value: "迁移" },
+    });
+    await waitFor(() => expect(screen.getAllByRole("alert")).toHaveLength(2));
+    const texts = screen.getAllByRole("alert").map((a) => a.textContent ?? "");
+    expect(texts.some((x) => x.includes(t.searchFailed) && x.includes("搜索出错"))).toBe(true);
+    expect(screen.getByRole("button", { name: t.retry })).toBeTruthy();
+  });
 });
 
 describe("相对时间", () => {

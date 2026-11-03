@@ -136,20 +136,24 @@ export function SessionList() {
         />
       </label>
 
-      {(listError || actionError) && (
+      {actionError && (
+        <div role="alert" className="flex items-center gap-2 px-1 text-xs text-danger">
+          <span className="min-w-0 flex-1 break-words">{actionError}</span>
+        </div>
+      )}
+
+      {listError && (
         <div role="alert" className="flex items-center gap-2 px-1 text-xs text-danger">
           <span className="min-w-0 flex-1 break-words">
-            {actionError ?? `${searching ? t.searchFailed : t.loadFailed}：${listError}`}
+            {`${searching ? t.searchFailed : t.loadFailed}：${listError}`}
           </span>
-          {!actionError && (
-            <button
-              type="button"
-              onClick={searching ? search.retry : index.reload}
-              className="shrink-0 underline"
-            >
-              {t.retry}
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={searching ? search.retry : index.reload}
+            className="shrink-0 underline"
+          >
+            {t.retry}
+          </button>
         </div>
       )}
 

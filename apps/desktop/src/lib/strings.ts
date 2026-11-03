@@ -204,7 +204,7 @@ export const strings = {
     loading: "正在加载…",
     loadFailed: "会话列表加载失败",
     searchFailed: "搜索失败",
-    tabsFull: "标签已满，请先关闭一个空闲的会话",
+    tabsFull: "标签已满，请关闭一个标签，或等任一会话结束运行",
     retry: "重试",
     running: "运行中",
     archived: "已归档",
