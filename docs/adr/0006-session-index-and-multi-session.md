@@ -15,27 +15,27 @@
 ## 决策
 
 ### 索引（`session_index`，rusqlite bundled）
-- 数据库：`users/<SID>/app/index.db`，`PRAGMA journal_mode=WAL`、`synchronous=NORMAL`；`meta` 表记 `schema_version`（当前 1），版本不符时重建派生表（索引可以随时从会话文件重建，不做迁移）。
-- `sessions` 表：`path`（主键，会话文件绝对路径）、`id`、`workspace`（文件头 `cwd` 原样）、`workspace_key`（比较用的规范化路径）、`name`（最新 `session_info.name`，空串视为清除）、`first_message`（首条用户消息文本，截取 200 字）、`created_at`、`updated_at`（最后一条 user/assistant 消息的时间，没有则取文件头时间，毫秒）、`message_count`、`parent_path`、`file_size`、`file_mtime`、`parsed_offset`。列表索引 `(updated_at DESC, path DESC)`、`(workspace_key, updated_at DESC, path DESC)`。归档标记单独放在 `archived(path)` 表。
-- 增量解析：文件只追加，所以记住已解析到的字节偏移（只算到最后一个 `\n` 为止，半行留到下次）。文件变大且大小、修改时间与记录不一致时从偏移处继续读；文件变小、文件头变了或记录缺失时整份重新解析。逐行按 `\n` 切分并去掉 `\r`，与第 5.4 节的分帧规则一致；解析不了的行跳过（与 Core 的容错一致）。
+- 数据库：`users/<SID>/app/index.db`，`PRAGMA journal_mode=WAL`、`synchronous=NORMAL`；`meta` 表记 `schema_version`（当前 2），版本不符时重建派生表（索引可以随时从会话文件重建，不做迁移）。
+- `sessions` 表：`path`（主键，会话文件绝对路径）、`id`、`workspace`（文件头 `cwd` 原样）、`workspace_key`（比较用的规范化路径）、`name`（最新 `session_info.name`，空串视为清除）、`first_message`（首条用户消息文本，截取 200 字）、`created_at`、`updated_at`（最后一条 user/assistant 消息的时间，没有则取文件头时间，毫秒）、`message_count`、`parent_path`、`file_size`、`file_mtime`、`parsed_offset`、`fingerprint`（已解析部分首尾各 4KB 与长度的 FNV-1a 哈希）。列表索引 `(updated_at DESC, path DESC)`、`(workspace_key, updated_at DESC, path DESC)`。归档标记单独放在 `archived(path)` 表。
+- 增量解析：文件只追加，所以记住已解析到的字节偏移（只算到最后一个 `\n` 为止，半行留到下次）。文件变大且已解析部分的指纹与文件头 ID 不变时从偏移处继续读；文件变小、文件头或指纹变了（已解析部分被改写）或记录缺失时整份重新解析。大小与修改时间都没变时也核对指纹，同尺寸、同修改时间的改写不会被漏掉。逐行按 `\n` 切分并去掉 `\r`，与第 5.4 节的分帧规则一致；解析不了的行跳过（与 Core 的容错一致）。
 - 全文索引：单独一张 FTS5 虚表 `session_text`（`path UNINDEXED, body`），分词器 `trigram`（SQLite 3.34 起内置，可做中文子串匹配）。每次增量解析把新增的 user/assistant 文本作为一行追加，整份重解析时先删后插。搜索词不足 3 个字符时 trigram 无法匹配，改为对 `name` 与 `first_message` 做 `LIKE` 子串查询；`LIKE` 的 `%`、`_`、`\` 转义。搜索结果按 `updated_at` 倒序，最多 50 条。
 - 分页：键集分页，游标为上一页最后一条的 `updated_at` 与 `path`（编码为 `<毫秒>:<路径>` 的字符串，前端只原样传回）；每页 50 条。
 - 工作区：`session_list` / `session_search` 的 `workspace` 为 `null` 时返回全部工作区的会话（左栏默认如此，每行显示所属工作区）；为字符串时按 `workspace_key` 过滤，空串表示“未选工作区”的默认目录 `users/<SID>/chat`（与 `session_open` 一致）。`workspace_key` 的规范化（Windows 上统一分隔符为 `\`、去掉末尾分隔符、转小写）放在 `platform` 模块。
-- 启动：主窗口创建后在后台线程全量扫描一次（只读 `core/sessions/` 及其下一层子目录中的 `.jsonl`，大小与修改时间未变的文件直接跳过），扫描期间列表命令照常返回已有索引；库中有而磁盘上没有的条目删除。
+- 启动：主窗口创建后在后台线程全量扫描一次（递归读取 `core/sessions/` 下的 `.jsonl`，与监听范围一致，不跟随符号链接；大小、修改时间与指纹未变的文件跳过；目录读取出错时整次扫描失败、索引保持原状，不把没读到的会话当作已删除），扫描期间列表命令照常返回已有索引；库中有而磁盘上没有的条目删除。
 
 ### 监听（`fs_watch`，notify）
-- 监听 `core/sessions/`（递归，以兼容 Core 未设会话目录时的子目录布局），事件按路径去抖 250ms 后交给索引增量更新；`.jsonl` 之外的文件忽略；监听器出错或丢事件（`Rescan`）时做一次全量扫描。
-- 薄壳只推“索引变了”这一个信号，不推内容：新命令 `session_watch(onEvent: Channel)` 注册一个 Channel，索引每次有变化（含全量扫描结束）推送 `{ "seq": n }`；再次调用替换旧的 Channel。前端收到后重新拉取当前页。这样前端的事件订阅与其他命令一样经 `Platform` 接口与 `COMMANDS` 表，`pnpm dev:web` 的 mock 也能模拟。
+- 监听 `core/sessions/`（递归，以兼容 Core 未设会话目录时的子目录布局），事件按路径去抖 250ms 后交给索引增量更新；`.jsonl` 之外的文件忽略；监听器出错或丢事件（`Rescan`）时做一次全量扫描；重命名（含目录重命名）与目录删除也做全量扫描（notify 对这类事件只报告目录本身）。
+- 薄壳只推“索引变了”这一个信号，不推内容：新命令 `session_watch(onEvent: Channel)` 注册一个 Channel，注册后立即推送一次（覆盖注册前、前端首次拉取之后的变化），之后索引每次有变化（含全量扫描结束）推送 `{ "seq": n }`，序号在锁内分配、严格递增；再次调用替换旧的 Channel。前端收到后重新拉取当前页。这样前端的事件订阅与其他命令一样经 `Platform` 接口与 `COMMANDS` 表，`pnpm dev:web` 的 mock 也能模拟。
 - 技术方案第 5.2 节写的“监听工作区文件变化”留给文件树（第 15.2 节）接入时再加，模块按监听目标扩展。
 
 ### 删除与归档
-- `session_delete(sessionPath)`：只接受 `core/sessions/` 下的 `.jsonl` 文件（规范化后比较，拒绝 `..` 与符号链接逃逸）；会话在打开中（会话表里有使用该文件或该会话 ID 的条目）时拒绝，返回 `{ code: "sessionOpen" }`。通过 `platform::move_to_trash` 移入回收站（Windows：`SHFileOperationW` + `FOF_ALLOWUNDO | FOF_NO_UI`；其他平台第 P3 阶段再实现，目前返回不支持），成功后删除索引条目。检查点（第 15.4 节）接入后在这里一并删除。
+- `session_delete(sessionPath)`：只接受 `core/sessions/` 下的 `.jsonl` 文件（规范化后比较，拒绝 `..` 与符号链接逃逸）；会话在打开中（会话表里有使用该文件或该会话 ID 的条目；文件按身份比较，解析符号链接、`.` 段与短名）时拒绝，返回 `{ code: "sessionOpen" }`。占用检查通过时在同一次加锁内把文件登记为“删除中”，移到回收站在锁外进行（可能弹出系统确认框），期间打开同一文件被拒绝。`session_open` 恢复已有会话文件时同样按文件身份比较，并读文件头的会话 ID 与打开中的新会话比较，同一文件只有一个 Core 写入。通过 `platform::move_to_trash` 移入回收站（Windows：`SHFileOperationW` + `FOF_ALLOWUNDO | FOF_WANTNUKEWARNING | FOF_NO_UI`，卷上没有回收站时先警告、用户取消则不删除索引；其他平台第 P3 阶段再实现，目前返回不支持），成功后删除索引条目。检查点（第 15.4 节）接入后在这里一并删除。
 - `session_archive(sessionPath, archived)`：只改 `archived` 表，列表默认隐藏已归档会话，搜索结果带上归档标记。因 `schema_version` 变化而重建时只删派生表，`archived` 表保留；会话从索引中删除（文件被删）时一并删除其归档标记；数据库损坏、打不开时删掉重建（仍打不开则本次运行用内存库），归档标记随之丢失（会话本身不受影响）。
 
 ### 多会话（前端）
-- 每个打开的会话是一个“标签”：`features/sessions` 的 zustand store 记录标签列表（`tabId`、会话文件路径或空、标题）与当前标签；中央区为每个标签挂一个 `ChatPanel`，非当前标签隐藏（`hidden`）而不卸载，Core 进程与时间线状态都保留，切回时不重放。同时挂载的标签不超过 8 个，超出时关闭最早打开且不在运行中的标签；进程数仍由薄壳的上限（4）与空闲淘汰控制，被淘汰的标签切回时按已有的“内核已停止 → 重启”路径恢复。
-- 打开历史会话：`ChatPanel` 带上会话文件路径挂载，立即 `sessionOpen(workspace, path)`，随后用已有的重建流程（`get_messages` + `get_state`）渲染历史。
-- 新会话：已有尚未打开的空标签时切到它，否则新建；首次发送时打开（沿用现有逻辑）。`session_open` 返回薄壳定好的 `sessionId`，前端据此把索引中的条目与打开中的标签对上，避免同一会话被打开两次；薄壳侧也拒绝打开已被打开中的会话使用的会话文件。
+- 每个打开的会话是一个“标签”：`features/sessions` 的 zustand store 记录标签列表（`tabId`、会话文件路径或空、标题）与当前标签；中央区为每个标签挂一个 `ChatPanel`，非当前标签隐藏（`hidden`）而不卸载，Core 进程与时间线状态都保留，切回时不重放。同时挂载的标签不超过 8 个，超出时关闭最早打开且不在运行中的标签，都关不掉时不新建标签；进程数仍由薄壳的上限（4）与空闲淘汰控制，被淘汰的标签切回时按已有的“内核已停止 → 重启”路径恢复。
+- 打开历史会话：`ChatPanel` 带上会话文件路径挂载，立即 `sessionOpen(workspace, path)`，随后用已有的重建流程（`get_messages` + `get_state`）渲染历史；打开或重建失败时不标记已加载，下一次发送前先重试。
+- 新会话：已有尚未打开的空标签时切到它，否则新建；首次发送时打开（沿用现有逻辑）。正在打开（`sessionOpen` 未返回）的标签不算空标签。`session_open` 返回薄壳定好的 `sessionId`，前端据此把索引中的条目与打开中的标签对上（打开会话文件的标签只按路径匹配，复制出的会话文件头 ID 相同也不混淆），避免同一会话被打开两次；薄壳侧也拒绝打开已被打开中的会话使用的会话文件。
 - 卸载标签时推迟到下一个任务再关闭会话：React 开发模式会立即卸载再挂载，重新挂载时取消关闭，不会对同一会话文件重复打开。
 - 左栏：新会话按钮、搜索框（输入 200ms 去抖，非空时显示搜索结果）、会话列表（`@tanstack/react-virtual` 虚拟滚动，滚到底加载下一页）、每行悬停菜单提供“关闭会话”“归档 / 取消归档”“删除”（删除前确认；打开中的会话不能删除）。暂不做标签栏，打开中的会话在列表中高亮、经菜单关闭。
 - 本次不做：重命名（需要经 Core 的 `set_session_name`，与自动生成标题一起做）、置顶、按工作区分组的折叠视图、会话树与分叉（第 10.3 节其余操作）。

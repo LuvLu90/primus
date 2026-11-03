@@ -63,6 +63,50 @@ describe("会话标签", () => {
     expect(tabs.some((t) => t.id === running)).toBe(true);
   });
 
+  it("打开会话文件的标签只按路径匹配：复制出的会话（文件头 ID 相同）在新标签中打开", () => {
+    store().openSession(session(1));
+    const original = store().activeTabId;
+    const copy = { path: "/s/copy.jsonl", id: "id-1", workspace: "/w" };
+    expect(findTab(store().tabs, copy)).toBeUndefined();
+    expect(store().openSession(copy)).toBe(true);
+    expect(store().activeTabId).not.toBe(original);
+    expect(store().tabs.find((t) => t.id === store().activeTabId)?.sessionPath).toBe(
+      "/s/copy.jsonl",
+    );
+  });
+
+  it("正在打开的新会话标签不算空标签：新会话按钮新建标签", () => {
+    const [first] = store().tabs;
+    if (!first) throw new Error("缺少初始标签");
+    store().setOpening(first.id, true);
+    expect(store().newTab()).toBe(true);
+    expect(store().tabs).toHaveLength(2);
+    expect(store().activeTabId).not.toBe(first.id);
+    // 打开失败（结束打开中、仍没有会话 ID）后重新算作空标签
+    store().setOpening(first.id, false);
+    store().activate(first.id);
+    store().closeTab(store().tabs[1]?.id ?? "");
+    expect(store().newTab()).toBe(true);
+    expect(store().tabs).toHaveLength(1);
+  });
+
+  it("标签已满且都在运行中时不再新增标签", () => {
+    for (let i = 1; i <= MAX_TABS; i++) {
+      store().openSession(session(i));
+      store().setRunning(store().activeTabId, true);
+    }
+    // 初始空标签已被修剪掉，剩下的全部运行中
+    expect(store().tabs).toHaveLength(MAX_TABS);
+    expect(store().tabs.every((t) => t.running)).toBe(true);
+    const active = store().activeTabId;
+    expect(store().openSession(session(MAX_TABS + 1))).toBe(false);
+    expect(store().newTab()).toBe(false);
+    expect(store().tabs).toHaveLength(MAX_TABS);
+    expect(store().activeTabId).toBe(active);
+    // 已打开的会话仍可切换
+    expect(store().openSession(session(1))).toBe(true);
+  });
+
   it("运行状态不变时不产生新的标签数组", () => {
     const before = store().tabs;
     store().setRunning(before[0]?.id ?? "", false);

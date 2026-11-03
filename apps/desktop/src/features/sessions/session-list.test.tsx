@@ -128,6 +128,79 @@ describe("会话列表", () => {
     expect(await screen.findByRole("button", { name: /^第 1 个会话/ })).toBeTruthy();
   });
 
+  it("下一页加载失败后不自动重试；点重试后继续加载，成功后清除错误", async () => {
+    let failNext = true;
+    const sessionList = vi.fn(async (_ws: string | null, cursor?: string) => {
+      if (!cursor) return { items: [1, 2, 3, 4, 5].map((n) => summary(n)), nextCursor: "c1" };
+      if (failNext) throw new Error("第二页失败");
+      return { items: [summary(6)] };
+    });
+    withIndex({ sessionList });
+    render(<SessionList />);
+    expect((await screen.findByRole("alert")).textContent).toContain("第二页失败");
+    // 等一会儿：失败后 loading 复位不应再次触发加载
+    await new Promise((r) => setTimeout(r, 50));
+    expect(sessionList.mock.calls.filter(([, c]) => c === "c1")).toHaveLength(1);
+    failNext = false;
+    fireEvent.click(screen.getByRole("button", { name: t.retry }));
+    expect(await screen.findByRole("button", { name: /^第 6 个会话/ })).toBeTruthy();
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+  });
+
+  it("索引订阅失败时显示错误，点重试重新订阅", async () => {
+    let failWatch = true;
+    const sessionWatch = vi.fn(async () => {
+      if (failWatch) throw new Error("订阅失败");
+    });
+    withIndex({ sessionList: async () => ({ items: [summary(1)] }), sessionWatch });
+    render(<SessionList />);
+    expect((await screen.findByRole("alert")).textContent).toContain("订阅失败");
+    failWatch = false;
+    fireEvent.click(screen.getByRole("button", { name: t.retry }));
+    await waitFor(() => expect(sessionWatch).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    // 订阅已建立后重试不再重复订阅
+    expect(screen.getByRole("button", { name: /^第 1 个会话/ })).toBeTruthy();
+  });
+
+  it("查询变化后、新结果返回前不显示旧结果或未筛选的列表", async () => {
+    let resolveSecond: ((v: SessionSummary[]) => void) | undefined;
+    const sessionSearch = vi.fn(async (_ws: string | null, q: string) =>
+      q === "迁移"
+        ? [summary(9, { title: "数据库迁移" })]
+        : new Promise<SessionSummary[]>((resolve) => {
+            resolveSecond = resolve;
+          }),
+    );
+    withIndex({ sessionList: async () => ({ items: [summary(1)] }), sessionSearch });
+    render(<SessionList />);
+    await screen.findByRole("button", { name: /^第 1 个会话/ });
+    const box = screen.getByRole("searchbox", { name: strings.layout.searchSessions });
+    fireEvent.change(box, { target: { value: "迁移" } });
+    expect(await screen.findByRole("button", { name: /^数据库迁移/ })).toBeTruthy();
+    fireEvent.change(box, { target: { value: "登录" } });
+    expect(screen.queryByRole("button", { name: /^数据库迁移/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^第 1 个会话/ })).toBeNull();
+    expect(screen.getByText(t.searching)).toBeTruthy();
+    await waitFor(() => expect(resolveSecond).toBeDefined());
+    act(() => resolveSecond?.([summary(3, { title: "登录排查" })]));
+    expect(await screen.findByRole("button", { name: /^登录排查/ })).toBeTruthy();
+  });
+
+  it("搜索失败时显示搜索错误，不显示未筛选的列表", async () => {
+    const sessionSearch = vi.fn(async () => {
+      throw new Error("搜索出错");
+    });
+    withIndex({ sessionList: async () => ({ items: [summary(1)] }), sessionSearch });
+    render(<SessionList />);
+    await screen.findByRole("button", { name: /^第 1 个会话/ });
+    fireEvent.change(screen.getByRole("searchbox", { name: strings.layout.searchSessions }), {
+      target: { value: "迁移" },
+    });
+    expect((await screen.findByRole("alert")).textContent).toContain("搜索出错");
+    expect(screen.queryByRole("button", { name: /^第 1 个会话/ })).toBeNull();
+  });
+
   it("删除前确认，确认后移到回收站；打开中的会话不能删除", async () => {
     const sessionDelete = vi.fn(async () => {});
     withIndex({ sessionList: async () => ({ items: [summary(1), summary(2)] }), sessionDelete });

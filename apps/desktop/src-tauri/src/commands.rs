@@ -184,6 +184,8 @@ pub(crate) fn session_watch(
     notifier.set_listener(move |e| {
         let _ = on_event.send(e);
     });
+    // 注册前发生的索引变化没有推给前端（前端注册与首次拉取并发）：注册后补发一次，让前端重新拉取
+    notifier.notify();
 }
 
 /// 归档或取消归档（只改索引，会话文件不动）。
@@ -223,7 +225,8 @@ pub(crate) fn session_delete(
 }
 
 /// 删除会话的步骤（`trash` 可替换，便于测试）：只接受会话目录下的 `.jsonl` 普通文件，
-/// 拒绝相对路径、`..`、符号链接与目录外的文件；会话打开中时拒绝。
+/// 拒绝相对路径、`..`、符号链接与目录外的文件；会话打开中时拒绝。占用检查与移到回收站之间登记“删除中”
+/// （`Sessions::delete_unless_using`），期间打开同一文件被拒绝。
 fn delete_session<S: BatchSink + Clone>(
     sessions: &Sessions<S>,
     index: &SessionIndex,
@@ -253,16 +256,17 @@ fn delete_session<S: BatchSink + Clone>(
     if !inside {
         return Err(invalid());
     }
+    // 会话 ID 先取索引中的，不在索引中（尚未扫描到）时读文件头：打开中的新会话只按会话 ID 登记
     let id = index
         .session_id(session_path)
+        .map_err(|e| CoreCommandError::new(None, e.to_string()))?
+        .or_else(|| crate::session_index::session_file_id(path));
+    sessions
+        .delete_unless_using(path, id.as_deref(), || trash(path))
+        .ok_or_else(|| {
+            CoreCommandError::new(Some("sessionOpen"), "会话正在打开中，请先关闭再删除")
+        })?
         .map_err(|e| CoreCommandError::new(None, e.to_string()))?;
-    if sessions.is_using(path, id.as_deref()) {
-        return Err(CoreCommandError::new(
-            Some("sessionOpen"),
-            "会话正在打开中，请先关闭再删除",
-        ));
-    }
-    trash(path).map_err(|e| CoreCommandError::new(None, e.to_string()))?;
     index
         .remove(session_path)
         .map_err(|e| CoreCommandError::new(None, e.to_string()))?;
@@ -400,6 +404,25 @@ mod tests {
             std::os::unix::fs::symlink(&target, &link).unwrap();
             let never = |_: &Path| -> io::Result<()> { panic!("不应移到回收站") };
             assert!(delete_session(&sessions, &index, link.to_str().unwrap(), never).is_err());
+        }
+
+        #[test]
+        fn open_session_is_not_deleted() {
+            let (_tmp, dir, index, sessions) = setup();
+            let path = write_session(&dir, "a.jsonl");
+            index.sync_all().unwrap();
+            let never = |_: &Path| -> io::Result<()> { panic!("不应移到回收站") };
+            // 恢复的会话按文件登记
+            sessions.insert_idle_for_test("s1", Some(&path), None, NoSink);
+            let err = delete_session(&sessions, &index, &path, never).unwrap_err();
+            assert_eq!(err.code, Some("sessionOpen"));
+            // 新会话只按会话 ID（文件头的 `x`）登记
+            sessions.close_for_test("s1");
+            sessions.insert_idle_for_test("s2", None, Some("x"), NoSink);
+            let err = delete_session(&sessions, &index, &path, never).unwrap_err();
+            assert_eq!(err.code, Some("sessionOpen"));
+            assert!(Path::new(&path).exists());
+            assert_eq!(index.list(None, None).unwrap().items.len(), 1);
         }
 
         #[test]

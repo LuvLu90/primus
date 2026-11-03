@@ -388,6 +388,7 @@ describe("对话区（mock 事件流）", () => {
           sessionId: entry.id,
           workspace: entry.workspace,
           running: false,
+          opening: false,
         }}
       />,
     );
@@ -397,6 +398,44 @@ describe("对话区（mock 事件流）", () => {
     // 历史会话的工作区锁定显示，不出现选择文件夹条
     expect(screen.queryByRole("button", { name: new RegExp(t.chooseFolder) })).toBeNull();
     expect(screen.getByTitle(new RegExp(t.workspaceLocked)).textContent).toContain("demo");
+  });
+
+  it("历史会话打开失败后，下一次发送前重新打开并加载历史", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    setPlatformForTesting(platform);
+    const first = await platform.sessionOpen("C:\\work\\demo", undefined, () => {});
+    await platform.coreSend(first.sessionKey, { id: "h1", type: "prompt", message: "上次的问题" });
+    await waitFor(async () => expect((await platform.sessionList(null)).items).toHaveLength(1));
+    await new Promise((r) => setTimeout(r, 50));
+    await platform.sessionClose(first.sessionKey);
+    const [entry] = (await platform.sessionList(null)).items;
+    if (!entry) throw new Error("缺少索引条目");
+
+    const sessionOpen = vi
+      .spyOn(platform, "sessionOpen")
+      .mockRejectedValueOnce(new Error("内核启动失败"));
+    render(
+      <ChatPanel
+        tab={{
+          id: "tab-r",
+          sessionPath: entry.path,
+          sessionId: entry.id,
+          workspace: entry.workspace,
+          running: false,
+          opening: false,
+        }}
+      />,
+    );
+    expect(await screen.findByText(/内核启动失败/)).toBeTruthy();
+    expect(screen.queryByText("上次的问题")).toBeNull();
+
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    fireEvent.change(input, { target: { value: "继续" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(await screen.findByText("上次的问题")).toBeTruthy();
+    expect(sessionOpen).toHaveBeenCalledTimes(2);
+    expect(sessionOpen.mock.calls[1]?.[1]).toBe(entry.path);
+    await waitFor(() => expect((input as HTMLTextAreaElement).value).toBe(""));
   });
 
   it("Shift+Enter 不发送；空内容不能发送", () => {

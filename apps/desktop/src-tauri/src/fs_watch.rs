@@ -3,7 +3,8 @@
 //!
 //! - 启动后先开始监听、再全量扫描一次，扫描期间写入的文件不会漏掉。
 //! - 事件自第一条起最多攒 250ms 再处理：Core 流式写入时每秒最多更新 4 次索引，不会因持续写入一直推迟。
-//! - 监听器报错或提示丢了事件（`need_rescan`）时改做一次全量扫描。
+//! - 监听器报错或提示丢了事件（`need_rescan`）时改做一次全量扫描。重命名（含目录重命名）与目录删除也改做全量扫描：
+//!   notify 对这类事件只报告目录本身，不逐个报告其中的会话文件。
 //! - 监听工作区文件（文件树，第 15.2 节）以后在这里按监听目标扩展。
 
 use std::collections::HashSet;
@@ -14,6 +15,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use notify::event::{EventKind, ModifyKind, RemoveKind};
 use notify::{Event, RecursiveMode, Watcher};
 
 use crate::session_index::SessionIndex;
@@ -42,13 +44,10 @@ impl IndexNotifier {
     }
 
     pub(crate) fn notify(&self) {
+        // 持锁分配序号并推送：并发调用（归档命令与监听线程）时监听者收到的序号严格递增
+        let listener = self.listener.lock().unwrap_or_else(PoisonError::into_inner);
         let seq = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
-        if let Some(listener) = self
-            .listener
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()
-        {
+        if let Some(listener) = listener.as_ref() {
             listener(IndexChanged { seq });
         }
     }
@@ -115,7 +114,7 @@ fn run(
         };
         match message {
             Some(Ok(event)) => {
-                if event.need_rescan() {
+                if event.need_rescan() || needs_full_scan(&event) {
                     rescan = true;
                 }
                 pending.extend(
@@ -143,6 +142,19 @@ fn run(
             flush(index, notifier, &mut pending, &mut rescan);
             deadline = None;
         }
+    }
+}
+
+/// 只报告目录、不报告其中文件的事件：重命名（文件或目录，旧新路径不一定成对到达）、目录删除，
+/// 以及路径不是会话文件的删除（Windows 不区分删除的是文件还是目录）。
+fn needs_full_scan(event: &Event) -> bool {
+    match event.kind {
+        EventKind::Modify(ModifyKind::Name(_)) | EventKind::Remove(RemoveKind::Folder) => true,
+        EventKind::Remove(_) => event
+            .paths
+            .iter()
+            .any(|p| !p.extension().is_some_and(|e| e == "jsonl")),
+        _ => false,
     }
 }
 
@@ -177,7 +189,6 @@ fn flush(
 mod tests {
     use super::*;
     use crate::supervisor::tests::TempDir;
-    use notify::EventKind;
     use notify::event::{CreateKind, Flag};
     use std::sync::mpsc::Sender;
 
@@ -288,6 +299,74 @@ mod tests {
         drop(tx);
         run(&rx, &index, &notifier, Duration::from_millis(10));
         assert_eq!(index.list(None, None).unwrap().items.len(), 2);
+    }
+
+    #[test]
+    fn directory_rename_triggers_full_scan() {
+        use notify::event::RenameMode;
+        let dir = TempDir::new();
+        let index = SessionIndex::open_in_memory(&dir.0).unwrap();
+        let old_dir = dir.0.join("old");
+        std::fs::create_dir(&old_dir).unwrap();
+        let a = session_file(&old_dir, "a.jsonl", "a");
+        index.update_file(&a).unwrap();
+        let new_dir = dir.0.join("new");
+        std::fs::rename(&old_dir, &new_dir).unwrap();
+        let (notifier, seen) = recorder();
+        let (tx, rx) = mpsc::channel();
+        // Linux 上目录重命名只报告目录路径
+        tx.send(Ok(Event::new(EventKind::Modify(ModifyKind::Name(
+            RenameMode::Both,
+        )))
+        .add_path(old_dir)
+        .add_path(new_dir.clone())))
+            .unwrap();
+        drop(tx);
+        run(&rx, &index, &notifier, Duration::from_millis(10));
+        let items = index.list(None, None).unwrap().items;
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            std::path::Path::new(&items[0].path),
+            new_dir.join("a.jsonl").as_path()
+        );
+        assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn directory_removal_triggers_full_scan() {
+        let dir = TempDir::new();
+        let index = SessionIndex::open_in_memory(&dir.0).unwrap();
+        let sub = dir.0.join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        let a = session_file(&sub, "a.jsonl", "a");
+        index.update_file(&a).unwrap();
+        std::fs::remove_dir_all(&sub).unwrap();
+        let (notifier, _seen) = recorder();
+        let (tx, rx) = mpsc::channel();
+        tx.send(Ok(
+            Event::new(EventKind::Remove(RemoveKind::Any)).add_path(sub)
+        ))
+        .unwrap();
+        drop(tx);
+        run(&rx, &index, &notifier, Duration::from_millis(10));
+        assert!(index.list(None, None).unwrap().items.is_empty());
+    }
+
+    #[test]
+    fn concurrent_notifications_arrive_in_order() {
+        let (notifier, seen) = recorder();
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    for _ in 0..200 {
+                        notifier.notify();
+                    }
+                });
+            }
+        });
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 800);
+        assert!(seen.windows(2).all(|w| w[1] == w[0] + 1));
     }
 
     #[test]

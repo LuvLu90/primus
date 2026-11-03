@@ -1,7 +1,9 @@
 //! 会话索引（第 10.2 节、ADR 0006）：扫描会话目录，解析 JSONL 头部、`session_info` 与消息，写入
 //! `users/<SID>/app/index.db`（SQLite），并对消息文本建立 FTS5 全文索引（trigram 分词，可做中文子串匹配）。
 //!
-//! - 会话文件只追加：记住解析到的字节偏移（只算到最后一个 `\n`），文件变大时从偏移处继续；变小或文件头变了时整份重解析。
+//! - 会话文件只追加：记住解析到的字节偏移（只算到最后一个 `\n`）与已解析部分的指纹（首尾各 4KB 的哈希），
+//!   文件变大且指纹不变时从偏移处继续；变小、文件头或指纹变了（被改写）时整份重解析。大小与修改时间都没变时
+//!   也核对指纹，同尺寸、同修改时间的改写不会被漏掉。
 //! - 逐行按 `\n` 切分并去掉 `\r`（与第 5.4 节分帧规则一致），解析不了的行跳过。
 //! - 索引是会话文件的派生数据：`schema_version` 不符或数据库损坏时重建；归档标记存在独立的 `archived` 表，
 //!   因版本变化重建时保留。
@@ -10,7 +12,7 @@
 use std::collections::HashSet;
 use std::fmt;
 use std::fs::{self, File};
-use std::io::{self, BufRead, BufReader, Seek, SeekFrom};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::UNIX_EPOCH;
@@ -23,11 +25,13 @@ pub(crate) const PAGE_SIZE: usize = 50;
 /// 搜索结果上限。
 pub(crate) const SEARCH_LIMIT: usize = 50;
 /// 索引结构版本；改表结构时加一，旧库整体重建（`archived` 表保留）。
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 /// 列表标题（首条用户消息）最多保留的字符数。
 const TITLE_CHARS: usize = 200;
 /// trigram 分词器能匹配的最短查询（字符数）；更短的查询改为对标题做子串匹配。
 const TRIGRAM_MIN_CHARS: usize = 3;
+/// 已解析部分的指纹取首尾各多少字节。
+const FINGERPRINT_SPAN: u64 = 4096;
 
 #[derive(Debug)]
 pub(crate) enum IndexError {
@@ -145,9 +149,10 @@ impl SessionIndex {
         self.conn.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// 全量扫描会话目录（及其下一层子目录）：更新有变化的文件，删除磁盘上已不存在的条目。返回索引是否有变化。
+    /// 全量扫描会话目录（递归，与监听范围一致）：更新有变化的文件，删除磁盘上已不存在的条目。返回索引是否有变化。
+    /// 目录读不了时整次扫描失败、索引保持原状（不把没读到的会话当作已删除）。
     pub(crate) fn sync_all(&self) -> Result<bool, IndexError> {
-        let files = session_files(&self.sessions_dir);
+        let files = session_files(&self.sessions_dir)?;
         let mut changed = false;
         let mut seen = HashSet::with_capacity(files.len());
         for file in files {
@@ -198,20 +203,24 @@ impl SessionIndex {
         let size = meta.len() as i64;
         let mtime = mtime_ms(&meta);
         let existing = self.load_state(key)?;
+        let mut file = File::open(path)?;
+        // 已解析部分是否原样未动：文件头的会话 ID 与已解析部分的指纹都和记录一致
+        let mut prefix_intact = |state: &RowState| {
+            size >= state.parsed_offset
+                && prefix_fingerprint(&mut file, state.parsed_offset).ok()
+                    == Some(state.fingerprint)
+                && read_header_id(&mut file).ok().flatten().as_deref()
+                    == Some(state.meta.id.as_str())
+        };
         if let Some(state) = &existing
             && state.file_size == size
             && state.file_mtime == mtime
+            && prefix_intact(state)
         {
             return Ok(Change::Unchanged);
         }
-
-        let mut file = File::open(path)?;
-        // 增量：文件只追加，从上次解析到的完整行之后继续；文件变小或文件头变了说明被改写，整份重解析
-        let resume = existing.filter(|state| {
-            size >= state.parsed_offset
-                && read_header_id(&mut file).ok().flatten().as_deref()
-                    == Some(state.meta.id.as_str())
-        });
+        // 增量：文件只追加，从上次解析到的完整行之后继续；已解析部分变了（变小、文件头或内容被改写）则整份重解析
+        let resume = existing.filter(|state| prefix_intact(state));
         let (mut meta_acc, offset, full) = match resume {
             Some(state) => (Some(state.meta), state.parsed_offset, false),
             None => (None, 0, true),
@@ -249,6 +258,7 @@ impl SessionIndex {
             // 还没有完整的会话头（空文件或第一行未写完）：先不入索引
             return self.remove(key).map(removed);
         };
+        let fingerprint = prefix_fingerprint(reader.get_mut(), parsed)?;
 
         let mut conn = self.conn();
         let tx = conn.transaction()?;
@@ -263,6 +273,7 @@ impl SessionIndex {
                 size,
                 mtime,
                 parsed_offset: parsed,
+                fingerprint,
             },
         )?;
         if !texts.is_empty() {
@@ -401,7 +412,7 @@ impl SessionIndex {
             .conn()
             .query_row(
                 "SELECT id, workspace, name, first_message, created_at, updated_at, message_count,
-                        parent_path, file_size, file_mtime, parsed_offset
+                        parent_path, file_size, file_mtime, parsed_offset, fingerprint
                  FROM sessions WHERE path = ?1",
                 [path],
                 |row| {
@@ -419,6 +430,7 @@ impl SessionIndex {
                         file_size: row.get(8)?,
                         file_mtime: row.get(9)?,
                         parsed_offset: row.get(10)?,
+                        fingerprint: row.get(11)?,
                     })
                 },
             )
@@ -572,25 +584,29 @@ struct RowState {
     file_size: i64,
     file_mtime: i64,
     parsed_offset: i64,
+    fingerprint: i64,
 }
 
 struct RowFile {
     size: i64,
     mtime: i64,
     parsed_offset: i64,
+    fingerprint: i64,
 }
 
 fn upsert(tx: &Transaction<'_>, path: &str, m: &SessionMeta, f: &RowFile) -> rusqlite::Result<()> {
     tx.execute(
         "INSERT INTO sessions (path, id, workspace, workspace_key, name, first_message, created_at,
-                               updated_at, message_count, parent_path, file_size, file_mtime, parsed_offset)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+                               updated_at, message_count, parent_path, file_size, file_mtime, parsed_offset,
+                               fingerprint)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
          ON CONFLICT (path) DO UPDATE SET
            id = excluded.id, workspace = excluded.workspace, workspace_key = excluded.workspace_key,
            name = excluded.name, first_message = excluded.first_message, created_at = excluded.created_at,
            updated_at = excluded.updated_at, message_count = excluded.message_count,
            parent_path = excluded.parent_path, file_size = excluded.file_size,
-           file_mtime = excluded.file_mtime, parsed_offset = excluded.parsed_offset",
+           file_mtime = excluded.file_mtime, parsed_offset = excluded.parsed_offset,
+           fingerprint = excluded.fingerprint",
         params![
             path,
             m.id,
@@ -604,7 +620,8 @@ fn upsert(tx: &Transaction<'_>, path: &str, m: &SessionMeta, f: &RowFile) -> rus
             m.parent_path,
             f.size,
             f.mtime,
-            f.parsed_offset
+            f.parsed_offset,
+            f.fingerprint
         ],
     )?;
     Ok(())
@@ -650,7 +667,8 @@ fn init_schema(conn: &Connection) -> Result<(), IndexError> {
                parent_path TEXT,
                file_size INTEGER NOT NULL,
                file_mtime INTEGER NOT NULL,
-               parsed_offset INTEGER NOT NULL
+               parsed_offset INTEGER NOT NULL,
+               fingerprint INTEGER NOT NULL
              );
              CREATE INDEX sessions_recent ON sessions (updated_at DESC, path DESC);
              CREATE INDEX sessions_workspace ON sessions (workspace_key, updated_at DESC, path DESC);
@@ -687,28 +705,70 @@ fn is_session_file_name(path: &Path) -> bool {
     path.extension().is_some_and(|ext| ext == "jsonl")
 }
 
-/// 会话目录及其下一层子目录中的 `.jsonl` 文件（不跟随符号链接）。
-fn session_files(dir: &Path) -> Vec<PathBuf> {
+/// 会话目录下（递归，与 `fs_watch` 的递归监听范围一致）的 `.jsonl` 文件，不跟随符号链接。
+/// 会话目录本身不存在时为空；扫描期间被删掉的子目录跳过；其他读取错误中止扫描，调用方不据此删除索引条目。
+fn session_files(dir: &Path) -> io::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
-    let Ok(entries) = fs::read_dir(dir) else {
-        return files;
-    };
-    for entry in entries.flatten() {
-        let Ok(ty) = entry.file_type() else { continue };
-        let path = entry.path();
-        if ty.is_file() && is_session_file_name(&path) {
-            files.push(path);
-        } else if ty.is_dir()
-            && let Ok(sub) = fs::read_dir(&path)
-        {
-            for e in sub.flatten() {
-                if e.file_type().is_ok_and(|t| t.is_file()) && is_session_file_name(&e.path()) {
-                    files.push(e.path());
-                }
+    let mut dirs = vec![dir.to_path_buf()];
+    while let Some(current) = dirs.pop() {
+        let entries = match fs::read_dir(&current) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        };
+        for entry in entries {
+            let entry = entry?;
+            let ty = entry.file_type()?;
+            let path = entry.path();
+            if ty.is_dir() {
+                dirs.push(path);
+            } else if ty.is_file() && is_session_file_name(&path) {
+                files.push(path);
             }
         }
     }
-    files
+    Ok(files)
+}
+
+/// 已解析部分 `[0, len)` 的指纹：长度与首尾各 [`FINGERPRINT_SPAN`] 字节的 FNV-1a 哈希。文件比 `len` 短时报错。
+fn prefix_fingerprint(file: &mut File, len: i64) -> io::Result<i64> {
+    let len = u64::try_from(len).unwrap_or_default();
+    let mut hash = Fnv1a::default();
+    hash.write(&len.to_le_bytes());
+    let head = len.min(FINGERPRINT_SPAN);
+    let tail = len.saturating_sub(FINGERPRINT_SPAN).max(head);
+    let mut buf = vec![0; FINGERPRINT_SPAN as usize];
+    for (start, n) in [(0, head), (tail, len - tail)] {
+        let chunk = &mut buf[..n as usize];
+        file.seek(SeekFrom::Start(start))?;
+        file.read_exact(chunk)?;
+        hash.write(chunk);
+    }
+    Ok(hash.0 as i64)
+}
+
+/// 64 位 FNV-1a：存进索引库的指纹要求跨版本稳定（标准库的哈希不保证）。
+struct Fnv1a(u64);
+
+impl Default for Fnv1a {
+    fn default() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+}
+
+impl Fnv1a {
+    fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.0 ^= u64::from(*b);
+            self.0 = self.0.wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+}
+
+/// 会话文件头的会话 ID（打开已有会话文件前判断它是否属于打开中的新会话）；读不了或不是会话文件时为 None。
+pub(crate) fn session_file_id(path: &Path) -> Option<String> {
+    let mut file = File::open(path).ok()?;
+    read_header_id(&mut file).ok().flatten()
 }
 
 /// 读第一行完整记录的会话 ID（判断文件是否被改写）；没有完整的第一行或不是会话头时为 None。
@@ -1062,35 +1122,133 @@ mod tests {
         assert!(!index.list(None, None).unwrap().items[0].archived);
     }
 
+    const TS: &str = "2026-11-03T00:00:00.000Z";
+
     #[test]
-    fn sync_all_scans_top_level_and_one_subdirectory_level() {
+    fn sync_all_scans_nested_subdirectories_like_the_watcher() {
         let (dir, index) = setup();
         let a = dir.0.join("a.jsonl");
-        write_lines(
-            &a,
-            &[header("a", "/w", "2026-11-03T00:00:00.000Z"), user("1", 1)],
-        );
+        write_lines(&a, &[header("a", "/w", TS), user("1", 1)]);
         let sub = dir.0.join("--w--");
         fs::create_dir(&sub).unwrap();
         let b = sub.join("b.jsonl");
-        write_lines(
-            &b,
-            &[header("b", "/w", "2026-11-03T00:00:00.000Z"), user("2", 2)],
-        );
-        let deep = sub.join("deeper");
-        fs::create_dir(&deep).unwrap();
-        write_lines(
-            &deep.join("c.jsonl"),
-            &[header("c", "/w", "2026-11-03T00:00:00.000Z"), user("3", 3)],
-        );
+        write_lines(&b, &[header("b", "/w", TS), user("2", 2)]);
+        // 两层以上的子目录：递归监听会把它入索引，全量扫描也要覆盖，否则重扫时会被当作已删除
+        let deep = sub.join("deeper").join("deepest");
+        fs::create_dir_all(&deep).unwrap();
+        let c = deep.join("c.jsonl");
+        write_lines(&c, &[header("c", "/w", TS), user("3", 3)]);
         assert!(index.sync_all().unwrap());
-        assert_eq!(index.list(None, None).unwrap().items.len(), 2);
+        assert_eq!(index.list(None, None).unwrap().items.len(), 3);
+        index.set_archived(&key(&c), true).unwrap();
         assert!(!index.sync_all().unwrap());
+        let found = index.search(None, "3").unwrap();
+        assert_eq!(found.len(), 1);
+        assert!(found[0].archived, "重扫后深层会话的归档标记应保留");
         fs::remove_file(&a).unwrap();
         assert!(index.sync_all().unwrap());
         let items = index.list(None, None).unwrap().items;
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].id, "b");
+    }
+
+    #[test]
+    fn missing_sessions_dir_scans_as_empty() {
+        let dir = TempDir::new();
+        let index = SessionIndex::open_in_memory(&dir.0.join("missing")).unwrap();
+        assert!(!index.sync_all().unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_directory_aborts_scan_and_keeps_entries() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, index) = setup();
+        let sub = dir.0.join("sub");
+        fs::create_dir(&sub).unwrap();
+        let p = sub.join("a.jsonl");
+        write_lines(&p, &[header("a", "/w", TS), user("x", 1)]);
+        index.sync_all().unwrap();
+        index.set_archived(&key(&p), true).unwrap();
+        fs::set_permissions(&sub, fs::Permissions::from_mode(0o000)).unwrap();
+        let readable = fs::read_dir(&sub).is_ok();
+        let result = index.sync_all();
+        fs::set_permissions(&sub, fs::Permissions::from_mode(0o755)).unwrap();
+        if readable {
+            // 以 root 运行时权限位不生效，无法构造读取失败
+            return;
+        }
+        assert!(result.is_err(), "目录读取失败应中止扫描");
+        let found = index.search(None, "x").unwrap();
+        assert_eq!(found.len(), 1, "扫描失败时不删除已有条目");
+        assert!(found[0].archived);
+    }
+
+    #[test]
+    fn same_size_same_mtime_rewrite_is_detected() {
+        let (dir, index) = setup();
+        let p = dir.0.join("m.jsonl");
+        let fixed = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
+        let set_mtime = |p: &Path| {
+            fs::OpenOptions::new()
+                .write(true)
+                .open(p)
+                .unwrap()
+                .set_modified(fixed)
+                .unwrap();
+        };
+        write_lines(&p, &[header("m", "/w", TS), user("旧正文甲乙丙", 1)]);
+        set_mtime(&p);
+        index.update_file(&p).unwrap();
+        let before = fs::metadata(&p).unwrap().len();
+        // 同尺寸、同修改时间、同会话 ID 的改写
+        write_lines(&p, &[header("m", "/w", TS), user("新正文丁戊己", 1)]);
+        set_mtime(&p);
+        assert_eq!(fs::metadata(&p).unwrap().len(), before);
+        assert_eq!(index.update_file(&p).unwrap(), Change::Updated);
+        assert!(index.search(None, "旧正文").unwrap().is_empty());
+        assert_eq!(index.search(None, "新正文").unwrap().len(), 1);
+        // 内容确实没变时仍是 Unchanged
+        assert_eq!(index.update_file(&p).unwrap(), Change::Unchanged);
+    }
+
+    #[test]
+    fn same_id_longer_rewrite_is_fully_reparsed() {
+        let (dir, index) = setup();
+        let p = dir.0.join("r.jsonl");
+        write_lines(&p, &[header("r", "/w", TS), user("旧的正文内容", 1)]);
+        index.update_file(&p).unwrap();
+        // 文件头 ID 不变、文件变长，但已解析部分被改写：不能从旧偏移续读
+        write_lines(
+            &p,
+            &[
+                header("r", "/w", TS),
+                user("新的正文内容，而且更长一些", 1),
+                assistant("新的回答", 2),
+            ],
+        );
+        bump_mtime(&p, 5);
+        assert_eq!(index.update_file(&p).unwrap(), Change::Updated);
+        assert!(index.search(None, "旧的正文").unwrap().is_empty());
+        assert_eq!(index.search(None, "新的正文").unwrap().len(), 1);
+        let s = &index.list(None, None).unwrap().items[0];
+        assert_eq!(s.title, "新的正文内容，而且更长一些");
+        assert_eq!(s.message_count, 2);
+    }
+
+    #[test]
+    fn append_after_intact_prefix_resumes_incrementally() {
+        let (dir, index) = setup();
+        let p = dir.0.join("i.jsonl");
+        write_lines(&p, &[header("i", "/w", TS), user("第一句话", 1)]);
+        index.update_file(&p).unwrap();
+        append(&p, &format!("{}\n", assistant("追加的回答", 2)));
+        bump_mtime(&p, 5);
+        assert_eq!(index.update_file(&p).unwrap(), Change::Updated);
+        let s = &index.list(None, None).unwrap().items[0];
+        assert_eq!(s.message_count, 2);
+        assert_eq!(index.search(None, "第一句").unwrap().len(), 1);
+        assert_eq!(index.search(None, "追加的回答").unwrap().len(), 1);
     }
 
     fn seed(index: &SessionIndex, dir: &Path, n: usize, cwd: &str) -> Vec<String> {

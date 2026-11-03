@@ -17,18 +17,25 @@ export interface ChatTab {
   workspace: string | null;
   /** 正在运行（agent_start 到 agent_settled）：不会因标签上限被关闭 */
   running: boolean;
+  /** 正在打开（已发起 sessionOpen、尚未返回）：新会话此时还没有会话 ID，但已不是空标签 */
+  opening: boolean;
 }
 
 export interface SessionsState {
   tabs: ChatTab[];
   activeTabId: string;
-  /** 新会话：已有尚未打开的空标签时直接切到它，否则新建 */
-  newTab: () => void;
-  /** 打开历史会话：已在某个标签中则切过去，否则新建标签 */
-  openSession: (session: Pick<SessionSummary, "path" | "id" | "workspace">) => void;
+  /**
+   * 新会话：已有尚未打开的空标签时直接切到它，否则新建。标签已达上限且都关不掉（当前或运行中）时不新建，
+   * 返回 false
+   */
+  newTab: () => boolean;
+  /** 打开历史会话：已在某个标签中则切过去，否则新建标签（达到上限且关不掉旧标签时不新建，返回 false） */
+  openSession: (session: Pick<SessionSummary, "path" | "id" | "workspace">) => boolean;
   activate: (tabId: string) => void;
   /** 关闭标签（卸载其 ChatPanel，随之关闭会话）；关掉最后一个时换成一个新的空标签 */
   closeTab: (tabId: string) => void;
+  /** 开始或结束打开会话（结束时无论成败）：打开中的标签不算空标签 */
+  setOpening: (tabId: string, opening: boolean) => void;
   /** 会话已打开：记下会话 ID 与工作区 */
   markOpened: (tabId: string, opened: { sessionId: string | null; workspace: string }) => void;
   setRunning: (tabId: string, running: boolean) => void;
@@ -41,17 +48,21 @@ const newTabState = (): ChatTab => ({
   sessionId: null,
   workspace: null,
   running: false,
+  opening: false,
 });
 
-/** 列表条目对应的标签（按会话文件路径或会话 ID） */
+/**
+ * 列表条目对应的标签：打开的是会话文件的标签只按路径匹配（复制出的会话文件头 ID 相同，但是另一个会话）；
+ * 新会话的标签没有路径，按薄壳给出的会话 ID 匹配
+ */
 export function findTab(
   tabs: readonly ChatTab[],
   session: Pick<SessionSummary, "path" | "id">,
 ): ChatTab | undefined {
-  return tabs.find(
-    (t) =>
-      (t.sessionPath !== null && t.sessionPath === session.path) ||
-      (t.sessionId !== null && t.sessionId === session.id),
+  return tabs.find((t) =>
+    t.sessionPath !== null
+      ? t.sessionPath === session.path
+      : t.sessionId !== null && t.sessionId === session.id,
   );
 }
 
@@ -66,7 +77,13 @@ function trim(tabs: ChatTab[], activeTabId: string): ChatTab[] {
   return result;
 }
 
-const isBlank = (t: ChatTab) => t.sessionPath === null && t.sessionId === null;
+const isBlank = (t: ChatTab) => t.sessionPath === null && t.sessionId === null && !t.opening;
+
+/** 加入新标签并按上限修剪；修剪后仍超出上限（其余标签都在运行中）时返回 null，不加入 */
+function withTab(tabs: ChatTab[], tab: ChatTab): ChatTab[] | null {
+  const result = trim([...tabs, tab], tab.id);
+  return result.length > MAX_TABS ? null : result;
+}
 
 export function createInitialSessionsState(): Pick<SessionsState, "tabs" | "activeTabId"> {
   const first = newTabState();
@@ -80,17 +97,20 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
     const blank = get().tabs.find(isBlank);
     if (blank) {
       set({ activeTabId: blank.id });
-      return;
+      return true;
     }
     const tab = newTabState();
-    set((s) => ({ tabs: trim([...s.tabs, tab], tab.id), activeTabId: tab.id }));
+    const tabs = withTab(get().tabs, tab);
+    if (!tabs) return false;
+    set({ tabs, activeTabId: tab.id });
+    return true;
   },
 
   openSession: (session) => {
     const existing = findTab(get().tabs, session);
     if (existing) {
       set({ activeTabId: existing.id });
-      return;
+      return true;
     }
     const tab: ChatTab = {
       ...newTabState(),
@@ -98,7 +118,10 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
       sessionId: session.id,
       workspace: session.workspace,
     };
-    set((s) => ({ tabs: trim([...s.tabs, tab], tab.id), activeTabId: tab.id }));
+    const tabs = withTab(get().tabs, tab);
+    if (!tabs) return false;
+    set({ tabs, activeTabId: tab.id });
+    return true;
   },
 
   activate: (tabId) => {
@@ -119,6 +142,13 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
       const activeTabId = s.activeTabId === tabId && neighbor ? neighbor.id : s.activeTabId;
       return { tabs, activeTabId };
     }),
+
+  setOpening: (tabId, opening) =>
+    set((s) =>
+      s.tabs.some((t) => t.id === tabId && t.opening !== opening)
+        ? { tabs: s.tabs.map((t) => (t.id === tabId ? { ...t, opening } : t)) }
+        : s,
+    ),
 
   markOpened: (tabId, { sessionId, workspace }) =>
     set((s) => ({

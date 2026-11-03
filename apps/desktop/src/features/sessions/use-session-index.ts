@@ -17,6 +17,7 @@ export interface SessionIndexView {
   /** 每次重新拉取成功加一：搜索结果据此跟着索引刷新 */
   version: number;
   loadMore: () => void;
+  /** 重新拉取；索引订阅尚未建立（之前订阅失败）时先重新订阅 */
   reload: () => void;
 }
 
@@ -25,6 +26,8 @@ export function useSessionIndex(): SessionIndexView {
   const [cursor, setCursor] = useState<string>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  // 订阅失败单独记：列表重新拉取成功不清除它，只有重新订阅成功才清除
+  const [watchError, setWatchError] = useState<string>();
   const [version, setVersion] = useState(0);
   const pages = useRef(1);
   // 代次：只采纳最近一次发起的加载结果，避免旧请求晚到覆盖新列表
@@ -32,6 +35,9 @@ export function useSessionIndex(): SessionIndexView {
   const mounted = useRef(false);
   const inFlight = useRef(false);
   const dirty = useRef(false);
+  // 索引订阅已建立（sessionWatch 成功）；薄壳再次订阅时替换旧的 Channel，重复订阅无害
+  const watching = useRef(false);
+  const watchingPromise = useRef<Promise<void>>(null);
 
   const reload = useCallback(async () => {
     // 加载进行中又收到变化：标记一下，结束后再拉一次，不并发请求
@@ -85,6 +91,7 @@ export function useSessionIndex(): SessionIndexView {
           return prev.concat(page.items.filter((s) => !seen.has(s.path)));
         });
         setCursor(page.nextCursor);
+        setError(undefined);
       }
     } catch (e) {
       if (mounted.current && gen === generation.current) setError(errorText(e));
@@ -98,48 +105,72 @@ export function useSessionIndex(): SessionIndexView {
     }
   }, [cursor, reload]);
 
-  useEffect(() => {
-    mounted.current = true;
-    void getPlatform()
+  /** 订阅索引变化；已订阅或正在订阅时不重复发起。失败时记下错误，重试（reload）时再订阅 */
+  const watch = useCallback(() => {
+    if (watching.current || watchingPromise.current) return;
+    watchingPromise.current = getPlatform()
       .then((p) =>
         p.sessionWatch(() => {
           if (mounted.current) void reload();
         }),
       )
-      .catch((e) => mounted.current && setError(errorText(e)));
+      .then(() => {
+        watching.current = true;
+        if (mounted.current) setWatchError(undefined);
+      })
+      .catch((e) => {
+        if (mounted.current) setWatchError(errorText(e));
+      })
+      .finally(() => {
+        watchingPromise.current = null;
+      });
+  }, [reload]);
+
+  useEffect(() => {
+    mounted.current = true;
+    watch();
     void reload();
     return () => {
       mounted.current = false;
     };
-  }, [reload]);
+  }, [reload, watch]);
 
   return {
     items,
     hasMore: cursor !== undefined,
     loading,
-    error,
+    error: error ?? watchError,
     version,
     loadMore: () => void loadMore(),
-    reload: () => void reload(),
+    reload: () => {
+      watch();
+      void reload();
+    },
   };
 }
 
-/** 搜索：输入停顿 200ms 后查询；查询为空时为 null（显示普通列表）。`version` 变化（索引有更新）时重新查询 */
-export function useSessionSearch(
-  query: string,
-  version: number,
-): {
+export interface SessionSearchView {
+  /** 查询为空时为 null（显示普通列表）；当前查询还没有结果时为空数组（`pending`），不显示旧查询的结果或未筛选的列表 */
   results: SessionSummary[] | null;
+  /** 当前查询的搜索尚未完成（输入去抖中或请求中） */
+  pending: boolean;
+  /** 当前查询的搜索错误（此时 `results` 为空数组） */
   error?: string;
-} {
-  const [results, setResults] = useState<SessionSummary[] | null>(null);
-  const [error, setError] = useState<string>();
+}
+
+/** 搜索：输入停顿 200ms 后查询。`version` 变化（索引有更新）时按同一查询重新查询，期间保留该查询已有的结果 */
+export function useSessionSearch(query: string, version: number): SessionSearchView {
+  // 结果连同它对应的查询一起记：查询变了而新结果未到时，旧结果不再算作当前结果
+  const [settled, setSettled] = useState<{
+    query: string;
+    results: SessionSummary[];
+    error?: string;
+  }>();
   const q = query.trim();
   // biome-ignore lint/correctness/useExhaustiveDependencies: version 只用来在索引更新后重新查询
   useEffect(() => {
     if (!q) {
-      setResults(null);
-      setError(undefined);
+      setSettled(undefined);
       return;
     }
     let cancelled = false;
@@ -147,12 +178,10 @@ export function useSessionSearch(
       getPlatform()
         .then((p) => p.sessionSearch(null, q))
         .then((found) => {
-          if (cancelled) return;
-          setResults(found);
-          setError(undefined);
+          if (!cancelled) setSettled({ query: q, results: found });
         })
         .catch((e) => {
-          if (!cancelled) setError(errorText(e));
+          if (!cancelled) setSettled({ query: q, results: [], error: errorText(e) });
         });
     }, 200);
     return () => {
@@ -160,5 +189,7 @@ export function useSessionSearch(
       clearTimeout(timer);
     };
   }, [q, version]);
-  return { results, error };
+  if (!q) return { results: null, pending: false };
+  if (settled?.query !== q) return { results: [], pending: true };
+  return { results: settled.results, pending: false, error: settled.error };
 }

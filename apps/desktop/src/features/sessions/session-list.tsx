@@ -82,11 +82,18 @@ export function SessionList() {
   });
   const virtualItems = virtualizer.getVirtualItems();
   const lastIndex = virtualItems.at(-1)?.index ?? -1;
-  const { hasMore, loading, loadMore } = index;
+  const { hasMore, loading, loadMore, error: indexError } = index;
+  // 加载失败后不自动重试（否则 loading 复位即再次触发，连续请求）：等用户点“重试”
   useEffect(() => {
-    if (!searching && hasMore && !loading && lastIndex >= rows.length - LOAD_MORE_THRESHOLD)
+    if (
+      !searching &&
+      !indexError &&
+      hasMore &&
+      !loading &&
+      lastIndex >= rows.length - LOAD_MORE_THRESHOLD
+    )
       loadMore();
-  }, [searching, hasMore, loading, lastIndex, rows.length, loadMore]);
+  }, [searching, indexError, hasMore, loading, lastIndex, rows.length, loadMore]);
 
   const archive = (s: SessionSummary) => {
     setActionError(undefined);
@@ -104,7 +111,13 @@ export function SessionList() {
       .catch((e) => setActionError(errorText(e)));
   };
 
-  const emptyText = searching ? t.noResults : index.loading ? t.loading : t.empty;
+  const emptyText = searching
+    ? search.pending
+      ? t.searching
+      : t.noResults
+    : index.loading
+      ? t.loading
+      : t.empty;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">

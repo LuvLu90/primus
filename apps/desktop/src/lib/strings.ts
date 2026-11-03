@@ -199,6 +199,7 @@ export const strings = {
     untitled: "新会话",
     empty: "还没有会话。发送第一条消息后会出现在这里。",
     noResults: "没有找到匹配的会话",
+    searching: "正在搜索…",
     searchResults: "搜索结果",
     loading: "正在加载…",
     loadFailed: "会话列表加载失败",

@@ -307,6 +307,67 @@ describe("mock 会话索引", () => {
     await expect(platform.sessionArchive(entry.path, true)).rejects.toThrow();
   });
 
+  it("键集分页：读完第一页后归档其中一条，第二页不漏项也不重复", async () => {
+    const platform = createMockPlatform({ batchSize: 50 });
+    for (let i = 0; i < 55; i++) {
+      const { sessionKey } = await platform.sessionOpen("ws", undefined, () => {});
+      await platform.coreSend(sessionKey, { id: `p${i}`, type: "prompt", message: `第${i}个` });
+    }
+    await vi.runAllTimersAsync();
+    const order: string[] = [];
+    for (let page = await platform.sessionList(null); ; ) {
+      order.push(...page.items.map((x) => x.path));
+      if (!page.nextCursor) break;
+      page = await platform.sessionList(null, page.nextCursor);
+    }
+    expect(order).toHaveLength(55);
+
+    const first = await platform.sessionList(null);
+    expect(first.items).toHaveLength(50);
+    const archivedPath = first.items[0]?.path ?? "";
+    await platform.sessionArchive(archivedPath, true);
+    const second = await platform.sessionList(null, first.nextCursor);
+    const firstPaths = first.items.map((x) => x.path);
+    const secondPaths = second.items.map((x) => x.path);
+    expect(secondPaths.filter((p) => firstPaths.includes(p))).toEqual([]);
+    expect(secondPaths).toEqual(order.slice(50));
+    expect(second.nextCursor).toBeUndefined();
+    // 无法解析的游标按第一页处理
+    expect((await platform.sessionList(null, "garbage")).items[0]?.path).toBe(order[1]);
+  });
+
+  it("短查询只匹配会话名与首条用户消息，3 个字符以上匹配全文", async () => {
+    const platform = createMockPlatform({ batchSize: 50 });
+    const { sessionKey } = await platform.sessionOpen("ws", undefined, () => {});
+    await platform.coreSend(sessionKey, { id: "p1", type: "prompt", message: "你好" });
+    await vi.runAllTimersAsync();
+    expect((await platform.sessionList(null)).items).toHaveLength(1);
+    // 助手回复“我先查看一下工作区的文件。”中的词：两个字只匹配会话名与首条消息（不命中），3 个字以上匹配全文
+    expect(await platform.sessionSearch(null, "查看")).toEqual([]);
+    expect(await platform.sessionSearch(null, "查看一下")).toHaveLength(1);
+    // 标题中的短查询仍匹配
+    expect(await platform.sessionSearch(null, "你好")).toHaveLength(1);
+  });
+
+  it("关闭时尚未推送的用户消息计入历史与索引，助手消息丢弃", async () => {
+    const platform = createMockPlatform({ batchSize: 50 });
+    const { sessionKey } = await platform.sessionOpen("ws", undefined, () => {});
+    await platform.coreSend(sessionKey, { id: "p1", type: "prompt", message: "关闭前的问题" });
+    // 还没有推送任何批次就关闭
+    await platform.sessionClose(sessionKey);
+    const [entry] = (await platform.sessionList(null)).items;
+    expect(entry?.title).toBe("关闭前的问题");
+    expect(entry?.messageCount).toBe(1);
+    const got: unknown[] = [];
+    const resumed = await platform.sessionOpen("ws", entry?.path, (b) => got.push(...b.records));
+    await platform.coreSend(resumed.sessionKey, { id: "g", type: "get_messages" });
+    await vi.runAllTimersAsync();
+    const res = got.find((r) => (r as { id?: string }).id === "g") as {
+      data: { messages: { role: string }[] };
+    };
+    expect(res.data.messages.map((m) => m.role)).toEqual(["user"]);
+  });
+
   it("列表按 50 条分页", async () => {
     const platform = createMockPlatform({ batchSize: 50 });
     for (let i = 0; i < 55; i++) {

@@ -365,11 +365,13 @@ function baseName(path: string): string {
 export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
   const tabId = tab?.id;
   const markOpened = useSessionsStore((s) => s.markOpened);
+  const setTabOpening = useSessionsStore((s) => s.setOpening);
   const setTabRunning = useSessionsStore((s) => s.setRunning);
   const { state, error, unresponsive, coreStopped, send, abort, restarting, restart } =
     useChatSession({
       sessionPath: tab?.sessionPath,
       workspace: tab?.workspace,
+      onOpening: tabId ? (opening) => setTabOpening(tabId, opening) : undefined,
       onOpened: tabId ? (opened) => markOpened(tabId, opened) : undefined,
     });
   // 运行中的标签不会因标签上限被关闭
