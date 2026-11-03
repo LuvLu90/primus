@@ -3,25 +3,31 @@
 //!
 //! - 启动后先开始监听、再全量扫描一次，扫描期间写入的文件不会漏掉。
 //! - 事件自第一条起最多攒 250ms 再处理：Core 流式写入时每秒最多更新 4 次索引，不会因持续写入一直推迟。
-//! - 监听器报错或提示丢了事件（`need_rescan`）时改做一次全量扫描。重命名（含目录重命名）与目录删除也改做全量扫描：
-//!   notify 对这类事件只报告目录本身，不逐个报告其中的会话文件。
+//! - 监听器报错或提示丢了事件（`need_rescan`）时改做一次全量扫描。重命名（含目录重命名）、目录删除与目录创建
+//!   也改做全量扫描：notify 对这类事件只报告目录本身，不逐个报告其中的会话文件（Windows 上移入的目录只报告 `Create`）。
+//! - 全量扫描（含启动时的首次扫描）失败时按退避重新安排全量扫描，直到成功；失败前已写入的变化照常通知前端。
+//! - 监听线程之外的单文件更新失败（如会话删除后的重新同步）经 [`IndexNotifier::request_rescan`] 请求一次全量扫描，
+//!   沿用同一套合并与退避重试。
 //! - 监听工作区文件（文件树，第 15.2 节）以后在这里按监听目标扩展。
 
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use notify::event::{EventKind, ModifyKind, RemoveKind};
+use notify::event::{CreateKind, EventKind, Flag, ModifyKind, RemoveKind};
 use notify::{Event, RecursiveMode, Watcher};
 
 use crate::session_index::SessionIndex;
 
 /// 事件合并窗口。
 const DEBOUNCE: Duration = Duration::from_millis(250);
+/// 全量扫描失败后首次重试的间隔；之后每次失败加倍，最多到 [`RETRY_MAX_FACTOR`] 倍。
+const RESCAN_RETRY: Duration = Duration::from_secs(2);
+const RETRY_MAX_FACTOR: u32 = 16;
 
 /// 推给前端的“索引变了”信号；`seq` 递增，前端收到后重新拉取列表。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -31,16 +37,34 @@ pub(crate) struct IndexChanged {
 
 type Listener = Box<dyn Fn(IndexChanged) + Send + Sync>;
 
-/// 索引变化的通知出口：同一时刻只有一个监听者（前端再次注册时替换）。
+/// 索引变化的通知出口：同一时刻只有一个监听者（前端再次注册时替换）。也是向监听线程请求全量扫描的入口。
 #[derive(Default)]
 pub(crate) struct IndexNotifier {
     listener: Mutex<Option<Listener>>,
     seq: AtomicU64,
+    /// 监听线程的事件通道（监听建立后设置）：请求全量扫描时送入一条 `Rescan` 事件
+    rescan: Mutex<Option<Sender<notify::Result<Event>>>>,
 }
 
 impl IndexNotifier {
     pub(crate) fn set_listener(&self, listener: impl Fn(IndexChanged) + Send + Sync + 'static) {
         *self.listener.lock().unwrap_or_else(PoisonError::into_inner) = Some(Box::new(listener));
+    }
+
+    pub(crate) fn set_rescanner(&self, tx: Sender<notify::Result<Event>>) {
+        *self.rescan.lock().unwrap_or_else(PoisonError::into_inner) = Some(tx);
+    }
+
+    /// 请求监听线程做一次全量扫描（合并窗口后执行，失败按退避重试直到成功）。监听未建立时返回 false。
+    pub(crate) fn request_rescan(&self) -> bool {
+        self.rescan
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .is_some_and(|tx| {
+                tx.send(Ok(Event::new(EventKind::Other).set_flag(Flag::Rescan)))
+                    .is_ok()
+            })
     }
 
     pub(crate) fn notify(&self) {
@@ -63,40 +87,60 @@ pub(crate) fn start(index: Arc<SessionIndex>, notifier: Arc<IndexNotifier>) -> J
             if let Err(e) = std::fs::create_dir_all(index.sessions_dir()) {
                 eprintln!("无法创建会话目录：{e}");
             }
+            let rescan_tx = tx.clone();
             let watcher = notify::recommended_watcher(tx).and_then(|mut w| {
                 w.watch(index.sessions_dir(), RecursiveMode::Recursive)?;
                 Ok(w)
             });
-            if let Err(e) = &watcher {
-                eprintln!("会话目录监听启动失败，会话列表不会自动刷新：{e}");
+            match &watcher {
+                Ok(_) => notifier.set_rescanner(rescan_tx),
+                Err(e) => eprintln!("会话目录监听启动失败，会话列表不会自动刷新：{e}"),
             }
-            scan(&index, &notifier);
+            let scanned = scan(&index, &notifier);
             if let Ok(watcher) = watcher {
-                run(&rx, &index, &notifier, DEBOUNCE);
+                // 首次扫描失败（如会话目录暂时读不了；索引因版本升级刚重建时列表会是空的）：由事件循环重试
+                run(&rx, &index, &notifier, DEBOUNCE, RESCAN_RETRY, !scanned);
                 drop(watcher);
             }
         })
         .expect("failed to spawn session watch thread")
 }
 
-fn scan(index: &SessionIndex, notifier: &IndexNotifier) {
+/// 首次全量扫描；返回是否成功。
+fn scan(index: &SessionIndex, notifier: &IndexNotifier) -> bool {
     match index.sync_all() {
         // 首次扫描即使没有变化也通知一次：前端可能在扫描完成前拉到了不完整的列表
-        Ok(_) => notifier.notify(),
-        Err(e) => eprintln!("会话索引扫描失败：{e}"),
+        Ok(_) => {
+            notifier.notify();
+            true
+        }
+        Err(e) => {
+            eprintln!("会话索引扫描失败：{e}");
+            if e.changed {
+                notifier.notify();
+            }
+            false
+        }
     }
 }
 
 /// 事件循环：合并事件、更新索引、通知。发送端全部断开时处理完剩余事件后返回。
+/// `rescan` 为 true 时先安排一次全量扫描（`retry` 后执行）；全量扫描失败时按 `retry` 起步、加倍退避重新安排。
 fn run(
     rx: &Receiver<notify::Result<Event>>,
     index: &SessionIndex,
     notifier: &IndexNotifier,
     debounce: Duration,
+    retry: Duration,
+    rescan: bool,
 ) {
     let mut pending: HashSet<PathBuf> = HashSet::new();
-    let mut rescan = false;
+    let mut rescan = rescan;
+    let mut retry_delay = retry;
     let mut deadline: Option<Instant> = None;
+    if rescan {
+        deadline = next_retry(true, &mut retry_delay, retry);
+    }
     loop {
         let message = match deadline {
             None => match rx.recv() {
@@ -117,20 +161,15 @@ fn run(
                 if event.need_rescan() || needs_full_scan(&event) {
                     rescan = true;
                 }
-                pending.extend(
-                    event
-                        .paths
-                        .into_iter()
-                        .filter(|p| p.extension().is_some_and(|e| e == "jsonl")),
-                );
+                pending.extend(event.paths.into_iter().filter(|p| is_session_path(p)));
             }
             Some(Err(e)) => {
                 eprintln!("会话目录监听出错，改为全量扫描：{e}");
                 rescan = true;
             }
             None => {
-                flush(index, notifier, &mut pending, &mut rescan);
-                deadline = None;
+                let failed = flush(index, notifier, &mut pending, &mut rescan);
+                deadline = next_retry(failed, &mut retry_delay, retry);
                 continue;
             }
         }
@@ -139,36 +178,63 @@ fn run(
         }
         // 事件源源不断时 recv_timeout 不会超时：到点就处理，不被持续写入推迟
         if deadline.is_some_and(|at| Instant::now() >= at) {
-            flush(index, notifier, &mut pending, &mut rescan);
-            deadline = None;
+            let failed = flush(index, notifier, &mut pending, &mut rescan);
+            deadline = next_retry(failed, &mut retry_delay, retry);
         }
     }
 }
 
-/// 只报告目录、不报告其中文件的事件：重命名（文件或目录，旧新路径不一定成对到达）、目录删除，
-/// 以及路径不是会话文件的删除（Windows 不区分删除的是文件还是目录）。
+/// 处理之后的下一个截止时间：全量扫描失败时在退避间隔后重试（间隔加倍，有上限），成功时复位间隔、不安排。
+fn next_retry(failed: bool, delay: &mut Duration, base: Duration) -> Option<Instant> {
+    if failed {
+        let at = Instant::now() + *delay;
+        *delay = (*delay * 2).min(base * RETRY_MAX_FACTOR);
+        Some(at)
+    } else {
+        *delay = base;
+        None
+    }
+}
+
+/// 只报告目录、不报告其中文件的事件：重命名（文件或目录，旧新路径不一定成对到达）、目录创建与删除，
+/// 以及路径不是会话文件的删除。不区分文件与目录的创建（Windows 的 `CreateKind::Any`：移入的已含会话文件的目录
+/// 只报告目录本身的 `Create`）按路径的实际类型判断：不是普通文件（目录，名字以 `.jsonl` 结尾的也算；或已不在、
+/// 无法判断）都做全量扫描。明确是文件的创建（Linux、macOS 的 `CreateKind::File`）不触发。
 fn needs_full_scan(event: &Event) -> bool {
     match event.kind {
-        EventKind::Modify(ModifyKind::Name(_)) | EventKind::Remove(RemoveKind::Folder) => true,
-        EventKind::Remove(_) => event
-            .paths
-            .iter()
-            .any(|p| !p.extension().is_some_and(|e| e == "jsonl")),
+        EventKind::Modify(ModifyKind::Name(_))
+        | EventKind::Create(CreateKind::Folder)
+        | EventKind::Remove(RemoveKind::Folder) => true,
+        EventKind::Create(CreateKind::File) => false,
+        EventKind::Create(_) => event.paths.iter().any(|p| {
+            !is_session_path(p)
+                || !std::fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_file())
+        }),
+        EventKind::Remove(_) => event.paths.iter().any(|p| !is_session_path(p)),
         _ => false,
     }
 }
 
+fn is_session_path(path: &std::path::Path) -> bool {
+    path.extension().is_some_and(|e| e == "jsonl")
+}
+
+/// 处理攒下的事件；返回全量扫描是否失败（失败时已重新标记全量扫描）。
 fn flush(
     index: &SessionIndex,
     notifier: &IndexNotifier,
     pending: &mut HashSet<PathBuf>,
     rescan: &mut bool,
-) {
+) -> bool {
+    let mut failed = false;
     let changed = if std::mem::take(rescan) {
         pending.clear();
         index.sync_all().unwrap_or_else(|e| {
-            eprintln!("会话索引扫描失败：{e}");
-            false
+            // 未处理的文件与待删除的条目留给重试的全量扫描；失败前已写入的变化照常通知
+            eprintln!("会话索引扫描失败，稍后重试：{e}");
+            *rescan = true;
+            failed = true;
+            e.changed
         })
     } else {
         let mut changed = false;
@@ -183,13 +249,13 @@ fn flush(
     if changed {
         notifier.notify();
     }
+    failed
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::supervisor::tests::TempDir;
-    use notify::event::{CreateKind, Flag};
     use std::sync::mpsc::Sender;
 
     fn session_file(dir: &std::path::Path, name: &str, id: &str) -> PathBuf {
@@ -223,6 +289,49 @@ mod tests {
     }
 
     #[test]
+    fn requested_rescan_runs_and_retries_until_it_succeeds() {
+        let dir = TempDir::new();
+        let index = Arc::new(SessionIndex::open_in_memory(&dir.0).unwrap());
+        session_file(&dir.0, "a.jsonl", "a");
+        let (notifier, seen) = recorder();
+        // 监听未建立：请求不送达
+        assert!(!notifier.request_rescan());
+        let (tx, rx) = mpsc::channel();
+        notifier.set_rescanner(tx);
+        // 索引暂时写不进去：请求的全量扫描失败后按退避重试
+        index.execute_batch_for_test(
+            "CREATE TEMP TRIGGER fail_all BEFORE INSERT ON sessions
+             BEGIN SELECT RAISE(ABORT, 'boom'); END;",
+        );
+        let worker = {
+            let index = index.clone();
+            let notifier = notifier.clone();
+            std::thread::spawn(move || {
+                run(
+                    &rx,
+                    &index,
+                    &notifier,
+                    Duration::from_millis(10),
+                    Duration::from_millis(10),
+                    false,
+                )
+            })
+        };
+        assert!(notifier.request_rescan());
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(index.list(None, None).unwrap().items.is_empty());
+        index.execute_batch_for_test("DROP TRIGGER fail_all;");
+        assert!(
+            wait_until(|| index.list(None, None).unwrap().items.len() == 1),
+            "请求的全量扫描失败后没有重试"
+        );
+        assert!(wait_until(|| !seen.lock().unwrap().is_empty()));
+        // 通道由通知出口持有：撤下后循环结束
+        *notifier.rescan.lock().unwrap() = None;
+        worker.join().unwrap();
+    }
+
+    #[test]
     fn notifier_numbers_signals_and_replaces_listener() {
         let (notifier, seen) = recorder();
         notifier.notify();
@@ -248,7 +357,14 @@ mod tests {
         // 非会话文件被忽略
         created(&tx, dir.0.join("notes.txt"));
         drop(tx);
-        run(&rx, &index, &notifier, Duration::from_millis(20));
+        run(
+            &rx,
+            &index,
+            &notifier,
+            Duration::from_millis(20),
+            Duration::from_millis(20),
+            false,
+        );
         assert_eq!(index.list(None, None).unwrap().items.len(), 1);
         assert_eq!(*seen.lock().unwrap(), vec![1]);
     }
@@ -263,7 +379,16 @@ mod tests {
         let worker = {
             let index = index.clone();
             let notifier = notifier.clone();
-            std::thread::spawn(move || run(&rx, &index, &notifier, Duration::from_millis(30)))
+            std::thread::spawn(move || {
+                run(
+                    &rx,
+                    &index,
+                    &notifier,
+                    Duration::from_millis(30),
+                    Duration::from_millis(30),
+                    false,
+                )
+            })
         };
         // 持续写入（间隔小于合并窗口）期间也要更新索引
         let start = Instant::now();
@@ -289,7 +414,14 @@ mod tests {
         tx.send(Ok(Event::new(EventKind::Other).set_flag(Flag::Rescan)))
             .unwrap();
         drop(tx);
-        run(&rx, &index, &notifier, Duration::from_millis(10));
+        run(
+            &rx,
+            &index,
+            &notifier,
+            Duration::from_millis(10),
+            Duration::from_millis(10),
+            false,
+        );
         assert_eq!(index.list(None, None).unwrap().items.len(), 1);
         assert_eq!(seen.lock().unwrap().len(), 1);
 
@@ -297,7 +429,14 @@ mod tests {
         session_file(&dir.0, "b.jsonl", "b");
         tx.send(Err(notify::Error::generic("boom"))).unwrap();
         drop(tx);
-        run(&rx, &index, &notifier, Duration::from_millis(10));
+        run(
+            &rx,
+            &index,
+            &notifier,
+            Duration::from_millis(10),
+            Duration::from_millis(10),
+            false,
+        );
         assert_eq!(index.list(None, None).unwrap().items.len(), 2);
     }
 
@@ -322,7 +461,14 @@ mod tests {
         .add_path(new_dir.clone())))
             .unwrap();
         drop(tx);
-        run(&rx, &index, &notifier, Duration::from_millis(10));
+        run(
+            &rx,
+            &index,
+            &notifier,
+            Duration::from_millis(10),
+            Duration::from_millis(10),
+            false,
+        );
         let items = index.list(None, None).unwrap().items;
         assert_eq!(items.len(), 1);
         assert_eq!(
@@ -348,8 +494,155 @@ mod tests {
         ))
         .unwrap();
         drop(tx);
-        run(&rx, &index, &notifier, Duration::from_millis(10));
+        run(
+            &rx,
+            &index,
+            &notifier,
+            Duration::from_millis(10),
+            Duration::from_millis(10),
+            false,
+        );
         assert!(index.list(None, None).unwrap().items.is_empty());
+    }
+
+    #[test]
+    fn directory_creation_triggers_full_scan() {
+        // Windows 上移入已含会话文件的目录只报告目录本身的 Create（不区分文件与目录）；目录名可能以 `.jsonl` 结尾
+        for (name, kind) in [
+            ("moved", CreateKind::Any),
+            ("moved.jsonl", CreateKind::Any),
+            ("folder.jsonl", CreateKind::Folder),
+        ] {
+            let dir = TempDir::new();
+            let index = SessionIndex::open_in_memory(&dir.0).unwrap();
+            let sub = dir.0.join(name);
+            std::fs::create_dir(&sub).unwrap();
+            session_file(&sub, "a.jsonl", "a");
+            let (notifier, seen) = recorder();
+            let (tx, rx) = mpsc::channel();
+            tx.send(Ok(Event::new(EventKind::Create(kind)).add_path(sub)))
+                .unwrap();
+            drop(tx);
+            run(
+                &rx,
+                &index,
+                &notifier,
+                Duration::from_millis(10),
+                Duration::from_millis(10),
+                false,
+            );
+            assert_eq!(index.list(None, None).unwrap().items.len(), 1, "{name}");
+            assert_eq!(seen.lock().unwrap().len(), 1, "{name}");
+        }
+    }
+
+    #[test]
+    fn creation_of_unknown_kind_scans_unless_it_is_a_session_file() {
+        let dir = TempDir::new();
+        let file = session_file(&dir.0, "a.jsonl", "a");
+        let create_any = |p: PathBuf| Event::new(EventKind::Create(CreateKind::Any)).add_path(p);
+        // 已确认是普通文件的会话文件：增量更新即可
+        assert!(!needs_full_scan(&create_any(file)));
+        // 已不在（无法判断是文件还是目录）：保守地全量扫描
+        assert!(needs_full_scan(&create_any(dir.0.join("gone.jsonl"))));
+        // 明确是文件的创建不看磁盘
+        assert!(!needs_full_scan(
+            &Event::new(EventKind::Create(CreateKind::File)).add_path(dir.0.join("gone.jsonl"))
+        ));
+    }
+
+    fn wait_until(mut done: impl FnMut() -> bool) -> bool {
+        let start = Instant::now();
+        while !done() {
+            if start.elapsed() > Duration::from_secs(10) {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        true
+    }
+
+    #[test]
+    fn failed_initial_scan_is_retried() {
+        let dir = TempDir::new();
+        let index = Arc::new(SessionIndex::open_in_memory(&dir.0).unwrap());
+        session_file(&dir.0, "a.jsonl", "a");
+        // 首次扫描失败（索引写入失败；目录读不了时同理）
+        index.execute_batch_for_test(
+            "CREATE TEMP TRIGGER fail_all BEFORE INSERT ON sessions
+             BEGIN SELECT RAISE(ABORT, 'boom'); END;",
+        );
+        assert!(index.sync_all().is_err());
+        let (notifier, seen) = recorder();
+        let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
+        let worker = {
+            let index = index.clone();
+            let notifier = notifier.clone();
+            std::thread::spawn(move || {
+                run(
+                    &rx,
+                    &index,
+                    &notifier,
+                    Duration::from_millis(10),
+                    Duration::from_millis(10),
+                    true,
+                )
+            })
+        };
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(index.list(None, None).unwrap().items.is_empty());
+        // 故障消除后，没有任何新事件，重试的全量扫描也会把会话入索引
+        index.execute_batch_for_test("DROP TRIGGER fail_all;");
+        assert!(
+            wait_until(|| index.list(None, None).unwrap().items.len() == 1),
+            "扫描失败后没有重试"
+        );
+        assert!(wait_until(|| !seen.lock().unwrap().is_empty()));
+        drop(tx);
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn partially_failed_scan_notifies_and_retries() {
+        let dir = TempDir::new();
+        let index = Arc::new(SessionIndex::open_in_memory(&dir.0).unwrap());
+        // 根目录的文件先于子目录处理：a 写入后，bad 写入失败中止扫描
+        session_file(&dir.0, "a.jsonl", "a");
+        let sub = dir.0.join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        session_file(&sub, "bad.jsonl", "bad");
+        index.execute_batch_for_test(
+            "CREATE TEMP TRIGGER fail_bad BEFORE INSERT ON sessions WHEN NEW.id = 'bad'
+             BEGIN SELECT RAISE(ABORT, 'boom'); END;",
+        );
+        let (notifier, seen) = recorder();
+        let (tx, rx) = mpsc::channel();
+        tx.send(Ok(Event::new(EventKind::Other).set_flag(Flag::Rescan)))
+            .unwrap();
+        let worker = {
+            let index = index.clone();
+            let notifier = notifier.clone();
+            std::thread::spawn(move || {
+                run(
+                    &rx,
+                    &index,
+                    &notifier,
+                    Duration::from_millis(10),
+                    Duration::from_millis(20),
+                    false,
+                )
+            })
+        };
+        // 失败前写入的 a 照常通知前端
+        assert!(wait_until(|| !seen.lock().unwrap().is_empty()));
+        assert_eq!(index.list(None, None).unwrap().items.len(), 1);
+        index.execute_batch_for_test("DROP TRIGGER fail_bad;");
+        assert!(
+            wait_until(|| index.list(None, None).unwrap().items.len() == 2),
+            "扫描失败后没有重新安排全量扫描"
+        );
+        drop(tx);
+        worker.join().unwrap();
     }
 
     #[test]
@@ -379,7 +672,14 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         created(&tx, a);
         drop(tx);
-        run(&rx, &index, &notifier, Duration::from_millis(10));
+        run(
+            &rx,
+            &index,
+            &notifier,
+            Duration::from_millis(10),
+            Duration::from_millis(10),
+            false,
+        );
         assert!(seen.lock().unwrap().is_empty());
     }
 
