@@ -109,18 +109,16 @@ impl Workspaces {
     }
 
     /// 最近工作区，最近打开的在前；已不存在的目录不列出（记录保留，目录恢复后重新出现）。
-    pub(crate) fn list(&self) -> Vec<WorkspaceInfo> {
+    /// 文件读取失败（不是“不存在”）时返回错误，由界面提示，而不是显示成空列表。
+    pub(crate) fn list(&self) -> io::Result<Vec<WorkspaceInfo>> {
         let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-        let mut items = self.load().map(|s| s.workspaces).unwrap_or_else(|e| {
-            eprintln!("读取工作区列表失败：{e}");
-            Vec::new()
-        });
+        let mut items = self.load()?.workspaces;
         items.sort_by_key(|e| std::cmp::Reverse(e.last_opened));
-        items
+        Ok(items
             .iter()
             .filter(|e| Path::new(&e.path).is_dir())
             .map(|e| info(&e.path, e.trusted))
-            .collect()
+            .collect())
     }
 
     /// 设置信任状态；目标必须已打开过。
@@ -240,12 +238,12 @@ mod tests {
         assert!(!first.trusted);
         std::thread::sleep(std::time::Duration::from_millis(2));
         ws.open(b.to_str().unwrap()).unwrap();
-        let names: Vec<_> = ws.list().into_iter().map(|w| w.name).collect();
+        let names: Vec<_> = ws.list().unwrap().into_iter().map(|w| w.name).collect();
         assert_eq!(names, ["b", "a"]);
         // 再次打开 a：去重并移到最前
         std::thread::sleep(std::time::Duration::from_millis(2));
         ws.open(&format!("{}/", a.to_str().unwrap())).unwrap();
-        let names: Vec<_> = ws.list().into_iter().map(|w| w.name).collect();
+        let names: Vec<_> = ws.list().unwrap().into_iter().map(|w| w.name).collect();
         assert_eq!(names, ["a", "b"]);
         std::fs::remove_dir_all(&root).unwrap();
     }
@@ -270,7 +268,7 @@ mod tests {
         let file = root.join("f.txt");
         std::fs::write(&file, "x").unwrap();
         assert!(ws.open(file.to_str().unwrap()).is_err());
-        assert!(ws.list().is_empty());
+        assert!(ws.list().unwrap().is_empty());
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -285,7 +283,7 @@ mod tests {
         let ws = Workspaces::new(&app);
         assert!(ws.open(a.to_str().unwrap()).is_err());
         assert!(ws.trust(a.to_str().unwrap(), true).is_err());
-        assert!(ws.list().is_empty());
+        assert!(ws.list().is_err());
         assert!(app.join("workspaces.json").is_dir());
         std::fs::remove_dir_all(&root).unwrap();
     }
@@ -305,7 +303,7 @@ mod tests {
         ws.trust(&path, true).unwrap();
         // 新实例读同一文件
         let again = Workspaces::new(&app);
-        assert!(again.list()[0].trusted);
+        assert!(again.list().unwrap()[0].trusted);
         assert!(again.open(&path).unwrap().trusted);
         std::fs::remove_dir_all(&root).unwrap();
     }
@@ -319,9 +317,9 @@ mod tests {
         let ws = Workspaces::new(&app);
         ws.open(a.to_str().unwrap()).unwrap();
         std::fs::remove_dir_all(&a).unwrap();
-        assert!(ws.list().is_empty());
+        assert!(ws.list().unwrap().is_empty());
         std::fs::write(app.join("workspaces.json"), "{not json").unwrap();
-        assert!(ws.list().is_empty());
+        assert!(ws.list().unwrap().is_empty());
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -334,7 +332,7 @@ mod tests {
             std::fs::create_dir_all(&d).unwrap();
             ws.open(d.to_str().unwrap()).unwrap();
         }
-        assert_eq!(ws.list().len(), MAX_RECENT);
+        assert_eq!(ws.list().unwrap().len(), MAX_RECENT);
         std::fs::remove_dir_all(&root).unwrap();
     }
 

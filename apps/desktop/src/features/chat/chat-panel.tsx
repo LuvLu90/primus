@@ -203,10 +203,12 @@ function WorkspaceBar({
   visible,
   current,
   onPicked,
+  onError,
 }: {
   visible: boolean;
   current: WorkspaceInfo | null;
   onPicked: (ws: WorkspaceInfo) => void;
+  onError: (message: string | null) => void;
 }) {
   const glass = useGlassStyle(0.2);
   return (
@@ -227,7 +229,7 @@ function WorkspaceBar({
           className="-mb-5 pb-5 ring-1 ring-black/[0.06] dark:ring-white/[0.08]"
         >
           <div className="flex h-10 items-center px-4">
-            <WorkspacePicker current={current} onPicked={onPicked}>
+            <WorkspacePicker current={current} onPicked={onPicked} onError={onError}>
               <button
                 type="button"
                 className="flex items-center gap-2 text-[13px] text-muted outline-none transition-colors hover:text-fg focus-visible:text-fg data-[state=open]:text-fg"
@@ -577,6 +579,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
             visible={canUseWorkspaces && !shownWorkspace && !workspaceLocked}
             current={shownWorkspace}
             onPicked={setWorkspace}
+            onError={setPickError}
           />
           {modelConfig.unavailable && (
             <div
@@ -698,7 +701,11 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                       <span className="max-w-40 truncate text-[12px]">{shownWorkspace.name}</span>
                     </span>
                   ) : (
-                    <WorkspacePicker current={shownWorkspace} onPicked={setWorkspace}>
+                    <WorkspacePicker
+                      current={shownWorkspace}
+                      onPicked={setWorkspace}
+                      onError={setPickError}
+                    >
                       <GlassButton
                         variant="capsule"
                         size={30}

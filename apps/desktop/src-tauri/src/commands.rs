@@ -43,8 +43,10 @@ pub(crate) fn workspace_open(
 
 /// 最近工作区，最近打开的在前。
 #[tauri::command(async)]
-pub(crate) fn workspace_list(workspaces: State<'_, Workspaces>) -> Vec<WorkspaceInfo> {
-    workspaces.list()
+pub(crate) fn workspace_list(
+    workspaces: State<'_, Workspaces>,
+) -> Result<Vec<WorkspaceInfo>, String> {
+    workspaces.list().map_err(|e| e.to_string())
 }
 
 /// 设置工作区信任状态。

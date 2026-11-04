@@ -67,16 +67,24 @@ export function useCanUseWorkspaces(): boolean {
 export function WorkspacePicker({
   current,
   onPicked,
+  onError,
   children,
 }: {
   current: WorkspaceInfo | null;
   onPicked: (ws: WorkspaceInfo) => void;
+  /** 打开工作区或选择文件夹失败（此时菜单通常已关闭）；成功时传 null 清除提示 */
+  onError?: (message: string | null) => void;
   children: ReactNode;
 }) {
   const [items, setItems] = useState<WorkspaceInfo[]>([]);
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const canPick = useCanPickFiles();
+  // 菜单内显示（菜单仍开着时），同时交给外层显示（选择后菜单已关闭）
+  const fail = (message: string) => {
+    setError(message);
+    onError?.(message);
+  };
 
   const onOpenChange = (open: boolean) => {
     if (!open) return;
@@ -93,15 +101,16 @@ export function WorkspacePicker({
       .then((p) => p.workspaceOpen(path))
       .then((ws) => {
         setError(null);
+        onError?.(null);
         onPicked(ws);
       })
-      .catch((e) => setError(failure(t.workspaceOpenFailed, e)));
+      .catch((e) => fail(failure(t.workspaceOpenFailed, e)));
 
   const browse = () =>
     getPlatform()
       .then((p) => p.dialogPickFolder())
       .then((path) => (path ? open(path) : undefined))
-      .catch((e) => setError(failure(t.pickFolderFailed, e)));
+      .catch((e) => fail(failure(t.pickFolderFailed, e)));
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
