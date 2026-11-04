@@ -495,7 +495,21 @@ process.stdin.once("data", () => {
             .args(["-e", "setInterval(() => {}, 1000)"])
             .spawn()
             .unwrap();
-        job.assign(&second).expect("作业结束成员后仍可放入新进程");
+        // TerminateJobObject 是异步的：成员尚在退出时放入新进程可能得到 ERROR_ACCESS_DENIED，
+        // 稍等重试；超时仍失败才算作业不可再用
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match job.assign(&second) {
+                Ok(()) => break,
+                Err(e)
+                    if e.kind() == io::ErrorKind::PermissionDenied
+                        && std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(e) => panic!("作业结束成员后仍可放入新进程: {e:?}"),
+            }
+        }
         drop(job);
         assert!(wait_pid_exit(second.id(), Duration::from_secs(10)));
         let _ = second.wait();

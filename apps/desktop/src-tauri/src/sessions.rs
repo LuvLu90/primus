@@ -148,13 +148,28 @@ impl<S: BatchSink + Clone> Sessions<S> {
         self.deleting.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// 打开会话：拉起 Core 并开始推送批次，返回 `sessionKey`。
+    /// 测试用：以未信任（`--no-approve`）打开会话。
+    #[cfg(test)]
     pub(crate) fn open(
         &self,
         supervisor: &Supervisor,
         paths: &DataPaths,
         workspace: &str,
         session_file: Option<&str>,
+        sink: S,
+    ) -> Result<String, SessionError> {
+        self.open_with_trust(supervisor, paths, workspace, session_file, false, sink)
+    }
+
+    /// 打开会话：拉起 Core 并开始推送批次，返回 `sessionKey`。
+    /// `approve` 为工作区的信任状态（第 17.2 节）：true 以 `--approve` 启动，加载项目级扩展、技能和 MCP。
+    pub(crate) fn open_with_trust(
+        &self,
+        supervisor: &Supervisor,
+        paths: &DataPaths,
+        workspace: &str,
+        session_file: Option<&str>,
+        approve: bool,
         sink: S,
     ) -> Result<String, SessionError> {
         let cwd = if workspace.trim().is_empty() {
@@ -185,7 +200,7 @@ impl<S: BatchSink + Clone> Sessions<S> {
             cwd,
             session_file,
             session_id,
-            approve: false,
+            approve,
             offline: false,
             telemetry: false,
         };
@@ -323,7 +338,20 @@ impl<S: BatchSink + Clone> Sessions<S> {
     }
 
     /// 重启会话的 Core：同一会话 ID / 文件，`seq` 接着编号。失败时会话保留在表里，可再次重启。
+    /// 测试用：重启时不重新判定信任。
+    #[cfg(test)]
     pub(crate) fn restart(&self, supervisor: &Supervisor, key: &str) -> Result<(), SessionError> {
+        self.restart_checked(supervisor, key, |_| true)
+    }
+
+    /// 重启会话的 Core。`still_trusted` 按工作区目录重新判定信任：原本以 `--approve` 启动、
+    /// 现在已不被信任时改为 `--no-approve`（只会降级，不会升级）。
+    pub(crate) fn restart_checked(
+        &self,
+        supervisor: &Supervisor,
+        key: &str,
+        still_trusted: impl FnOnce(&Path) -> bool,
+    ) -> Result<(), SessionError> {
         // 取出旧桥并标记重启中；耗时的结束与拉起在锁外进行，不阻塞其他会话
         let (old, opts, sink, last_seq) = {
             let mut entries = self.entries();
@@ -344,6 +372,14 @@ impl<S: BatchSink + Clone> Sessions<S> {
                 entry.last_seq,
             )
         };
+        // 在会话表的锁外判定（读 workspaces.json 与计算指纹），之后写回登记，后续重启沿用降级后的值
+        let mut opts = opts;
+        if opts.approve && !still_trusted(&opts.cwd) {
+            opts.approve = false;
+            if let Some(entry) = self.entries().get_mut(key) {
+                entry.opts.approve = false;
+            }
+        }
         // 旧进程已自行退出时计一次崩溃，随后的拉起受崩溃上限约束
         supervisor.stop_for_restart(key);
         // 进程（连同整个作业）已结束，stdout EOF：等旧桥把剩余记录推完再接着编号，新旧批次不交错
@@ -905,6 +941,42 @@ process.stdin.on("data", (chunk) => {
         );
         assert!(matches!(result, Err(SessionError::Workspace(_))));
         assert!(supervisor.running_keys().is_empty());
+    }
+
+    #[test]
+    fn restart_rechecks_trust_and_only_downgrades() {
+        let tmp = TempDir::new();
+        let (supervisor, paths, sessions) = setup(&tmp);
+        let sink = Collect::default();
+        let key = sessions
+            .open_with_trust(&supervisor, &paths, "", None, true, sink.clone())
+            .unwrap();
+        let approve = |start: &serde_json::Value| {
+            let argv = start["argv"].as_array().unwrap();
+            assert!(
+                argv.iter().any(|a| a == "--approve") != argv.iter().any(|a| a == "--no-approve")
+            );
+            argv.iter().any(|a| a == "--approve")
+        };
+        sink.wait_for(1, |r| r.get("start").is_some());
+        assert!(approve(&starts(&sink)[0]));
+
+        // 信任已失效（如 .primus 变化）：重启改为 --no-approve
+        sessions
+            .restart_checked(&supervisor, &key, |_| false)
+            .expect("重启");
+        sink.wait_for(1, |r| r.get("start").is_some() && !approve(&r["start"]));
+        // 之后即使判定为信任也不会升级（需重新打开会话）
+        sessions
+            .restart_checked(&supervisor, &key, |_| true)
+            .expect("重启");
+        sessions
+            .send(&supervisor, &key, &serde_json::json!({ "id": "after" }))
+            .unwrap();
+        sink.wait_for(1, |r| r["id"] == "after");
+        let starts = starts(&sink);
+        assert_eq!(starts.len(), 3, "应启动三次：{starts:?}");
+        assert!(!approve(&starts[1]) && !approve(&starts[2]));
     }
 
     #[test]

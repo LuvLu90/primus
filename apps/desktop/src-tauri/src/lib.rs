@@ -132,6 +132,7 @@ pub fn run() {
             commands::window_set_bounds,
             commands::workspace_open,
             commands::workspace_list,
+            commands::workspace_inspect,
             commands::workspace_trust,
             commands::dialog_pick_folder,
             commands::dialog_pick_files,

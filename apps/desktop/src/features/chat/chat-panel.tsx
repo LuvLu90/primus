@@ -446,7 +446,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     lockedPath === null
       ? workspace
       : lockedPath
-        ? { path: lockedPath, name: baseName(lockedPath), trusted: false }
+        ? { path: lockedPath, name: baseName(lockedPath), trusted: false, needsTrust: false }
         : null;
   const workspaceLocked = started || lockedPath !== null;
   const canPickFiles = useCanPickFiles();
