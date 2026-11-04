@@ -16,6 +16,8 @@ tauri-build = { version = "=2.7.4", features = [] }
 # 依赖随对应模块落地时加入（其余如 tokio、gix、windows 等以后再加），版本以技术方案第 2.4 节为准。
 tauri = { version = "=2.12.5", features = [] }
 tauri-plugin-single-instance = "=2.5.4"
+# 系统文件/文件夹对话框（dialog_pick_folder / dialog_pick_files，附录 B）
+tauri-plugin-dialog = "=2.8.3"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.154", features = ["raw_value"] }
 # 会话索引（第 10.2 节、ADR 0006）：bundled 内置 SQLite（含 FTS5 与 trigram 分词器），不依赖系统库

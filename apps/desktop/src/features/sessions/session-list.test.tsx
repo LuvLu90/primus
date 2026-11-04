@@ -64,7 +64,7 @@ describe("会话列表", () => {
     );
   });
 
-  it("没有会话时显示空状态；加载失败时显示错误并可重试", async () => {
+  it("没有会话时列表区留空；加载失败时显示错误并可重试", async () => {
     let fail = true;
     const sessionList = vi.fn(async () => {
       if (fail) throw new Error("索引不可用");
@@ -75,8 +75,9 @@ describe("会话列表", () => {
     expect((await screen.findByRole("alert")).textContent).toContain("索引不可用");
     fail = false;
     fireEvent.click(screen.getByRole("button", { name: t.retry }));
-    expect(await screen.findByText(t.empty)).toBeTruthy();
-    expect(screen.queryByRole("alert")).toBeNull();
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    expect(screen.queryByText(t.loading)).toBeNull();
+    expect(screen.queryByRole("list")).toBeNull();
   });
 
   it("索引变化时重新拉取列表", async () => {

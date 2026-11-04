@@ -230,7 +230,7 @@ impl DataPaths {
     pub(crate) fn user_dir(&self) -> PathBuf {
         self.root.join("users").join(&self.user_id)
     }
-    /// `users/<SID>/app`：settings.toml、workspaces.toml、index.db
+    /// `users/<SID>/app`：settings.toml、workspaces.json、index.db
     pub(crate) fn app_dir(&self) -> PathBuf {
         self.user_dir().join("app")
     }

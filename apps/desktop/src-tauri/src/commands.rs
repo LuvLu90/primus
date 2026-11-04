@@ -15,6 +15,7 @@ use crate::rpc_bridge::{BatchSink, BridgeError, CoreBatch};
 use crate::session_index::{SessionIndex, SessionPage, SessionSummary};
 use crate::sessions::{AppSessions, SessionError, Sessions};
 use crate::supervisor::Supervisor;
+use crate::workspaces::{WorkspaceInfo, Workspaces};
 
 /// 原子设置主窗口外框（物理像素），侧栏开关时窗口边缘跟随侧栏逐帧伸缩用。
 #[tauri::command]
@@ -29,6 +30,61 @@ pub fn window_set_bounds(
         return Err("window size must be positive".into());
     }
     crate::platform::set_window_bounds(&window, x, y, width, height).map_err(|e| e.to_string())
+}
+
+/// 打开（登记）工作区：必须是已存在目录的绝对路径，返回显示名与信任状态（第 15.1 节）。
+#[tauri::command(async)]
+pub(crate) fn workspace_open(
+    workspaces: State<'_, Workspaces>,
+    path: String,
+) -> Result<WorkspaceInfo, String> {
+    workspaces.open(&path).map_err(|e| e.to_string())
+}
+
+/// 最近工作区，最近打开的在前。
+#[tauri::command(async)]
+pub(crate) fn workspace_list(workspaces: State<'_, Workspaces>) -> Vec<WorkspaceInfo> {
+    workspaces.list()
+}
+
+/// 设置工作区信任状态。
+#[tauri::command(async)]
+pub(crate) fn workspace_trust(
+    workspaces: State<'_, Workspaces>,
+    path: String,
+    trusted: bool,
+) -> Result<(), String> {
+    workspaces.trust(&path, trusted).map_err(|e| e.to_string())
+}
+
+/// 系统文件夹对话框（tauri-plugin-dialog），以主窗口为父窗口；取消时返回 None。
+/// 异步命令在线程池中执行，阻塞等待对话框不会卡住主线程。
+#[tauri::command(async)]
+pub(crate) fn dialog_pick_folder(window: tauri::WebviewWindow) -> Option<String> {
+    use tauri_plugin_dialog::DialogExt;
+    window
+        .dialog()
+        .file()
+        .set_parent(&window)
+        .blocking_pick_folder()
+        .and_then(|p| p.into_path().ok())
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+/// 系统文件对话框（可多选）；只返回本地路径，文件不复制。取消时返回空列表。
+#[tauri::command(async)]
+pub(crate) fn dialog_pick_files(window: tauri::WebviewWindow) -> Vec<String> {
+    use tauri_plugin_dialog::DialogExt;
+    window
+        .dialog()
+        .file()
+        .set_parent(&window)
+        .blocking_pick_files()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|p| p.into_path().ok())
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect()
 }
 
 /// `session_open` 的返回值。

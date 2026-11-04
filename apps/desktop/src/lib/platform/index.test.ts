@@ -32,12 +32,12 @@ describe("平台选择", () => {
     expect(isTauriRuntime()).toBe(true);
   });
 
-  it("能力开关：浏览器预览可用，Tauri 内未注册对应命令前关闭", () => {
+  it("能力开关：浏览器预览与 Tauri 内都可用（薄壳已注册对话框与工作区命令）", () => {
     expect(canPickFiles()).toBe(true);
     expect(canUseWorkspaces()).toBe(true);
     (globalThis as { isTauri?: boolean }).isTauri = true;
-    expect(canPickFiles()).toBe(false);
-    expect(canUseWorkspaces()).toBe(false);
+    expect(canPickFiles()).toBe(true);
+    expect(canUseWorkspaces()).toBe(true);
   });
 
   it("窗口控制：浏览器返回 undefined 且缓存；注入与重置生效", async () => {

@@ -112,6 +112,7 @@ export function SessionList() {
       .catch((e) => setActionError(errorText(e)));
   };
 
+  // 没有会话时列表区留空，不显示提示文字
   const emptyText = searching
     ? search.pending
       ? t.searching
@@ -120,7 +121,7 @@ export function SessionList() {
         : t.noResults
     : index.loading
       ? t.loading
-      : t.empty;
+      : null;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">

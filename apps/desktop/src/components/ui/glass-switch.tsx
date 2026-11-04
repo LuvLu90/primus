@@ -43,7 +43,8 @@ const DEFORM_GAIN = 0.012;
 const DEFORM_EXP = 0.75;
 const HOLD_BOOST = 0.175;
 
-const PRIMARY = "#0a84ff";
+// 本项目改动：强调色由系统蓝改为黑白灰配色中的深灰
+const PRIMARY = "#3a3a3c";
 const BG4_LIGHT = "#e1dfdf";
 const BG4_DARK = "#2a2828";
 
@@ -450,7 +451,7 @@ function GlassSwitch({
   return (
     <label
       className={cn(
-        "relative block cursor-pointer rounded-full has-[input:disabled]:cursor-not-allowed has-[input:disabled]:opacity-40 has-[input:focus-visible]:outline-2 has-[input:focus-visible]:outline-[#0a84ff] has-[input:focus-visible]:outline-offset-3",
+        "relative block cursor-pointer rounded-full has-[input:disabled]:cursor-not-allowed has-[input:disabled]:opacity-40 has-[input:focus-visible]:outline-2 has-[input:focus-visible]:outline-[#3a3a3c] has-[input:focus-visible]:outline-offset-3",
         className
       )}
       style={{ flexShrink: 0, width: TRACK_W, height: TRACK_H, overflow: "visible" }}

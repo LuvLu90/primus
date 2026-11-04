@@ -139,7 +139,7 @@ const MessageItem = memo(function MessageItem({
     return (
       <article
         aria-label={t.you}
-        className="max-w-[80%] self-end rounded-[18px] rounded-br-md bg-accent px-3.5 py-2 text-white"
+        className="max-w-[80%] self-end rounded-[18px] rounded-br-md bg-bubble px-3.5 py-2 text-fg"
       >
         <p className="whitespace-pre-wrap leading-relaxed">{textOf(message.content)}</p>
       </article>

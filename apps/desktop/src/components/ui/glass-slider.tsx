@@ -37,7 +37,8 @@ const DEFORM_GAIN = 0.012;
 const DEFORM_EXP = 0.75;
 const HOLD_BOOST = 0.175;
 
-const PRIMARY = "#0a84ff";
+// 本项目改动：强调色由系统蓝改为黑白灰配色中的深灰
+const PRIMARY = "#3a3a3c";
 const BG4_LIGHT = "#e1dfdf";
 const BG4_DARK = "#2a2828";
 const SHADOW_STRONG_LIGHT = "rgba(46, 15, 15, 0.12)";
