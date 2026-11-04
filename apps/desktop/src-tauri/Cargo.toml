@@ -24,6 +24,8 @@ serde_json = { version = "=1.0.154", features = ["raw_value"] }
 rusqlite = { version = "=0.40.2", features = ["bundled"] }
 # 会话目录监听（fs_watch）
 notify = "=8.2.0"
+# 工作区信任：`.primus/` 内容指纹（第 17.2 节），与 Tauri 依赖树中的版本一致
+sha2 = "=0.10.9"
 
 # Windows 平台层（第 4.3 节 ACL、第 3.7 节修复引导、第 2.2 节 Job Object）：只用 windows-sys 的原始 FFI，版本见技术方案第 2.4 节
 [target.'cfg(windows)'.dependencies]

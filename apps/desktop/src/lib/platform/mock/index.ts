@@ -123,7 +123,10 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
   const now = options.now ?? Date.now;
   const sessions = new Map<string, MockSession>();
   const workspaces = new Map<string, WorkspaceInfo>([
-    [MOCK_WORKSPACE, { path: MOCK_WORKSPACE, name: "示例工作区", trusted: true }],
+    [
+      MOCK_WORKSPACE,
+      { path: MOCK_WORKSPACE, name: "示例工作区", trusted: true, needsTrust: false },
+    ],
   ]);
   // 会话索引（模拟薄壳的 session_index）：会话文件路径 → 摘要与已定稿的消息
   const sessionIndex: SessionSummary[] = [];
@@ -303,6 +306,7 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
         path,
         name: path.split(/[\\/]/).pop() || path,
         trusted: false,
+        needsTrust: true,
       };
       workspaces.set(path, ws);
       return ws;
@@ -315,8 +319,16 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
     ],
     workspaceTrust: async (path, trusted) => {
       const ws = workspaces.get(path);
-      if (ws) ws.trusted = trusted;
+      if (ws) Object.assign(ws, { trusted, needsTrust: false });
     },
+    workspaceInspect: async (path) => ({
+      path,
+      agentsMd: "# 项目约定\n\n- 提交前运行测试\n- 使用中文注释",
+      agentsMdTruncated: false,
+      extensions: ["guard.ts"],
+      skills: ["review"],
+      mcpServers: ["github"],
+    }),
 
     sessionList: async (workspace, cursor) => {
       // 键集分页（与薄壳一致）：只返回排在游标那条之后的会话，归档或新增会话不会让后续页漏项或重复

@@ -15,7 +15,7 @@ use crate::rpc_bridge::{BatchSink, BridgeError, CoreBatch};
 use crate::session_index::{SessionIndex, SessionPage, SessionSummary};
 use crate::sessions::{AppSessions, SessionError, Sessions};
 use crate::supervisor::Supervisor;
-use crate::workspaces::{WorkspaceInfo, Workspaces};
+use crate::workspaces::{TrustDetails, WorkspaceInfo, Workspaces};
 
 /// 原子设置主窗口外框（物理像素），侧栏开关时窗口边缘跟随侧栏逐帧伸缩用。
 #[tauri::command]
@@ -47,6 +47,12 @@ pub(crate) fn workspace_list(
     workspaces: State<'_, Workspaces>,
 ) -> Result<Vec<WorkspaceInfo>, String> {
     workspaces.list().map_err(|e| e.to_string())
+}
+
+/// 信任确认需要展示的项目内容：`AGENTS.md` 与 `.primus/` 下的扩展、技能、MCP 配置。
+#[tauri::command(async)]
+pub(crate) fn workspace_inspect(path: String) -> Result<TrustDetails, String> {
+    crate::workspaces::inspect(&path).map_err(|e| e.to_string())
 }
 
 /// 设置工作区信任状态。
@@ -112,16 +118,20 @@ pub(crate) fn session_open(
     sessions: State<'_, AppSessions>,
     supervisor: State<'_, Supervisor>,
     paths: State<'_, DataPaths>,
+    workspaces: State<'_, Workspaces>,
     workspace: String,
     session_path: Option<String>,
     on_event: Channel<CoreBatch>,
 ) -> Result<SessionHandle, String> {
+    // 信任状态由薄壳按 workspaces.json 判定，不取前端传入的值（第 17.2 节）；默认工作区不加载项目资源
+    let approve = !workspace.trim().is_empty() && workspaces.approved(&workspace);
     sessions
-        .open(
+        .open_with_trust(
             &supervisor,
             &paths,
             &workspace,
             session_path.as_deref(),
+            approve,
             on_event,
         )
         .map(|session_key| SessionHandle {

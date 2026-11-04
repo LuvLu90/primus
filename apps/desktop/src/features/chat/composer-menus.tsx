@@ -24,6 +24,7 @@ import type { WorkspaceInfo } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 import type { PermissionMode } from "@/stores/app-store";
+import { TrustDialog } from "./trust-dialog";
 
 const t = strings.chat;
 
@@ -63,6 +64,7 @@ export function useCanUseWorkspaces(): boolean {
 
 /**
  * 选择工作区：顶部搜索、最近工作区列表（当前项打勾）、底部"打开文件夹…"调用系统对话框。
+ * 需要信任确认的工作区（首次打开或 `.primus/` 已变化）先弹出确认，选择后才交给 `onPicked`。
  */
 export function WorkspacePicker({
   current,
@@ -79,6 +81,7 @@ export function WorkspacePicker({
   const [items, setItems] = useState<WorkspaceInfo[]>([]);
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [pendingTrust, setPendingTrust] = useState<WorkspaceInfo | null>(null);
   const canPick = useCanPickFiles();
   // 菜单内显示（菜单仍开着时），同时交给外层显示（选择后菜单已关闭）
   const fail = (message: string) => {
@@ -102,7 +105,8 @@ export function WorkspacePicker({
       .then((ws) => {
         setError(null);
         onError?.(null);
-        onPicked(ws);
+        if (ws.needsTrust) setPendingTrust(ws);
+        else onPicked(ws);
       })
       .catch((e) => fail(failure(t.workspaceOpenFailed, e)));
 
@@ -118,73 +122,90 @@ export function WorkspacePicker({
   }, [items, query]);
 
   return (
-    <GlassPopover onOpenChange={onOpenChange}>
-      <GlassPopoverTrigger asChild>{children}</GlassPopoverTrigger>
-      <GlassPopoverContent
-        side="top"
-        sideOffset={10}
-        tint={0.8}
-        minWidth={264}
-        className="max-w-80"
-      >
-        <div className="-mt-0.5 flex items-center gap-2 px-4 pb-2 pt-0.5">
-          <Search aria-hidden size={14} className="shrink-0 text-muted" />
-          <input
-            // biome-ignore lint/a11y/noAutofocus: 打开菜单即可输入筛选
-            autoFocus
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            // 不让菜单的首字母跳转吞掉输入；方向键交给菜单
-            onKeyDown={(e) => {
-              if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Escape")
-                e.stopPropagation();
-            }}
-            placeholder={t.searchWorkspaces}
-            aria-label={t.searchWorkspaces}
-            className="h-6 min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-muted/70"
-          />
-        </div>
-        <div className={separatorClass} />
-        {error && (
-          <p role="alert" className="px-4 pt-1.5 text-[12px] text-danger">
-            {error}
-          </p>
-        )}
-        <div className="scroll-thin max-h-60 overflow-y-auto py-0.5">
-          {filtered.length === 0 ? (
-            <p className="px-4 py-2 text-[12px] text-muted">
-              {items.length === 0 ? t.noRecentWorkspaces : t.noMatchingWorkspaces}
+    <>
+      <TrustDialog
+        workspace={pendingTrust}
+        onDecided={(ws) => {
+          setPendingTrust(null);
+          onPicked(ws);
+        }}
+        onCancel={() => setPendingTrust(null)}
+      />
+      <GlassPopover onOpenChange={onOpenChange}>
+        <GlassPopoverTrigger asChild>{children}</GlassPopoverTrigger>
+        <GlassPopoverContent
+          side="top"
+          sideOffset={10}
+          tint={0.8}
+          minWidth={264}
+          className="max-w-80"
+        >
+          <div className="-mt-0.5 flex items-center gap-2 px-4 pb-2 pt-0.5">
+            <Search aria-hidden size={14} className="shrink-0 text-muted" />
+            <input
+              // biome-ignore lint/a11y/noAutofocus: 打开菜单即可输入筛选
+              autoFocus
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              // 不让菜单的首字母跳转吞掉输入；方向键交给菜单
+              onKeyDown={(e) => {
+                if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Escape")
+                  e.stopPropagation();
+              }}
+              placeholder={t.searchWorkspaces}
+              aria-label={t.searchWorkspaces}
+              className="h-6 min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-muted/70"
+            />
+          </div>
+          <div className={separatorClass} />
+          {error && (
+            <p role="alert" className="px-4 pt-1.5 text-[12px] text-danger">
+              {error}
             </p>
-          ) : (
-            filtered.map((ws) => (
-              <Menu.Item
-                key={ws.path}
-                className={rowClass}
-                textValue={ws.name}
-                title={ws.path}
-                onSelect={() => void open(ws.path)}
-              >
-                <Folder aria-hidden size={15} strokeWidth={1.75} className="shrink-0 text-muted" />
-                <span className="min-w-0 flex-1 truncate">{ws.name}</span>
-                {current?.path === ws.path && <Check aria-hidden size={14} className="shrink-0" />}
-              </Menu.Item>
-            ))
           )}
-        </div>
-        {canPick && (
-          <>
-            <div className={separatorClass} />
-            <Menu.Item
-              className={cn(rowClass, "text-muted data-[highlighted]:text-fg")}
-              onSelect={() => void browse()}
-            >
-              <Plus aria-hidden size={15} strokeWidth={1.75} className="shrink-0" />
-              <span>{strings.layout.openFolder}</span>
-            </Menu.Item>
-          </>
-        )}
-      </GlassPopoverContent>
-    </GlassPopover>
+          <div className="scroll-thin max-h-60 overflow-y-auto py-0.5">
+            {filtered.length === 0 ? (
+              <p className="px-4 py-2 text-[12px] text-muted">
+                {items.length === 0 ? t.noRecentWorkspaces : t.noMatchingWorkspaces}
+              </p>
+            ) : (
+              filtered.map((ws) => (
+                <Menu.Item
+                  key={ws.path}
+                  className={rowClass}
+                  textValue={ws.name}
+                  title={ws.path}
+                  onSelect={() => void open(ws.path)}
+                >
+                  <Folder
+                    aria-hidden
+                    size={15}
+                    strokeWidth={1.75}
+                    className="shrink-0 text-muted"
+                  />
+                  <span className="min-w-0 flex-1 truncate">{ws.name}</span>
+                  {current?.path === ws.path && (
+                    <Check aria-hidden size={14} className="shrink-0" />
+                  )}
+                </Menu.Item>
+              ))
+            )}
+          </div>
+          {canPick && (
+            <>
+              <div className={separatorClass} />
+              <Menu.Item
+                className={cn(rowClass, "text-muted data-[highlighted]:text-fg")}
+                onSelect={() => void browse()}
+              >
+                <Plus aria-hidden size={15} strokeWidth={1.75} className="shrink-0" />
+                <span>{strings.layout.openFolder}</span>
+              </Menu.Item>
+            </>
+          )}
+        </GlassPopoverContent>
+      </GlassPopover>
+    </>
   );
 }
 

@@ -148,13 +148,28 @@ impl<S: BatchSink + Clone> Sessions<S> {
         self.deleting.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// 打开会话：拉起 Core 并开始推送批次，返回 `sessionKey`。
+    /// 测试用：以未信任（`--no-approve`）打开会话。
+    #[cfg(test)]
     pub(crate) fn open(
         &self,
         supervisor: &Supervisor,
         paths: &DataPaths,
         workspace: &str,
         session_file: Option<&str>,
+        sink: S,
+    ) -> Result<String, SessionError> {
+        self.open_with_trust(supervisor, paths, workspace, session_file, false, sink)
+    }
+
+    /// 打开会话：拉起 Core 并开始推送批次，返回 `sessionKey`。
+    /// `approve` 为工作区的信任状态（第 17.2 节）：true 以 `--approve` 启动，加载项目级扩展、技能和 MCP。
+    pub(crate) fn open_with_trust(
+        &self,
+        supervisor: &Supervisor,
+        paths: &DataPaths,
+        workspace: &str,
+        session_file: Option<&str>,
+        approve: bool,
         sink: S,
     ) -> Result<String, SessionError> {
         let cwd = if workspace.trim().is_empty() {
@@ -185,7 +200,7 @@ impl<S: BatchSink + Clone> Sessions<S> {
             cwd,
             session_file,
             session_id,
-            approve: false,
+            approve,
             offline: false,
             telemetry: false,
         };
