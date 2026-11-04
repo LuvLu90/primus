@@ -150,15 +150,24 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     async (client: RpcClient) => {
       const { model, thinkingLevel } = pendingModelRef.current;
       const [provider, ...rest] = model?.split("/") ?? [];
-      if (provider && rest.length > 0)
-        await client.request("set_model", { provider, modelId: rest.join("/") });
-      if (thinkingLevel) await client.request("set_thinking_level", { level: thinkingLevel });
       setPendingModel({});
+      // 失败响应同样报错（由调用方提示）；按钮随后按 get_state 显示 Core 实际使用的模型
+      const failures: string[] = [];
+      if (provider && rest.length > 0) {
+        const res = await client.request("set_model", { provider, modelId: rest.join("/") });
+        if (!res.success) failures.push(res.error || "set_model");
+      }
+      if (thinkingLevel) {
+        const res = await client.request("set_thinking_level", { level: thinkingLevel });
+        if (!res.success) failures.push(res.error || "set_thinking_level");
+      }
       await syncMode(client);
       await Promise.all([
         client.request("get_state"),
         client.request("get_available_thinking_levels"),
       ]);
+      if (failures.length > 0)
+        throw new Error(`${strings.chat.model.switchFailed}：${failures.join("；")}`);
     },
     [syncMode],
   );
@@ -365,12 +374,12 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
             provider: provider ?? "",
             modelId: rest.join("/"),
           });
-          if (!res.success) return false;
+          if (!res.success) throw new Error(`${strings.chat.model.switchFailed}：${res.error}`);
           await c.client.request("get_available_thinking_levels");
         }
         if (choice.thinkingLevel) {
           const res = await c.client.request("set_thinking_level", { level: choice.thinkingLevel });
-          if (!res.success) return false;
+          if (!res.success) throw new Error(`${strings.chat.model.switchFailed}：${res.error}`);
           store.setState((s) => withModel(s, undefined, choice.thinkingLevel), true);
           // Core 会把强度夹到模型支持的范围内：读回实际生效的值
           await c.client.request("get_state");
