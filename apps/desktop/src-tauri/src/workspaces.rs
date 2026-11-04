@@ -94,6 +94,8 @@ pub(crate) enum WorkspaceError {
     TrustChanged,
     /// `.primus/` 内容过多或无法完整读取，无法生成指纹
     Incomplete,
+    /// 读取确认内容期间 `.primus/` 发生了变化
+    Changing,
     /// 读取项目文件失败（`workspace_inspect`）
     Read(PathBuf, io::Error),
     Io(io::Error),
@@ -105,6 +107,7 @@ impl std::fmt::Display for WorkspaceError {
             Self::NotADirectory(p) => write!(f, "文件夹不存在或不可访问：{p}"),
             Self::Unknown(p) => write!(f, "不是已打开过的工作区：{p}"),
             Self::TrustChanged => write!(f, "项目内容在确认后发生了变化，请重新查看后再决定"),
+            Self::Changing => write!(f, "项目内容在读取期间发生了变化，请重新打开"),
             Self::Incomplete => write!(f, "项目的 .primus 内容过多或无法完整读取，不能信任"),
             Self::Read(p, e) => write!(f, "读取 {} 失败：{e}", p.display()),
             Self::Io(e) => write!(f, "无法保存工作区列表：{e}"),
@@ -142,10 +145,15 @@ impl Workspaces {
             let key = crate::platform::path_key(&path);
             // 同一路径直接沿用；路径键相同但写法不同（如只差大小写）时，只有确认是同一个目录才沿用并改用新写法，
             // 否则（区分大小写的目录里的另一个目录）保留原记录，新路径单独登记为未确认
-            let same = store.workspaces.iter().position(|e| {
-                e.path == path
-                    || (crate::platform::path_key(&e.path) == key && same_dir(&e.path, &path))
-            });
+            let same = store
+                .workspaces
+                .iter()
+                .position(|e| e.path == path)
+                .or_else(|| {
+                    store.workspaces.iter().position(|e| {
+                        crate::platform::path_key(&e.path) == key && same_dir(&e.path, &path)
+                    })
+                });
             let mut entry = match same {
                 Some(i) => store.workspaces.remove(i),
                 None => untrusted(path.clone()),
@@ -341,7 +349,7 @@ fn primus_hash(workspace: &Path) -> Option<String> {
         match &item.file {
             None => hasher.update(b"dir"),
             Some(path) => {
-                let file = std::fs::File::open(path).ok()?;
+                let file = open_regular(path).ok()?;
                 let len = file.metadata().ok()?.len();
                 // 先看长度再读：超出预算时不读内容，指纹作废
                 budget = budget.checked_sub(len)?;
@@ -458,6 +466,10 @@ pub(crate) fn inspect(path: &str) -> Result<TrustDetails, WorkspaceError> {
     list_skills(&skill_dir, "", true, &mut skills, &mut visited)
         .map_err(|e| WorkspaceError::Read(skill_dir, e))?;
     skills.sort();
+    // 列表读完后再取一次指纹：两次不一致说明读取期间内容在变，展示的可能不是指纹对应的内容
+    if primus_hash(root) != fingerprint {
+        return Err(WorkspaceError::Changing);
+    }
     Ok(TrustDetails {
         agents_md,
         agents_md_truncated,
@@ -469,16 +481,35 @@ pub(crate) fn inspect(path: &str) -> Result<TrustDetails, WorkspaceError> {
     })
 }
 
-/// 最多读 `limit` 字节（多读 1 字节判断是否截断）；文件不存在为 None。
-/// 先确认是普通文件（跟随符号链接）再打开：FIFO 等打开时可能阻塞，作为错误返回。
+/// 以不阻塞的方式打开并确认是普通文件（跟随符号链接）。先查类型再打开有竞争窗口：
+/// 期间被换成 FIFO 时普通的打开会一直阻塞，所以 Unix 上以 `O_NONBLOCK` 打开，再按已打开的句柄判断类型。
+fn open_regular(path: &Path) -> io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::other("不是普通文件"));
+    }
+    Ok(file)
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const O_NONBLOCK: i32 = 0o4000;
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+const O_NONBLOCK: i32 = 0x0004;
+
+/// 最多读 `limit` 字节（多读 1 字节判断是否截断）；文件不存在为 None，不是普通文件为错误。
 fn read_prefix(path: &Path, limit: usize) -> io::Result<Option<(Vec<u8>, bool)>> {
-    match std::fs::metadata(path) {
-        Ok(m) if m.is_file() => {}
-        Ok(_) => return Err(io::Error::other("不是普通文件")),
+    let file = match open_regular(path) {
+        Ok(f) => f,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
-    }
-    let file = std::fs::File::open(path)?;
+    };
     let mut bytes = Vec::new();
     io::Read::read_to_end(&mut io::Read::take(file, limit as u64 + 1), &mut bytes)?;
     let truncated = bytes.len() > limit;
@@ -502,8 +533,11 @@ fn list_extensions(dir: &Path) -> io::Result<Vec<String>> {
     for entry in read_entries(dir)? {
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().into_owned();
-        let Ok(meta) = std::fs::metadata(&path) else {
-            continue;
+        let meta = match std::fs::metadata(&path) {
+            Ok(m) => m,
+            // 断开的链接：Core 同样加载不到
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
         };
         let loads = if meta.is_dir() {
             path.join("index.ts").exists()
@@ -523,6 +557,7 @@ fn list_extensions(dir: &Path) -> io::Result<Vec<String>> {
 /// `package.json` 是否声明了 `pi.extensions`。不存在或无法解析为 false（Core 同样不加载）；
 /// 读取失败或超过上限时返回错误，不能猜测为“没有扩展”。
 fn has_pi_extensions(manifest: &Path) -> io::Result<bool> {
+    let dir = manifest.parent().unwrap_or(Path::new("."));
     let Some((bytes, truncated)) = read_prefix(manifest, PACKAGE_JSON_LIMIT)? else {
         return Ok(false);
     };
@@ -536,10 +571,12 @@ fn has_pi_extensions(manifest: &Path) -> io::Result<bool> {
     Ok(serde_json::from_slice::<serde_json::Value>(&bytes)
         .ok()
         .and_then(|v| {
-            v.get("pi")?
-                .get("extensions")?
-                .as_array()
-                .map(|a| !a.is_empty())
+            // 与 Core 一致：只有至少一个声明的入口存在时才加载
+            v.get("pi")?.get("extensions")?.as_array().map(|a| {
+                a.iter()
+                    .filter_map(|p| p.as_str())
+                    .any(|p| dir.join(p).exists())
+            })
         })
         .unwrap_or(false))
 }
@@ -576,8 +613,11 @@ fn list_skills(
             continue;
         }
         let path = entry.path();
-        let Ok(meta) = std::fs::metadata(&path) else {
-            continue;
+        let meta = match std::fs::metadata(&path) {
+            Ok(m) => m,
+            // 断开的链接：Core 同样加载不到
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
         };
         let child = if rel.is_empty() {
             name.clone()
@@ -971,6 +1011,13 @@ mod tests {
         let ext = p.join("extensions");
         std::fs::create_dir_all(ext.join("with-index")).unwrap();
         std::fs::create_dir_all(ext.join("with-pkg")).unwrap();
+        std::fs::create_dir_all(ext.join("missing-entry")).unwrap();
+        std::fs::write(ext.join("with-pkg/main.ts"), "").unwrap();
+        std::fs::write(
+            ext.join("missing-entry/package.json"),
+            r#"{"pi":{"extensions":["./gone.ts"]}}"#,
+        )
+        .unwrap();
         std::fs::create_dir_all(ext.join("empty-pkg")).unwrap();
         std::fs::create_dir_all(ext.join("plain-dir")).unwrap();
         std::fs::write(ext.join("a.ts"), "").unwrap();
