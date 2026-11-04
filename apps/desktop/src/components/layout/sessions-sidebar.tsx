@@ -43,7 +43,7 @@ export function SessionsSidebar({ width }: { width: number }) {
           {/* 搜索 + 会话列表 */}
           <SessionList />
 
-          {/* 设置入口：先展开菜单（账户 · 用量 · 能力中心 · 设置），选"设置"才进入设置页 */}
+          {/* 设置入口：先展开菜单（账户 · 用量 · 能力中心 · 设置）；“用量”是设置中的一个分组，直接打开设置页的该分组 */}
           <div className="flex items-center">
             <GlassPopover>
               <GlassPopoverTrigger asChild>
@@ -66,7 +66,7 @@ export function SessionsSidebar({ width }: { width: number }) {
                 <GlassPopoverItem
                   icon={<BarChart3 />}
                   label={t.menuUsage}
-                  onSelect={() => router.push("/usage/")}
+                  onSelect={() => router.push("/settings/?group=usage")}
                 />
                 <GlassPopoverItem
                   icon={<Puzzle />}

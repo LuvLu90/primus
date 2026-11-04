@@ -59,7 +59,7 @@ Tauri 只加载本地静态文件，没有 Node 服务器：
 - **禁止**：Server Actions、Route Handlers（`app/api`）、proxy/middleware、ISR、`next/headers`、`cookies()`、`next/font/google` 等任何在线资源。
 - 每个页面根组件标 `"use client"`；布局只放外壳。
 - **不用动态路由段 `[id]`**；动态对象用查询参数（`/chat/?s=<sessionKey>`）或 store 状态。
-- 路由清单固定：`/`、`/onboarding/`、`/settings/`、`/capabilities/`、`/usage/`、`/storage/`。新增路由需更新技术方案。
+- 路由清单固定：`/`、`/onboarding/`、`/settings/`、`/capabilities/`、`/storage/`（用量是设置中的分组：`/settings/?group=usage`）。新增路由需更新技术方案。
 - **只有 `src/lib/platform/tauri/` 可以 import `@tauri-apps/*`**；其余代码通过 `src/lib/platform` 接口调用。新增薄壳命令时同时补 `mock/` 实现，保证 `pnpm dev:web` 可在浏览器中脱离 Rust 运行。
 - 访问 `window`、`localStorage`、Tauri API 的代码只放在 `useEffect` 或客户端组件中。
 - 流式渲染性能：每批事件一次 `setState`（`requestAnimationFrame` 内）；selector 订阅最小切片；已定稿消息不再更新；列表用虚拟滚动。

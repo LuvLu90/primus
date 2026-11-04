@@ -110,6 +110,11 @@ export function AppShell() {
                 right: center.rightAttached ? -SEAM_BLEED : 0,
               }}
             />
+            {/* 时间线的实色“纸面”：盖在玻璃之上，让用户气泡与助手回复在接近白色的底上清楚区分（两侧栏仍是玻璃） */}
+            <div
+              aria-hidden
+              className="-z-10 pointer-events-none absolute inset-0 bg-[var(--paper)]"
+            />
             {/* 左右栏开关：对称贴在纸面左上角、右上角（圆角与纸面同心） */}
             <PanelToggle
               side="left"

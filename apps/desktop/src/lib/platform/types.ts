@@ -152,7 +152,7 @@ export interface Platform {
     onBatch: BatchListener,
   ): Promise<SessionHandle>;
   sessionClose(sessionKey: string): Promise<void>;
-  /** 移到回收站并删除索引；打开中的会话以 code `sessionOpen` 拒绝 */
+  /** 永久删除会话文件（不进回收站）并删除索引；打开中的会话先结束其 Core 再删除 */
   sessionDelete(sessionPath: string): Promise<void>;
   /** 归档或取消归档（只改索引） */
   sessionArchive(sessionPath: string, archived: boolean): Promise<void>;
@@ -201,9 +201,6 @@ export const AUTH_NOT_AVAILABLE = "notAvailable";
 
 /** 会话命令错误码：会话的内核未运行（重启失败、因进程上限被淘汰或已自行退出），需重启内核 */
 export const CORE_NOT_RUNNING = "coreNotRunning";
-
-/** 删除会话的错误码：会话正在打开中，需先关闭 */
-export const SESSION_OPEN = "sessionOpen";
 
 /** 薄壳命令返回的结构化错误（`{ code, message }`，见 core_send / core_restart）；code 供界面区分处理 */
 export class PlatformError extends Error {

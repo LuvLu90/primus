@@ -1,19 +1,24 @@
 "use client";
 
-import type { CoreBatch } from "@primus/protocol";
+import type { CoreBatch, ExtensionUiResponse, ThinkingLevel } from "@primus/protocol";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { CORE_NOT_RUNNING, getPlatform, type Platform, PlatformError } from "@/lib/platform";
 import { strings } from "@/lib/strings";
 import { RpcClient, RpcClosedError, RpcResponseError, RpcTimeoutError } from "@/rpc/rpc-client";
-import { useAppStore } from "@/stores/app-store";
+import { type PermissionMode, useAppStore } from "@/stores/app-store";
 import {
   applyChunks,
   createSessionStore,
+  dismissUiRequest,
   type RecordChunk,
   type SessionState,
   type SessionStore,
+  withModel,
 } from "@/stores/session-store";
+
+/** 设置权限模式的扩展命令（primus-guard）；作为 prompt 发送，Core 直接执行，不调用模型 */
+export const modeCommand = (mode: PermissionMode) => `/primus-mode ${mode}`;
 
 // 一个会话的生命周期：新会话首次发送时打开；历史会话挂载后立即打开并用 get_messages + get_state 加载历史
 // （浏览器预览下由 mock 平台提供假 Core 事件流）。
@@ -51,6 +56,15 @@ export interface ChatSession {
   restarting: boolean;
   /** 重启内核并重建会话状态；进行中再次调用会被忽略 */
   restart: () => Promise<void>;
+  /** 回答扩展对话框（操作确认等）；回答后从待回答列表移除 */
+  respondUi: (response: ExtensionUiResponse) => Promise<void>;
+  /**
+   * 切换模型（`provider/modelId`）与思考强度。会话已打开时立即发给 Core；未打开时记下，
+   * 打开后、发送第一条消息前再应用。成功返回 true，失败设置 error 并返回 false
+   */
+  selectModel: (choice: { model?: string; thinkingLevel?: ThinkingLevel }) => Promise<boolean>;
+  /** 会话打开前记下的选择（界面据此显示） */
+  pendingModel: { model?: string; thinkingLevel?: ThinkingLevel };
 }
 
 export interface ChatSessionOptions {
@@ -105,6 +119,40 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
   );
 
   const conn = useRef<{ platform: Platform; client: RpcClient }>(null);
+  // Core 里当前生效的权限模式（新进程默认“每次询问”，打开或重启后重新同步）
+  const syncedMode = useRef<PermissionMode | null>(null);
+  const [pendingModel, setPendingModel] = useState<{
+    model?: string;
+    thinkingLevel?: ThinkingLevel;
+  }>({});
+  const pendingModelRef = useRef(pendingModel);
+  pendingModelRef.current = pendingModel;
+
+  /** 把界面上的权限模式同步给 Core（primus-guard）；已一致时什么也不做 */
+  const syncMode = useCallback(async (client: RpcClient) => {
+    const mode = useAppStore.getState().permissionMode;
+    if (syncedMode.current === mode) return;
+    const res = await client.request("prompt", { message: modeCommand(mode) });
+    if (res.success) syncedMode.current = mode;
+  }, []);
+
+  /** 会话打开后：应用打开前选的模型与思考强度、同步权限模式，再读取当前模型与可选的思考强度 */
+  const applySession = useCallback(
+    async (client: RpcClient) => {
+      const { model, thinkingLevel } = pendingModelRef.current;
+      const [provider, ...rest] = model?.split("/") ?? [];
+      if (provider && rest.length > 0)
+        await client.request("set_model", { provider, modelId: rest.join("/") });
+      if (thinkingLevel) await client.request("set_thinking_level", { level: thinkingLevel });
+      setPendingModel({});
+      await syncMode(client);
+      await Promise.all([
+        client.request("get_state"),
+        client.request("get_available_thinking_levels"),
+      ]);
+    },
+    [syncMode],
+  );
   const pending = useRef<RecordChunk[]>([]);
   const frameQueued = useRef(false);
 
@@ -192,6 +240,8 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
       });
       for (const batch of early) client.receive(batch);
       conn.current = { platform, client };
+      syncedMode.current = null;
+      await applySession(client);
       optionsRef.current.onOpening?.(false);
       optionsRef.current.onOpened?.({ sessionId: sessionId ?? null, workspace: path });
     })().finally(() => {
@@ -200,7 +250,15 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
       if (!disposed.current) optionsRef.current.onOpening?.(false);
     });
     return opening.current;
-  }, [enqueue, setError, clearError, syncUnresponsive]);
+  }, [enqueue, setError, clearError, syncUnresponsive, applySession]);
+
+  // 权限模式变化：会话已打开时立即同步（扩展命令运行中也会立即执行）
+  const permissionMode = useAppStore((s) => s.permissionMode);
+  useEffect(() => {
+    const c = conn.current;
+    if (!c || syncedMode.current === permissionMode) return;
+    syncMode(c.client).catch(() => {});
+  }, [permissionMode, syncMode]);
 
   // 卸载时关闭会话。推迟到下一个任务再关：React 开发模式（StrictMode）会立即卸载再挂载，
   // 重新挂载时取消关闭，打开中的会话照常复用，不会对同一个会话文件重复打开
@@ -255,6 +313,8 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
         // coreSend 只表示已提交；以 Core 的响应为准（失败原因由 session-store 显示为 lastError）
         const c = conn.current;
         if (!c) throw new Error(strings.chat.sessionNotOpen);
+        // 权限模式没能在打开时同步（如当时失败）：发送前再同步一次，确保按界面上的模式审批
+        await syncMode(c.client);
         const res = await c.client.request("prompt", { message });
         return res.success;
       } catch (e) {
@@ -263,7 +323,54 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
         return false;
       }
     },
-    [ensureOpen, loadHistory, fail],
+    [ensureOpen, loadHistory, fail, syncMode],
+  );
+
+  const respondUi = useCallback(
+    async (response: ExtensionUiResponse) => {
+      store.setState((s) => dismissUiRequest(s, response.id), true);
+      const c = conn.current;
+      if (!c) return;
+      try {
+        await c.client.respondUi(response);
+      } catch (e) {
+        fail(e);
+      }
+    },
+    [store, fail],
+  );
+
+  const selectModel = useCallback(
+    async (choice: { model?: string; thinkingLevel?: ThinkingLevel }): Promise<boolean> => {
+      const c = conn.current;
+      if (!c) {
+        setPendingModel((p) => ({ ...p, ...choice }));
+        return true;
+      }
+      try {
+        if (choice.model) {
+          const [provider, ...rest] = choice.model.split("/");
+          const res = await c.client.request("set_model", {
+            provider: provider ?? "",
+            modelId: rest.join("/"),
+          });
+          if (!res.success) return false;
+          await c.client.request("get_available_thinking_levels");
+        }
+        if (choice.thinkingLevel) {
+          const res = await c.client.request("set_thinking_level", { level: choice.thinkingLevel });
+          if (!res.success) return false;
+          store.setState((s) => withModel(s, undefined, choice.thinkingLevel), true);
+          // Core 会把强度夹到模型支持的范围内：读回实际生效的值
+          await c.client.request("get_state");
+        }
+        return true;
+      } catch (e) {
+        fail(e);
+        return false;
+      }
+    },
+    [store, fail],
   );
 
   const abort = useCallback(async (): Promise<boolean> => {
@@ -296,8 +403,11 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
       c.client.reset();
       lock.current.timeout = false;
       lock.current.stopped = false;
+      // 新进程的权限模式回到默认：重新同步
+      syncedMode.current = null;
       // 重建成功前不解除发送限制：失败时保留重建错误与“重启内核”入口
       const ok = await c.client.resync();
+      if (ok) await syncMode(c.client).catch(() => {});
       lock.current.restart = !ok;
       syncUnresponsive();
     } catch (e) {
@@ -311,7 +421,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
       restartingRef.current = false;
       setRestarting(false);
     }
-  }, [setError, fail, syncUnresponsive]);
+  }, [setError, fail, syncUnresponsive, syncMode]);
 
   return {
     state,
@@ -322,5 +432,8 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     abort,
     restarting,
     restart,
+    respondUi,
+    selectModel,
+    pendingModel,
   };
 }

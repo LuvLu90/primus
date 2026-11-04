@@ -299,32 +299,44 @@ impl<S: BatchSink + Clone> Sessions<S> {
         using(&self.entries(), &file_keys, session_id)
     }
 
-    /// 删除会话文件：占用检查（同 [`Self::is_using`]）通过时在同一次加锁内把文件登记为“删除中”，然后在锁外执行
-    /// `delete`（移到回收站可能弹出系统确认框，不能占着会话表锁），结束后撤销登记。登记期间打开同一文件得到
-    /// `Deleting`，不会出现删除检查通过后、文件移走前又被打开的情况。文件被打开中的会话使用时不执行 `delete`，返回 None。
-    pub(crate) fn delete_unless_using<T>(
+    /// 删除会话文件（永久删除，不进回收站）：打开中的会话不必先关闭——在同一次加锁内把使用这个会话文件或会话 ID 的
+    /// 会话（同 [`Self::is_using`]）移出会话表，并把文件登记为“删除中”；然后在锁外用 `stop` 结束这些会话的 Core
+    /// （结束进程要等待，不能占着会话表锁），再执行 `delete`，结束后撤销登记。登记期间打开同一文件得到 `Deleting`，
+    /// 不会出现会话关闭后、文件删除前又被打开的情况。同一文件已在删除中时不执行 `delete`，返回 None。
+    pub(crate) fn delete_closing<T>(
         &self,
         session_file: &Path,
         session_id: Option<&str>,
+        mut stop: impl FnMut(&str),
         delete: impl FnOnce() -> T,
     ) -> Option<T> {
         let file_keys = crate::platform::file_keys(session_file);
-        {
-            let entries = self.entries();
-            if using(&entries, &file_keys, session_id) {
-                return None;
-            }
+        let closed: Vec<String> = {
+            let mut entries = self.entries();
             let mut deleting = self.deleting();
             if file_keys.iter().any(|k| deleting.contains(k)) {
-                // 同一文件已在删除中：按占用处理
+                // 同一文件已在删除中：不重复删除
                 return None;
             }
             deleting.extend(file_keys.iter().cloned());
-        }
+            let keys: Vec<String> = entries
+                .iter()
+                .filter(|(_, e)| entry_uses(e, &file_keys, session_id))
+                .map(|(k, _)| k.clone())
+                .collect();
+            // 桥随条目 drop：关闭写队列，读、合批线程随 stdout EOF 结束
+            for k in &keys {
+                entries.remove(k);
+            }
+            keys
+        };
         let _release = DeletingGuard {
             sessions: self,
             keys: file_keys,
         };
+        for key in &closed {
+            stop(key);
+        }
         Some(delete())
     }
 
@@ -583,11 +595,16 @@ fn using<S>(
     file_keys: &[String],
     session_id: Option<&str>,
 ) -> bool {
-    entries.values().any(|entry| {
-        let same_file = crate::platform::keys_overlap(&entry.file_keys, file_keys);
-        let same_id = session_id.is_some() && entry.opts.session_id.as_deref() == session_id;
-        same_file || same_id
-    })
+    entries
+        .values()
+        .any(|entry| entry_uses(entry, file_keys, session_id))
+}
+
+/// 一个会话是否在使用这个会话文件（键有任一相同）或会话 ID（新会话）。
+fn entry_uses<S>(entry: &Entry<S>, file_keys: &[String], session_id: Option<&str>) -> bool {
+    let same_file = crate::platform::keys_overlap(&entry.file_keys, file_keys);
+    let same_id = session_id.is_some() && entry.opts.session_id.as_deref() == session_id;
+    same_file || same_id
 }
 
 #[cfg(test)]
@@ -810,12 +827,15 @@ process.stdin.on("data", (chunk) => {
         );
         assert!(matches!(r, Err(SessionError::InUse(_))), "{r:?}");
         assert!(supervisor.running_keys().is_empty());
+        // 删除时一并关闭使用它的会话
+        let mut stopped = Vec::new();
         assert!(
             sessions
-                .delete_unless_using(&file, None, || panic!("不应执行删除"))
-                .is_none()
+                .delete_closing(&file, None, |k| stopped.push(k.to_owned()), || ())
+                .is_some()
         );
-        assert!(file.exists());
+        assert_eq!(stopped, ["s1"]);
+        assert!(!sessions.is_using(&file, None));
     }
 
     #[test]
@@ -826,15 +846,20 @@ process.stdin.on("data", (chunk) => {
         std::fs::write(&file, "{\"type\":\"session\",\"id\":\"a\"}\n").unwrap();
         // 删除进行中（回调执行期间）打开同一文件：拒绝，不拉起进程
         let opened = sessions
-            .delete_unless_using(&file, Some("a"), || {
-                sessions.open(
-                    &supervisor,
-                    &paths,
-                    tmp.0.to_str().unwrap(),
-                    file.to_str(),
-                    Collect::default(),
-                )
-            })
+            .delete_closing(
+                &file,
+                Some("a"),
+                |_| {},
+                || {
+                    sessions.open(
+                        &supervisor,
+                        &paths,
+                        tmp.0.to_str().unwrap(),
+                        file.to_str(),
+                        Collect::default(),
+                    )
+                },
+            )
             .expect("未被使用的文件应执行删除回调");
         assert!(
             matches!(opened, Err(SessionError::Deleting(_))),
@@ -843,13 +868,13 @@ process.stdin.on("data", (chunk) => {
         assert!(supervisor.running_keys().is_empty());
         // 删除结束后撤销登记
         assert!(sessions.deleting().is_empty());
-        // 被打开中的会话使用时不执行回调
+        // 同一文件已在删除中时不重复删除
         sessions
-            .entries()
-            .insert("s1".into(), idle_entry(file.to_str(), None));
+            .deleting()
+            .extend(crate::platform::file_keys(&file));
         assert!(
             sessions
-                .delete_unless_using(&file, None, || panic!("不应执行删除"))
+                .delete_closing(&file, None, |_| {}, || panic!("不应执行删除"))
                 .is_none()
         );
     }

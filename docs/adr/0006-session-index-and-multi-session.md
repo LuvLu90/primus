@@ -45,3 +45,11 @@
 - trigram 索引大约是正文的 3 倍体积；对桌面端可以接受。少于 3 个字的搜索只匹配标题与首条消息。
 - 新增依赖 `rusqlite`（bundled）与 `notify`，版本已在技术方案第 2.4 节基线中。
 - 新增薄壳命令 `session_watch`，`session_archive` 增加 `archived` 参数，`session_list` / `session_search` 的 `workspace` 可为 `null`；附录 B 与 `Platform` 接口同步更新。
+
+## 修订（2026-11-04）：删除改为永久删除，打开中的会话可直接删除
+
+按产品要求，会话删除不再移到回收站，而是永久删除、不可恢复（删除前确认框写明“无法恢复”）；界面不再提供“关闭会话”。
+`session_delete` 不再因会话打开中而拒绝：在同一次加锁内把使用该文件或会话 ID 的会话移出会话表并登记“删除中”，锁外结束这些会话的 Core，
+再删除文件（Windows 上刚结束的进程可能短暂占用文件，删除遇到共享冲突时重试最多约 1 秒）。`platform::move_to_trash` 已删除，
+`{ code: "sessionOpen" }` 错误码不再使用。上文第 5 条与 `session_delete` 中关于回收站、拒绝打开中会话的描述以本节为准。
+

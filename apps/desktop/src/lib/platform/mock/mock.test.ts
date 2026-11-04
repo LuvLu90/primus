@@ -1,6 +1,6 @@
 import type { CoreBatch, CoreRecord } from "@primus/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { COMMANDS, PlatformError, SESSION_OPEN } from "../types";
+import { COMMANDS } from "../types";
 import { createMockPlatform } from "./index";
 import { chunk, promptScenario } from "./scenario";
 
@@ -278,10 +278,6 @@ describe("mock 会话索引", () => {
     expect(await platform.sessionSearch(null, "mock 平台")).toHaveLength(1);
     expect(await platform.sessionSearch(null, "   ")).toEqual([]);
 
-    // 打开中不能删除
-    await expect(platform.sessionDelete(entry.path)).rejects.toSatisfy(
-      (e) => e instanceof PlatformError && e.code === SESSION_OPEN,
-    );
     await platform.sessionClose(opened.sessionKey);
 
     // 恢复历史会话：get_messages 返回已定稿的消息

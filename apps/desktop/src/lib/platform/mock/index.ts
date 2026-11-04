@@ -14,7 +14,6 @@ import {
   type ModelsInfo,
   type Platform,
   PlatformError,
-  SESSION_OPEN,
   type SessionIndexEvent,
   type SessionSummary,
   type WorkspaceInfo,
@@ -70,6 +69,23 @@ const MOCK_FAST: ModelSummary = {
 
 const MOCK_MODELS: ModelSummary[] = [MOCK_LARGE, MOCK_FAST];
 
+/** get_state / set_model 响应里的模型对象（字段按 Core 的 Model，只填界面用到的） */
+function mockModel(key: string) {
+  const m = MOCK_MODELS.find((x) => x.key === key) ?? MOCK_LARGE;
+  return {
+    id: m.id,
+    name: m.name,
+    api: m.api,
+    provider: m.provider,
+    baseUrl: "https://mock.invalid",
+    reasoning: m.reasoning,
+    input: m.image ? ["text", "image"] : ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: m.contextWindow,
+    maxTokens: m.maxTokens,
+  };
+}
+
 /** 队列项：记录本身，或推送时才生成的记录（get_messages 的响应在推送那一刻取历史快照） */
 type Queued = CoreRecord | (() => CoreRecord);
 
@@ -89,6 +105,9 @@ interface MockSession {
   delivered: CoreRecord[];
   /** 本轮已在中止中（结束事件已排队）：再次 abort 只排一条响应，不再丢弃队列 */
   aborting: boolean;
+  /** 当前模型（`provider/modelId`）与思考强度 */
+  model: string;
+  thinkingLevel: string;
 }
 
 const MOCK_WORKSPACE = "C:\\Users\\mock\\示例工作区";
@@ -238,12 +257,18 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
     if (options.stallCommand?.(cmd)) return;
     switch (cmd.type) {
       case "prompt": {
+        const message = String(cmd.message ?? "");
+        // 扩展命令（如 primus-guard 的 /primus-mode）：与 Core 一致，直接执行、不调用模型，运行中也立即执行
+        if (message.startsWith("/primus-")) {
+          emit(s, respond(cmd, { disposition: "handled" }));
+          return;
+        }
         if (s.streaming) {
           // 真实 Core 会按 streamingBehavior 排队；mock 只做最简单的拒绝
           emit(s, respond(cmd, undefined, "mock：正在运行中，请先停止或等待结束"));
           return;
         }
-        const scenario = promptScenario(String(cmd.message ?? ""), now());
+        const scenario = promptScenario(message, now());
         s.streaming = true;
         emit(s, respond(cmd, { disposition: "started" }), ...scenario.records);
         return;
@@ -266,8 +291,8 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
           // 推送时才生成：反映此前推送的 agent_settled 等事件之后的运行状态
           () =>
             respond(cmd, {
-              model: { provider: "mock", id: "mock-model", name: "Mock 模型" },
-              thinkingLevel: "medium",
+              model: mockModel(s.model),
+              thinkingLevel: s.thinkingLevel,
               isStreaming: s.streaming,
               isCompacting: false,
               steeringMode: "one-at-a-time",
@@ -277,6 +302,31 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
               messageCount: s.messages.length,
               pendingMessageCount: 0,
             }),
+        );
+        return;
+      case "set_model": {
+        const key = `${cmd.provider}/${cmd.modelId}`;
+        if (!MOCK_MODELS.some((m) => m.key === key)) {
+          emit(s, respond(cmd, undefined, `模型 ${key} 不在可用列表中`));
+          return;
+        }
+        s.model = key;
+        if (!MOCK_MODELS.find((m) => m.key === key)?.reasoning) s.thinkingLevel = "off";
+        emit(s, respond(cmd, mockModel(key)));
+        return;
+      }
+      case "set_thinking_level":
+        s.thinkingLevel = MOCK_MODELS.find((m) => m.key === s.model)?.reasoning ? cmd.level : "off";
+        emit(s, respond(cmd));
+        return;
+      case "get_available_thinking_levels":
+        emit(
+          s,
+          respond(cmd, {
+            levels: MOCK_MODELS.find((m) => m.key === s.model)?.reasoning
+              ? ["off", "low", "medium", "high", "xhigh"]
+              : ["off"],
+          }),
         );
         return;
       case "get_messages":
@@ -392,6 +442,8 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
         closed: false,
         delivered: [],
         aborting: false,
+        model: defaultModel,
+        thinkingLevel: "medium",
       });
       return { sessionKey: key, sessionId: sessionPath ? null : key };
     },
@@ -416,8 +468,14 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       sessions.delete(sessionKey);
     },
     sessionDelete: async (path) => {
-      if ([...sessions.values()].some((s) => s.path === path && !s.closed))
-        throw new PlatformError("会话正在打开中，请先关闭再删除", SESSION_OPEN);
+      // 打开中的会话一并关闭（与薄壳一致：删除前结束它的 Core），之后的发送得到“内核未运行”
+      for (const [key, s] of sessions) {
+        if (s.path !== path || s.closed) continue;
+        s.closed = true;
+        if (s.timer !== undefined) clearTimeout(s.timer);
+        s.queue = [];
+        sessions.delete(key);
+      }
       const i = sessionIndex.findIndex((x) => x.path === path);
       if (i < 0) throw new Error(`不是会话文件：${path}`);
       sessionIndex.splice(i, 1);

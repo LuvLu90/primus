@@ -460,16 +460,131 @@ describe("对话区（mock 事件流）", () => {
     );
   });
 
-  it("权限菜单接入 Core 前只开放每次询问，其余档位禁用", async () => {
+  it("三档权限都可选，选择后发给 Core（/primus-mode），打开会话时先同步当前档位", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    setPlatformForTesting(platform);
+    const sent: string[] = [];
+    const coreSend = platform.coreSend.bind(platform);
+    vi.spyOn(platform, "coreSend").mockImplementation((key, record) => {
+      if (record.type === "prompt") sent.push(String((record as { message: string }).message));
+      return coreSend(key, record);
+    });
     render(<ChatPanel />);
     const trigger = screen.getByRole("button", { name: new RegExp(t.permissionMode) });
     fireEvent.keyDown(trigger, { key: "Enter" });
-    const full = await screen.findByRole("menuitemradio", {
-      name: new RegExp(t.permissions.full.label),
+    const edit = await screen.findByRole("menuitemradio", {
+      name: new RegExp(t.permissions.edit.label),
     });
-    expect(full.getAttribute("aria-disabled")).toBe("true");
-    fireEvent.click(full);
-    expect(useAppStore.getState().permissionMode).toBe("ask");
+    expect(edit.getAttribute("aria-disabled")).toBeNull();
+    fireEvent.click(edit);
+    expect(useAppStore.getState().permissionMode).toBe("edit");
+
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    fireEvent.change(input, { target: { value: "你好" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(sent).toEqual(["/primus-mode edit", "你好"]));
+
+    // 会话已打开时切换档位立即同步
+    fireEvent.keyDown(screen.getByRole("button", { name: new RegExp(t.permissionMode) }), {
+      key: "Enter",
+    });
+    fireEvent.click(
+      await screen.findByRole("menuitemradio", { name: new RegExp(t.permissions.full.label) }),
+    );
+    await waitFor(() => expect(sent.at(-1)).toBe("/primus-mode full"));
+    // 扩展命令不显示为用户消息
+    await waitFor(() => expect(screen.getAllByRole("article", { name: t.you })).toHaveLength(1));
+  });
+
+  it("模型按钮显示当前模型，可切换模型与思考强度", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    setPlatformForTesting(platform);
+    const records: { type: string; [k: string]: unknown }[] = [];
+    const coreSend = platform.coreSend.bind(platform);
+    vi.spyOn(platform, "coreSend").mockImplementation((key, record) => {
+      records.push(record as { type: string });
+      return coreSend(key, record);
+    });
+    render(<ChatPanel />);
+    const button = await screen.findByRole("button", { name: /模型：Mock 大模型/ });
+    // 会话打开前选择：记下，打开后发送第一条消息前应用
+    fireEvent.keyDown(button, { key: "Enter" });
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: "高" }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /模型：Mock 大模型，思考高/ })).toBeTruthy(),
+    );
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    fireEvent.change(input, { target: { value: "你好" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() =>
+      expect(records.find((r) => r.type === "set_thinking_level")).toMatchObject({
+        level: "high",
+      }),
+    );
+    // 会话打开后切换模型：立即发 set_model，按钮随之更新（等这一轮回答结束、按钮解锁）
+    await waitFor(() => expect(screen.getByText(/你刚才说：「你好」/)).toBeTruthy());
+    const second = await screen.findByRole("button", { name: /模型：Mock 大模型，思考高/ });
+    await waitFor(() => expect(second.hasAttribute("disabled")).toBe(false));
+    fireEvent.keyDown(second, { key: "Enter" });
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: "Mock 快速模型" }));
+    await waitFor(() =>
+      expect(records.find((r) => r.type === "set_model")).toMatchObject({
+        provider: "mock-responses",
+        modelId: "mock-fast",
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /模型：Mock 快速模型/ })).toBeTruthy(),
+    );
+  });
+
+  it("扩展的操作确认显示在输入框上方，选择后回复 Core 并消失", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    let deliver: ((b: CoreBatch) => void) | undefined;
+    const open = platform.sessionOpen.bind(platform);
+    vi.spyOn(platform, "sessionOpen").mockImplementation(async (ws, path, onBatch) => {
+      deliver = onBatch;
+      return open(ws, path, onBatch);
+    });
+    const responses: unknown[] = [];
+    const coreSend = platform.coreSend.bind(platform);
+    vi.spyOn(platform, "coreSend").mockImplementation((key, record) => {
+      if (record.type === "extension_ui_response") responses.push(record);
+      return coreSend(key, record);
+    });
+    setPlatformForTesting(platform);
+    render(<ChatPanel />);
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    fireEvent.change(input, { target: { value: "你好" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(deliver).toBeDefined());
+    const key = (
+      platform.sessionOpen as unknown as {
+        mock: { results: { value: Promise<{ sessionKey: string }> }[] };
+      }
+    ).mock.results[0]?.value;
+    const sessionKey = (await key)?.sessionKey ?? "";
+    deliver?.({
+      sessionKey,
+      seq: 10_000,
+      dropped: 0,
+      records: [
+        {
+          type: "extension_ui_request",
+          id: "ask-1",
+          method: "select",
+          title: "运行命令：npm test",
+          options: ["允许", "本会话内始终允许", "拒绝"],
+        },
+      ],
+    });
+    const card = await screen.findByRole("alertdialog", { name: t.approval.label });
+    expect(card.textContent).toContain("运行命令：npm test");
+    fireEvent.click(screen.getByRole("button", { name: "拒绝" }));
+    await waitFor(() =>
+      expect(responses).toEqual([{ type: "extension_ui_response", id: "ask-1", value: "拒绝" }]),
+    );
+    expect(screen.queryByRole("alertdialog")).toBeNull();
   });
 
   it("多轮对话：每轮结束（agent_settled）后解锁输入，第二轮接在第一轮之后", async () => {

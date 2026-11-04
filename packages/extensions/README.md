@@ -4,7 +4,8 @@
 
 | 模块 | Core 挂点 | 功能 | `primus:*` 数据 / 命令 |
 |---|---|---|---|
-| `guard` | `session_start`、`tool_call`、`tool_result`、`before_agent_start` | 协议白名单、危险操作确认、受保护路径、外部内容标注、权限模式 | `primus:mode`；`/primus-mode <模式>` |
+| `guard` | `session_start`、`tool_call`、`tool_result`、`before_agent_start` | 权限模式（已实现）：每次询问 / 自动编辑 / 完全访问，按模式对修改文件、命令、联网与工作区外读取弹出确认（允许 / 本会话内始终允许 / 拒绝）；协议白名单、受保护路径、外部内容标注待实现 | `primus:mode`；`/primus-mode <模式>` |
+| `auth` | 扩展加载时 `registerProvider` | 不经 shell 直接拉起 `Primus.exe --secret` 取模型令牌，覆盖到 `models.json` 中使用取令牌命令的供应商（技术方案第 9.4 节） | — |
 | `checkpoint` | `turn_start`、`tool_call`（write/edit） | 影子仓库快照、回滚、变更清单 | `primus:changes`；`/primus-restore`、`/primus-revert-file` |
 | `subagent` | 自定义工具 `subagent` | 子 Agent 进程管理与结果汇总 | `primus:subagents` |
 | `plan` | `setActiveTools`、自定义工具 `todo` | 计划模式、待办 | `primus:plan`、`primus:todo`；`/primus-plan` |

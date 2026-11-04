@@ -3,9 +3,11 @@ import type {
   AssistantContent,
   AssistantMessageEvent,
   CoreRecord,
+  ExtensionUiDialogRequest,
   RpcResponse,
   ToolResult,
 } from "@primus/protocol";
+import { isDialogRequest } from "@primus/protocol";
 import { produce } from "immer";
 import { createStore } from "zustand/vanilla";
 
@@ -51,6 +53,13 @@ export interface SessionState {
   toolRuns: Record<string, ToolRun>;
   /** 最近一次失败的命令响应 */
   lastError?: string;
+  /** 等待用户回答的扩展对话框（primus-guard 的操作确认等），按到达顺序 */
+  uiRequests: ExtensionUiDialogRequest[];
+  /** 当前的模型与思考强度（get_state、set_model 等响应） */
+  model?: { provider: string; id: string };
+  thinkingLevel?: string;
+  /** 当前模型支持的思考强度（get_available_thinking_levels） */
+  thinkingLevels?: string[];
 }
 
 export const initialSessionState: SessionState = {
@@ -61,6 +70,7 @@ export const initialSessionState: SessionState = {
   streamBroken: false,
   running: false,
   toolRuns: {},
+  uiRequests: [],
 };
 
 /** 末尾（忽略空白）是不是 `}`：完整的 JSON 对象必然以它结尾 */
@@ -172,9 +182,21 @@ function applyRecord(draft: SessionState, record: CoreRecord): void {
       // get_state 校正运行状态（缺号时可能错过了 agent_start / agent_settled）
       if (r.command === "get_state" && r.data) {
         draft.running = r.data.isStreaming || r.data.isCompacting;
+        const { model, thinkingLevel } = r.data;
+        if (model) draft.model = { provider: model.provider, id: model.id };
+        if (thinkingLevel) draft.thinkingLevel = thinkingLevel;
       }
+      if (r.command === "set_model" && r.data)
+        draft.model = { provider: r.data.provider, id: r.data.id };
+      if (r.command === "get_available_thinking_levels" && Array.isArray(r.data?.levels))
+        draft.thinkingLevels = r.data.levels;
       return;
     }
+    case "extension_ui_request":
+      // 对话框方法阻塞扩展、等前端回答；即发即弃的方法（setWidget 等）这里不处理
+      if (isDialogRequest(record) && !draft.uiRequests.some((x) => x.id === record.id))
+        draft.uiRequests.push(record);
+      return;
     case "agent_start":
       draft.running = true;
       draft.lastError = undefined;
@@ -182,6 +204,8 @@ function applyRecord(draft: SessionState, record: CoreRecord): void {
     case "agent_settled":
       draft.running = false;
       endStream(draft);
+      // 一轮结束（含被停止）后，扩展不会再等这些对话框的回答
+      draft.uiRequests = [];
       return;
     case "message_start": {
       // 复制一份再累积增量：不改动记录本身（记录可能被其他地方持有）
@@ -263,6 +287,24 @@ export function applyChunks(state: SessionState, chunks: readonly RecordChunk[])
 }
 
 export type SessionStore = ReturnType<typeof createSessionStore>;
+
+/** 用户回答（或关闭）了一个扩展对话框：从待回答列表中移除 */
+export function dismissUiRequest(state: SessionState, id: string): SessionState {
+  return { ...state, uiRequests: state.uiRequests.filter((x) => x.id !== id) };
+}
+
+/** 模型或思考强度切换成功后更新显示 */
+export function withModel(
+  state: SessionState,
+  model: { provider: string; id: string } | undefined,
+  thinkingLevel: string | undefined,
+): SessionState {
+  return {
+    ...state,
+    ...(model ? { model } : {}),
+    ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
+  };
+}
 
 /** 为一个打开的会话创建独立 store；关闭会话时丢弃即可 */
 export function createSessionStore() {

@@ -2,7 +2,7 @@
 
 import { ChevronLeft } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { GlassPanel } from "@/components/layout/glass-panel";
 import {
   centerSeamStyle,
@@ -102,9 +102,20 @@ const NAV_WIDTH = 232;
 // 设置（第 18 章）：与主界面同样的吸附样式——左侧导航与右侧内容是贴合的两块液态玻璃，
 // 接缝处直角 + 平滑凹口、无缝隙。已实现"通用"中的外观、启动与通知，"账号"（内置账号）与"模型"（默认模型），
 // 其余分组列出将提供的设置项。
+/** 地址中的 `?group=<分组>`（如侧栏菜单的“用量”打开 `/settings/?group=usage`）；无效值返回 null */
+export function groupFromSearch(search: string): SettingsGroup | null {
+  const g = new URLSearchParams(search).get("group");
+  return g && (GROUPS as string[]).includes(g) ? (g as SettingsGroup) : null;
+}
+
 export function SettingsView() {
   const router = useRouter();
   const [group, setGroup] = useState<SettingsGroup>("general");
+  // 静态导出没有服务端：在客户端读查询参数选中分组（不用 useSearchParams，免去 Suspense 边界）
+  useEffect(() => {
+    const g = groupFromSearch(window.location.search);
+    if (g) setGroup(g);
+  }, []);
 
   return (
     <div className="flex h-screen w-screen flex-col overflow-hidden px-2 pb-2 text-fg">

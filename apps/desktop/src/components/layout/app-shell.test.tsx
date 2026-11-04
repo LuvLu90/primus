@@ -17,10 +17,19 @@ const panelStyle = (el: HTMLElement) =>
 describe("主界面外壳", () => {
   const original = { width: window.innerWidth, height: window.innerHeight };
   beforeEach(() => {
-    useAppStore.setState(initialAppState);
+    // 以下用例多数检查右栏：先展开它（默认收起，见下一条用例）
+    useAppStore.setState({ ...initialAppState, inspectorPanelOpen: true });
     setViewport(1280, 800);
   });
   afterEach(() => setViewport(original.width, original.height));
+
+  it("打开应用时默认收起右栏，只显示会话列表与对话区", () => {
+    useAppStore.setState(initialAppState);
+    render(<AppShell />);
+    expect(screen.getByRole("navigation", { name: strings.layout.sessions })).toBeTruthy();
+    expect(screen.queryByRole("complementary", { name: strings.layout.inspector })).toBeNull();
+    expect(screen.getByRole("button", { name: strings.layout.showInspector })).toBeTruthy();
+  });
 
   it("显示三栏，不再有顶栏", () => {
     render(<AppShell />);

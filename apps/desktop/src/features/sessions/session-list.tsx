@@ -1,7 +1,7 @@
 "use client";
 
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Archive, ArchiveRestore, Ellipsis, Search, Trash2, X } from "lucide-react";
+import { Archive, ArchiveRestore, Ellipsis, Search, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   GlassDialog,
@@ -25,7 +25,8 @@ import { findTab, useSessionsStore } from "./sessions-store";
 import { useSessionIndex, useSessionSearch } from "./use-session-index";
 
 // 左栏会话列表（第 10.2、16.2 节，ADR 0006）：搜索框 + 虚拟滚动的会话列表，滚到底加载下一页；
-// 点击打开（已在某个标签中则切过去），菜单里可关闭、归档、删除（删除前确认，移到回收站）。
+// 点击打开（已在某个标签中则切过去），菜单里可归档、删除（删除前确认，永久删除、不可恢复）。
+// 打开中的会话也可以直接删除：先关掉它的标签，薄壳删除时一并结束它的 Core。
 
 const t = strings.sessions;
 /** 行高（px），与样式一致，供虚拟列表估算 */
@@ -107,6 +108,8 @@ export function SessionList() {
     setPendingDelete(null);
     if (!s) return;
     setActionError(undefined);
+    const tab = findTab(useSessionsStore.getState().tabs, s);
+    if (tab) closeTab(tab.id);
     getPlatform()
       .then((p) => p.sessionDelete(s.path))
       .catch((e) => setActionError(errorText(e)));
@@ -185,9 +188,7 @@ export function SessionList() {
                   now={now}
                   active={tab !== undefined && tab.id === activeTabId}
                   running={tab?.running ?? false}
-                  open={tab !== undefined}
                   onOpen={() => openSession(s)}
-                  onClose={tab ? () => closeTab(tab.id) : undefined}
                   onArchive={() => archive(s)}
                   onDelete={() => setPendingDelete(s)}
                 />
@@ -232,10 +233,7 @@ interface SessionRowProps {
   now: number;
   active: boolean;
   running: boolean;
-  /** 已在某个标签中打开：菜单提供“关闭会话”，不能删除 */
-  open: boolean;
   onOpen: () => void;
-  onClose?: () => void;
   onArchive: () => void;
   onDelete: () => void;
 }
@@ -246,9 +244,7 @@ function SessionRow({
   now,
   active,
   running,
-  open,
   onOpen,
-  onClose,
   onArchive,
   onDelete,
 }: SessionRowProps) {
@@ -291,20 +287,13 @@ function SessionRow({
           </button>
         </GlassPopoverTrigger>
         <GlassPopoverContent side="right" align="start" sideOffset={6} tint={0.75} minWidth={160}>
-          {onClose && <GlassPopoverItem icon={<X />} label={t.closeTab} onSelect={onClose} />}
           <GlassPopoverItem
             icon={session.archived ? <ArchiveRestore /> : <Archive />}
             label={session.archived ? t.unarchive : t.archive}
             onSelect={onArchive}
           />
           <GlassPopoverSeparator />
-          <GlassPopoverItem
-            icon={<Trash2 />}
-            label={t.delete}
-            destructive
-            disabled={open}
-            onSelect={onDelete}
-          />
+          <GlassPopoverItem icon={<Trash2 />} label={t.delete} destructive onSelect={onDelete} />
         </GlassPopoverContent>
       </GlassPopover>
     </li>
