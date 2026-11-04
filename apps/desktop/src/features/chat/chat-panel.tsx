@@ -39,6 +39,7 @@ import { useAppStore } from "@/stores/app-store";
 import type { TimelineContent, ToolRun } from "@/stores/session-store";
 import {
   AttachmentChips,
+  failure,
   PermissionPicker,
   permissionMeta,
   useCanPickFiles,
@@ -139,7 +140,7 @@ const MessageItem = memo(function MessageItem({
     return (
       <article
         aria-label={t.you}
-        className="max-w-[80%] self-end rounded-[18px] rounded-br-md bg-accent px-3.5 py-2 text-white"
+        className="max-w-[80%] self-end rounded-[18px] rounded-br-md bg-bubble px-3.5 py-2 text-fg"
       >
         <p className="whitespace-pre-wrap leading-relaxed">{textOf(message.content)}</p>
       </article>
@@ -202,10 +203,12 @@ function WorkspaceBar({
   visible,
   current,
   onPicked,
+  onError,
 }: {
   visible: boolean;
   current: WorkspaceInfo | null;
   onPicked: (ws: WorkspaceInfo) => void;
+  onError: (message: string | null) => void;
 }) {
   const glass = useGlassStyle(0.2);
   return (
@@ -226,7 +229,7 @@ function WorkspaceBar({
           className="-mb-5 pb-5 ring-1 ring-black/[0.06] dark:ring-white/[0.08]"
         >
           <div className="flex h-10 items-center px-4">
-            <WorkspacePicker current={current} onPicked={onPicked}>
+            <WorkspacePicker current={current} onPicked={onPicked} onError={onError}>
               <button
                 type="button"
                 className="flex items-center gap-2 text-[13px] text-muted outline-none transition-colors hover:text-fg focus-visible:text-fg data-[state=open]:text-fg"
@@ -414,11 +417,15 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
   }, [draft, expanded]);
 
   // 附件只取本地路径（不复制文件），去重后追加
+  const [pickError, setPickError] = useState<string | null>(null);
   const pickFiles = () =>
     getPlatform()
       .then((p) => p.dialogPickFiles())
-      .then((paths) => setAttachments((prev) => [...new Set([...prev, ...paths])]))
-      .catch(() => {});
+      .then((paths) => {
+        setPickError(null);
+        setAttachments((prev) => [...new Set([...prev, ...paths])]);
+      })
+      .catch((e) => setPickError(failure(t.pickFilesFailed, e)));
 
   // 只在客户端判断运行环境，避免水合不一致
   useEffect(() => setPreview(!isTauriRuntime()), []);
@@ -572,6 +579,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
             visible={canUseWorkspaces && !shownWorkspace && !workspaceLocked}
             current={shownWorkspace}
             onPicked={setWorkspace}
+            onError={setPickError}
           />
           {modelConfig.unavailable && (
             <div
@@ -595,6 +603,11 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
           {/* 中央已是玻璃，输入框保持实色白底（深色为实色面），保证输入区清晰 */}
           <div className="relative rounded-[24px] bg-surface shadow-[0_12px_40px_-12px_rgb(0_0_0/0.35)] ring-1 ring-border transition-shadow focus-within:shadow-[0_14px_44px_-12px_rgb(0_0_0/0.4)]">
             <form onSubmit={submit} className="flex flex-col gap-2 px-3.5 pt-3.5 pb-3">
+              {pickError && (
+                <p role="alert" className="text-xs text-danger">
+                  {pickError}
+                </p>
+              )}
               <AttachmentChips
                 paths={attachments}
                 onRemove={(p) => {
@@ -688,7 +701,11 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                       <span className="max-w-40 truncate text-[12px]">{shownWorkspace.name}</span>
                     </span>
                   ) : (
-                    <WorkspacePicker current={shownWorkspace} onPicked={setWorkspace}>
+                    <WorkspacePicker
+                      current={shownWorkspace}
+                      onPicked={setWorkspace}
+                      onError={setPickError}
+                    >
                       <GlassButton
                         variant="capsule"
                         size={30}

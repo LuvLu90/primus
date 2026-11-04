@@ -8,23 +8,20 @@ import type { WindowControls } from "./window";
 export * from "./types";
 export type { WindowControls } from "./window";
 
-/** 是否运行在 Tauri 窗口内（Tauri 2 注入 `globalThis.isTauri`） */
 /**
- * 是否能弹系统文件/文件夹对话框。薄壳尚未注册 dialog_pick_folder / dialog_pick_files（待接入 tauri-plugin-dialog），
- * Tauri 内为 false，界面隐藏"打开文件夹…"和附件入口；浏览器预览走 mock。接入后改为恒 true。
+ * 是否能弹系统文件/文件夹对话框：薄壳的 dialog_pick_folder / dialog_pick_files（tauri-plugin-dialog）
+ * 与浏览器预览的 mock 都已实现，恒为 true。保留开关，便于以后某个平台不支持时隐藏入口。
  */
 export function canPickFiles(): boolean {
-  return !isTauriRuntime();
+  return true;
 }
 
-/**
- * 是否能列出/打开工作区。薄壳尚未注册 workspace_list / workspace_open，Tauri 内为 false，
- * 界面隐藏工作区选择入口（会话以空路径打开）；浏览器预览走 mock。命令注册后改为恒 true。
- */
+/** 是否能列出/打开工作区：薄壳的 workspace_list / workspace_open 与 mock 都已实现，恒为 true */
 export function canUseWorkspaces(): boolean {
-  return !isTauriRuntime();
+  return true;
 }
 
+/** 是否运行在 Tauri 窗口内（Tauri 2 注入 `globalThis.isTauri`） */
 export function isTauriRuntime(): boolean {
   return (globalThis as { isTauri?: unknown }).isTauri === true;
 }

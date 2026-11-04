@@ -40,6 +40,12 @@ export function baseName(path: string): string {
   return parts[parts.length - 1] ?? path;
 }
 
+/** 操作失败的提示：说明哪一步失败，再附上原因 */
+export function failure(what: string, e: unknown): string {
+  const reason = e instanceof Error ? e.message : String(e);
+  return reason ? `${what}：${reason}` : what;
+}
+
 /** 当前平台是否能弹系统文件对话框（首帧为 false） */
 export function useCanPickFiles(): boolean {
   const [can, setCan] = useState(false);
@@ -61,36 +67,50 @@ export function useCanUseWorkspaces(): boolean {
 export function WorkspacePicker({
   current,
   onPicked,
+  onError,
   children,
 }: {
   current: WorkspaceInfo | null;
   onPicked: (ws: WorkspaceInfo) => void;
+  /** 打开工作区或选择文件夹失败（此时菜单通常已关闭）；成功时传 null 清除提示 */
+  onError?: (message: string | null) => void;
   children: ReactNode;
 }) {
   const [items, setItems] = useState<WorkspaceInfo[]>([]);
   const [query, setQuery] = useState("");
+  const [error, setError] = useState<string | null>(null);
   const canPick = useCanPickFiles();
+  // 菜单内显示（菜单仍开着时），同时交给外层显示（选择后菜单已关闭）
+  const fail = (message: string) => {
+    setError(message);
+    onError?.(message);
+  };
 
   const onOpenChange = (open: boolean) => {
     if (!open) return;
     setQuery("");
+    setError(null);
     getPlatform()
       .then((p) => p.workspaceList())
       .then(setItems)
-      .catch(() => setItems([]));
+      .catch((e) => setError(failure(t.workspaceListFailed, e)));
   };
 
   const open = (path: string) =>
     getPlatform()
       .then((p) => p.workspaceOpen(path))
-      .then(onPicked)
-      .catch(() => {});
+      .then((ws) => {
+        setError(null);
+        onError?.(null);
+        onPicked(ws);
+      })
+      .catch((e) => fail(failure(t.workspaceOpenFailed, e)));
 
   const browse = () =>
     getPlatform()
       .then((p) => p.dialogPickFolder())
       .then((path) => (path ? open(path) : undefined))
-      .catch(() => {});
+      .catch((e) => fail(failure(t.pickFolderFailed, e)));
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -125,6 +145,11 @@ export function WorkspacePicker({
           />
         </div>
         <div className={separatorClass} />
+        {error && (
+          <p role="alert" className="px-4 pt-1.5 text-[12px] text-danger">
+            {error}
+          </p>
+        )}
         <div className="scroll-thin max-h-60 overflow-y-auto py-0.5">
           {filtered.length === 0 ? (
             <p className="px-4 py-2 text-[12px] text-muted">

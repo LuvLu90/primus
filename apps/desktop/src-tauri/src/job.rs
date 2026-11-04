@@ -128,17 +128,19 @@ impl Job {
     }
 }
 
-/// `--secret` 用：当前进程是否在名为 `name` 的作业中（名字须带 [`JOB_NAME_PREFIX`]）。
+/// 往上查几层祖先：Core（node）→ Git Bash 启动器 → MSYS bash → `Primus.exe --secret`，留出余量。
 #[cfg(windows)]
-pub(crate) fn current_process_in_job(name: &str) -> io::Result<bool> {
-    use windows_sys::Win32::Foundation::CloseHandle;
-    use windows_sys::Win32::System::JobObjects::{IsProcessInJob, OpenJobObjectW};
-    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+const MAX_ANCESTORS: usize = 4;
+
+/// 打开命名作业（只要查询权限）；名字须带 [`JOB_NAME_PREFIX`]，否则返回 None。
+#[cfg(windows)]
+fn open_job(name: &str) -> io::Result<Option<OwnedHandle>> {
+    use windows_sys::Win32::System::JobObjects::OpenJobObjectW;
     /// winnt.h 的 JOB_OBJECT_QUERY（windows-sys 把它放在 SystemServices 中，为一个常量不引入该特性）
     const JOB_OBJECT_QUERY: u32 = 0x0004;
 
     if !name.starts_with(JOB_NAME_PREFIX) {
-        return Ok(false);
+        return Ok(None);
     }
     let wide: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
     // SAFETY: 名字是以 NUL 结尾的 UTF-16 字符串；只请求查询权限
@@ -146,21 +148,143 @@ pub(crate) fn current_process_in_job(name: &str) -> io::Result<bool> {
     if handle.is_null() {
         return Err(io::Error::last_os_error());
     }
+    Ok(Some(OwnedHandle(handle)))
+}
+
+/// 关闭时自动 `CloseHandle` 的内核句柄。
+#[cfg(windows)]
+struct OwnedHandle(windows_sys::Win32::Foundation::HANDLE);
+
+#[cfg(windows)]
+impl Drop for OwnedHandle {
+    fn drop(&mut self) {
+        // SAFETY: 句柄有效且只在这里关闭一次
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.0) };
+    }
+}
+
+#[cfg(windows)]
+fn process_in_job(
+    process: windows_sys::Win32::Foundation::HANDLE,
+    job: &OwnedHandle,
+) -> io::Result<bool> {
+    use windows_sys::Win32::System::JobObjects::IsProcessInJob;
     let mut inside = 0;
-    // SAFETY: 两个句柄都有效（GetCurrentProcess 返回伪句柄），inside 是有效的输出位置
-    let ok = unsafe { IsProcessInJob(GetCurrentProcess(), handle, &mut inside) };
-    let err = io::Error::last_os_error();
-    // SAFETY: 句柄由 OpenJobObjectW 打开且只关闭一次
-    unsafe { CloseHandle(handle) };
-    if ok == 0 {
-        return Err(err);
+    // SAFETY: 两个句柄都有效，inside 是有效的输出位置
+    if unsafe { IsProcessInJob(process, job.0, &mut inside) } == 0 {
+        return Err(io::Error::last_os_error());
     }
     Ok(inside != 0)
 }
 
-/// 非 Windows 没有作业对象，取令牌模式一律拒绝（第 20 章：其他平台另行适配）。
+/// 进程创建时间（FILETIME 的 100ns 计数）。
+#[cfg(windows)]
+fn creation_time(process: windows_sys::Win32::Foundation::HANDLE) -> io::Result<u64> {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::GetProcessTimes;
+    let zero = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+    // SAFETY: 句柄有效，四个输出位置有效
+    if unsafe { GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
+}
+
+/// 父进程 pid（进程快照）；找不到时返回 None。
+#[cfg(windows)]
+fn parent_pid(pid: u32) -> io::Result<Option<u32>> {
+    use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS,
+    };
+    // SAFETY: 只读快照
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot == INVALID_HANDLE_VALUE {
+        return Err(io::Error::last_os_error());
+    }
+    let snapshot = OwnedHandle(snapshot);
+    // SAFETY: 全零是该结构体的合法初值；dwSize 按要求设置
+    let mut entry: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
+    entry.dwSize = size_of::<PROCESSENTRY32W>() as u32;
+    // SAFETY: 快照句柄有效，entry 大小已设置
+    let mut ok = unsafe { Process32FirstW(snapshot.0, &mut entry) };
+    while ok != 0 {
+        if entry.th32ProcessID == pid {
+            return Ok(Some(entry.th32ParentProcessID).filter(|&p| p != 0 && p != pid));
+        }
+        // SAFETY: 同上
+        ok = unsafe { Process32NextW(snapshot.0, &mut entry) };
+    }
+    Ok(None)
+}
+
+/// `--secret` 用：当前进程是否在名为 `name` 的作业中（名字须带 [`JOB_NAME_PREFIX`]）。
+#[cfg(windows)]
+pub(crate) fn current_process_in_job(name: &str) -> io::Result<bool> {
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    let Some(job) = open_job(name)? else {
+        return Ok(false);
+    };
+    // SAFETY: GetCurrentProcess 返回伪句柄，无需关闭
+    process_in_job(unsafe { GetCurrentProcess() }, &job)
+}
+
+/// `--secret` 用：调用方是否来自名为 `name` 的 Core 作业——当前进程在作业中，或者往上
+/// [`MAX_ANCESTORS`] 层内有祖先进程在作业中。
+///
+/// 只查自己不够：Core 在 Windows 上经 Git Bash 执行取令牌命令，node（libuv）把 bash 放进自己的作业，
+/// 该作业允许脱离（`BREAKAWAY_OK`），MSYS 的 bash 因此用 `CREATE_BREAKAWAY_FROM_JOB` 拉起原生程序，
+/// `Primus.exe --secret` 就可能不在 Core 的作业里，于是拒绝出令牌（报错 “Failed to resolve API key …
+/// from shell command”）。父进程 bash 仍在作业中，所以沿父进程链查找。
+///
+/// 防 pid 复用：每一层祖先的创建时间必须早于它的子进程，否则视为链条断开。
+#[cfg(windows)]
+pub(crate) fn caller_in_job(name: &str) -> io::Result<bool> {
+    use windows_sys::Win32::System::Threading::{
+        GetCurrentProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    let Some(job) = open_job(name)? else {
+        return Ok(false);
+    };
+    // SAFETY: GetCurrentProcess 返回伪句柄，无需关闭
+    let current = unsafe { GetCurrentProcess() };
+    if process_in_job(current, &job)? {
+        return Ok(true);
+    }
+    let mut pid = std::process::id();
+    let mut child_created = creation_time(current)?;
+    for _ in 0..MAX_ANCESTORS {
+        let Some(ppid) = parent_pid(pid)? else {
+            break;
+        };
+        // SAFETY: 只请求有限查询权限
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, ppid) };
+        if handle.is_null() {
+            break;
+        }
+        let parent = OwnedHandle(handle);
+        let created = creation_time(parent.0)?;
+        if created > child_created {
+            // pid 已被晚于子进程创建的进程复用，不是真正的父进程
+            break;
+        }
+        if process_in_job(parent.0, &job)? {
+            return Ok(true);
+        }
+        pid = ppid;
+        child_created = created;
+    }
+    Ok(false)
+}
+
+/// 非 Windows 没有作业对象，取令牌模式一律拒绝。
 #[cfg(not(windows))]
-pub(crate) fn current_process_in_job(_name: &str) -> io::Result<bool> {
+pub(crate) fn caller_in_job(_name: &str) -> io::Result<bool> {
     Ok(false)
 }
 
@@ -267,6 +391,92 @@ setInterval(() => {}, 1000);
         // 前缀不对的名字直接拒绝，不存在的作业名报错
         assert!(!current_process_in_job("Local\\Other").unwrap());
         assert!(current_process_in_job(&format!("{JOB_NAME_PREFIX}missing")).is_err());
+        // 测试进程及其祖先（cargo / nextest）都不在新建的作业里
+        assert!(!caller_in_job(job.name()).unwrap());
+        assert!(!caller_in_job("Local\\Other").unwrap());
+    }
+
+    /// 由下面的链路测试经 bash / cmd 拉起：打印本进程（取令牌进程的位置）对作业的两种判断
+    #[test]
+    #[ignore = "只由 secret_chain_through_node_and_shells_reaches_core_job 作为子进程运行"]
+    fn probe_job_membership() {
+        let Ok(name) = std::env::var("PRIMUS_TEST_PROBE_JOB") else {
+            return;
+        };
+        let direct = current_process_in_job(&name).map_err(|e| e.to_string());
+        let caller = caller_in_job(&name).map_err(|e| e.to_string());
+        println!("PROBE direct={direct:?} caller={caller:?}");
+    }
+
+    /// 模拟 Core 解析 `!命令`：node 在作业中，先经 Git Bash（`spawnSync(bash, ["-c", cmd])`）、
+    /// 再经 cmd（`execSync`）拉起探针，探针必须判定调用方来自 Core 作业。
+    const CHAIN_SCRIPT: &str = r#"
+const { spawnSync, execSync } = require("node:child_process");
+const fs = require("node:fs");
+process.stdin.once("data", () => {
+  const cmd = process.env.PROBE_CMD;
+  const out = {};
+  const bash = [process.env.ProgramFiles, process.env["ProgramFiles(x86)"]]
+    .filter(Boolean)
+    .map((d) => `${d}\\Git\\bin\\bash.exe`)
+    .find((p) => fs.existsSync(p));
+  if (bash) {
+    const r = spawnSync(bash, ["-c", cmd], { encoding: "utf-8", timeout: 60000, stdio: ["ignore", "pipe", "pipe"], shell: false, windowsHide: true });
+    out.bash = { status: r.status, stdout: r.stdout, stderr: r.stderr, error: r.error ? String(r.error) : null };
+  }
+  try {
+    out.cmd = { status: 0, stdout: execSync(cmd, { encoding: "utf-8", timeout: 60000, stdio: ["ignore", "pipe", "pipe"] }) };
+  } catch (e) {
+    out.cmd = { status: e.status, stdout: e.stdout, stderr: e.stderr, error: String(e) };
+  }
+  console.log(JSON.stringify(out));
+  process.exit(0);
+});
+"#;
+
+    #[test]
+    fn secret_chain_through_node_and_shells_reaches_core_job() {
+        let job = Job::new().unwrap();
+        let exe = std::env::current_exe().unwrap();
+        let cmd = format!(
+            "\"{}\" --exact job::tests::probe_job_membership --ignored --nocapture",
+            exe.display()
+        );
+        let mut child = Command::new("node")
+            .args(["-e", CHAIN_SCRIPT])
+            .env(JOB_NAME_ENV, job.name())
+            .env("PRIMUS_TEST_PROBE_JOB", job.name())
+            .env("PROBE_CMD", &cmd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("需要 PATH 中有 node");
+        job.assign(&child).expect("放入作业");
+        child.stdin.as_mut().unwrap().write_all(b"go\n").unwrap();
+        let mut line = String::new();
+        BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let _ = child.wait();
+        eprintln!("取令牌链路：{line}");
+        let out: serde_json::Value = serde_json::from_str(line.trim()).expect("node 输出 JSON");
+        let mut checked = 0;
+        for shell in ["bash", "cmd"] {
+            let Some(result) = out.get(shell) else {
+                continue;
+            };
+            let stdout = result["stdout"].as_str().unwrap_or_default();
+            let probe = stdout
+                .lines()
+                .find(|l| l.starts_with("PROBE "))
+                .unwrap_or_else(|| panic!("{shell} 没能运行探针：{result}"));
+            assert!(
+                probe.contains("caller=Ok(true)"),
+                "{shell} 拉起的取令牌进程不被认作 Core 作业的调用方：{probe}"
+            );
+            checked += 1;
+        }
+        assert!(checked > 0, "bash 与 cmd 都没有结果：{out}");
     }
 
     #[test]

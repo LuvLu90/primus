@@ -10,7 +10,8 @@
 |------|------|------------|
 | `glass.tsx` | registry `glass` | ① `noUncheckedIndexedAccess` 下补 7 处非空断言（`slotsRef.current[i]!`、`colSlope[col]!`、`key[0]!`）；② `useGlassDark` 订阅前先同步一次 `dark` 类（修复首帧到订阅之间切换主题被漏掉） |
 | `glass-webgl.ts` | registry `glass` | 1 处非空断言（`key[0]!`） |
-| `glass-motion.ts`、`glass-surface.tsx`、`glass-button.tsx`、`glass-switch.tsx`、`glass-slider.tsx` | registry 同名组件 | 无 |
+| `glass-motion.ts`、`glass-surface.tsx`、`glass-button.tsx` | registry 同名组件 | 无 |
+| `glass-switch.tsx`、`glass-slider.tsx` | registry 同名组件 | 强调色 `PRIMARY`（及开关焦点描边）由 `#0a84ff` 改为 `#3a3a3c`，与全局黑白灰配色一致 |
 | `glass-tabs.tsx`、`glass-tooltip.tsx`、`glass-dialog.tsx`、`glass-popover.tsx` | registry 同名组件 | 无障碍原语由 `@base-ui/react` 改为本项目统一使用的 Radix UI（Tabs / Tooltip / Dialog / DropdownMenu），进出场动画改用 `globals.css` 的 `glass-pop` / `glass-fade`；`GlassTooltip` 自带 Provider |
 
 未引入：`glass-input`（输入框是多行的，直接用 `GlassSurface` 组合）、`glass-dock`（依赖 html2canvas-pro）。`@/lib/utils` 的 `cn` 只做拼接，不引入 clsx / tailwind-merge。

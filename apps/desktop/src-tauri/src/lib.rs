@@ -21,6 +21,7 @@ mod supervisor;
 mod tray;
 mod updater;
 mod vault;
+mod workspaces;
 
 use std::sync::Arc;
 
@@ -68,6 +69,9 @@ pub fn run() {
         }
     };
 
+    // 最近工作区与信任状态：users/<SID>/app/workspaces.json（第 15.1 节）
+    let workspaces_dir = data_paths.app_dir();
+
     tauri::Builder::default()
         // 单实例必须最先注册：第二个实例启动时把已有主窗口带到前台（第 2.2 节）
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
@@ -77,6 +81,8 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
+        // 系统文件/文件夹对话框（dialog_pick_folder / dialog_pick_files）
+        .plugin(tauri_plugin_dialog::init())
         // WebView2 用户数据放进 data\users\<SID>\webview（约束 C2，第 4.2 节），不落到 %LOCALAPPDATA%：
         // tauri.conf.json 中主窗口设 create: false，在这里按同一份配置创建并指定数据目录
         .setup({
@@ -120,9 +126,15 @@ pub fn run() {
         .manage(data_paths)
         .manage(supervisor)
         .manage(sessions::AppSessions::default())
+        .manage(workspaces::Workspaces::new(&workspaces_dir))
         .manage(model_config)
         .invoke_handler(tauri::generate_handler![
             commands::window_set_bounds,
+            commands::workspace_open,
+            commands::workspace_list,
+            commands::workspace_trust,
+            commands::dialog_pick_folder,
+            commands::dialog_pick_files,
             commands::session_list,
             commands::session_search,
             commands::session_watch,

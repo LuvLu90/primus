@@ -214,7 +214,7 @@ fn secret_value(id: &str) -> Result<String, SecretExit> {
         return Err(SecretExit::NotFound);
     }
     let job = std::env::var(crate::job::JOB_NAME_ENV).map_err(|_| SecretExit::Denied)?;
-    if !crate::job::current_process_in_job(&job).unwrap_or(false) {
+    if !crate::job::caller_in_job(&job).unwrap_or(false) {
         return Err(SecretExit::Denied);
     }
     let core_dir = std::env::var_os("PRIMUS_CODING_AGENT_DIR").ok_or(SecretExit::Denied)?;

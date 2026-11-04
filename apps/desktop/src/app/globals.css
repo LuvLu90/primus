@@ -15,7 +15,9 @@
   --color-muted: #6e6e73;
   --color-border: rgb(0 0 0 / 0.08);
   --color-hover: rgb(0 0 0 / 0.05);
-  --color-accent: #0a84ff;
+  /* 强调色与用户消息气泡都用黑白灰：不用彩色 */
+  --color-accent: #3a3a3c;
+  --color-bubble: #ececee;
   --color-danger: #d70015;
   --color-warning: #c93400;
   --color-success: #248a3d;
@@ -46,7 +48,8 @@
   --color-muted: #98989d;
   --color-border: rgb(255 255 255 / 0.1);
   --color-hover: rgb(255 255 255 / 0.08);
-  --color-accent: #0a84ff;
+  --color-accent: #8e8e93;
+  --color-bubble: #3a3a3c;
   --color-danger: #ff453a;
   --color-warning: #ff9f0a;
   --color-success: #30d158;

@@ -107,6 +107,10 @@ export const strings = {
     noRecentWorkspaces: "还没有打开过工作区",
     currentWorkspace: "当前工作区",
     workspaceLocked: "会话开始后不能切换工作区，请新建会话",
+    workspaceListFailed: "读取最近工作区失败",
+    workspaceOpenFailed: "打开工作区失败",
+    pickFolderFailed: "选择文件夹失败",
+    pickFilesFailed: "选择文件失败",
     contextDetail: "当前会话占用的上下文窗口比例。",
     welcomeSubtitle: "乾元可以阅读和修改你的项目、运行命令，并在需要时先征求你的确认。",
     suggestions: ["解释这个项目的结构", "找出并修复失败的测试", "为 README 补充安装说明"],
@@ -197,7 +201,6 @@ export const strings = {
   },
   sessions: {
     untitled: "新会话",
-    empty: "还没有会话。发送第一条消息后会出现在这里。",
     noResults: "没有找到匹配的会话",
     searching: "正在搜索…",
     searchResults: "搜索结果",
