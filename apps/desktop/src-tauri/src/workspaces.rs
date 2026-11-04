@@ -57,8 +57,8 @@ const MCP_JSON_LIMIT: u64 = 1024 * 1024;
 /// 计算 `.primus/` 指纹时最多计入的文件数与总字节数；超出则指纹不完整，不能信任。
 const HASH_MAX_FILES: usize = 20_000;
 const HASH_MAX_BYTES: u64 = 512 * 1024 * 1024;
-/// 列出技能时最多递归的目录层数。
-const SKILL_MAX_DEPTH: usize = 16;
+/// 扩展目录中 `package.json` 最多读取的字节数，超过时报错。
+const PACKAGE_JSON_LIMIT: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -136,36 +136,39 @@ impl Workspaces {
     /// 打开（登记）一个工作区：必须是已存在目录的绝对路径。已登记的保留信任状态并移到最前。
     pub(crate) fn open(&self, path: &str) -> Result<WorkspaceInfo, WorkspaceError> {
         let path = normalize(path).ok_or_else(|| WorkspaceError::NotADirectory(path.to_owned()))?;
-        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-        let mut store = self.load()?;
-        let key = crate::platform::path_key(&path);
-        let mut entry = match store
-            .workspaces
-            .iter()
-            .position(|e| crate::platform::path_key(&e.path) == key)
-        {
-            // 只差大小写等的另一个路径可能是另一个目录（区分大小写的目录），不沿用信任
-            Some(i) if store.workspaces[i].path == path => store.workspaces.remove(i),
-            Some(i) => {
-                store.workspaces.remove(i);
-                untrusted(path.clone())
-            }
-            None => untrusted(path.clone()),
+        let entry = {
+            let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+            let mut store = self.load()?;
+            let key = crate::platform::path_key(&path);
+            // 同一路径直接沿用；路径键相同但写法不同（如只差大小写）时，只有确认是同一个目录才沿用并改用新写法，
+            // 否则（区分大小写的目录里的另一个目录）保留原记录，新路径单独登记为未确认
+            let same = store.workspaces.iter().position(|e| {
+                e.path == path
+                    || (crate::platform::path_key(&e.path) == key && same_dir(&e.path, &path))
+            });
+            let mut entry = match same {
+                Some(i) => store.workspaces.remove(i),
+                None => untrusted(path.clone()),
+            };
+            entry.path = path;
+            entry.last_opened = now_ms();
+            store.workspaces.insert(0, entry.clone());
+            store.workspaces.truncate(MAX_RECENT);
+            self.save(&store)?;
+            entry
         };
-        entry.path = path;
-        entry.last_opened = now_ms();
-        let result = entry_info(&entry);
-        store.workspaces.insert(0, entry);
-        store.workspaces.truncate(MAX_RECENT);
-        self.save(&store)?;
-        Ok(result)
+        // 指纹计算可能读很多文件，放在锁外
+        Ok(entry_info(&entry))
     }
 
     /// 最近工作区，最近打开的在前；已不存在的目录不列出（记录保留，目录恢复后重新出现）。
     /// 文件读取失败（不是“不存在”）时返回错误，由界面提示，而不是显示成空列表。
     pub(crate) fn list(&self) -> io::Result<Vec<WorkspaceInfo>> {
-        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-        let mut items = self.load()?.workspaces;
+        // 锁内只读登记列表；逐个计算指纹放在锁外，不阻塞 open / trust / approved
+        let mut items = {
+            let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+            self.load()?.workspaces
+        };
         items.sort_by_key(|e| std::cmp::Reverse(e.last_opened));
         Ok(items
             .iter()
@@ -181,11 +184,13 @@ impl Workspaces {
         let Some(path) = normalize(path) else {
             return false;
         };
-        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-        self.load()
-            .ok()
-            .and_then(|s| s.workspaces.into_iter().find(|e| e.path == path))
-            .is_some_and(|e| entry_info(&e).trusted)
+        let entry = {
+            let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+            self.load()
+                .ok()
+                .and_then(|s| s.workspaces.into_iter().find(|e| e.path == path))
+        };
+        entry.is_some_and(|e| entry_info(&e).trusted)
     }
 
     /// 记录信任确认的选择；目标必须已打开过（路径完全一致）。
@@ -197,15 +202,9 @@ impl Workspaces {
         trusted: bool,
         fingerprint: Option<&str>,
     ) -> Result<(), WorkspaceError> {
-        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-        let mut store = self.load()?;
-        let entry = store
-            .workspaces
-            .iter_mut()
-            .find(|e| e.path == path)
-            .ok_or_else(|| WorkspaceError::Unknown(path.to_owned()))?;
+        // 先在锁外计算指纹；之后内容再变，approved 会按新指纹判为需要重新确认
         let hash = if trusted {
-            let current = primus_hash(Path::new(&entry.path)).ok_or(WorkspaceError::Incomplete)?;
+            let current = primus_hash(Path::new(path)).ok_or(WorkspaceError::Incomplete)?;
             if fingerprint != Some(current.as_str()) {
                 return Err(WorkspaceError::TrustChanged);
             }
@@ -213,6 +212,13 @@ impl Workspaces {
         } else {
             None
         };
+        let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut store = self.load()?;
+        let entry = store
+            .workspaces
+            .iter_mut()
+            .find(|e| e.path == path)
+            .ok_or_else(|| WorkspaceError::Unknown(path.to_owned()))?;
         entry.trusted = trusted;
         entry.decided = true;
         entry.primus_hash = hash;
@@ -266,6 +272,14 @@ fn normalize(path: &str) -> Option<String> {
         s.pop();
     }
     Some(s)
+}
+
+/// 两个路径是否指向同一个目录（按规范路径比较；任一无法解析时视为不同）。
+fn same_dir(a: &str, b: &str) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
 }
 
 fn untrusted(path: String) -> Entry {
@@ -380,8 +394,12 @@ fn walk_hash(
             .then(|| std::fs::read_link(&path))
             .transpose()
             .ok()?;
-        // 跟随链接取实际类型；断开的链接无法确认内容
+        // 跟随链接取实际类型；断开的链接无法确认内容。只接受目录与普通文件：
+        // FIFO、设备等打开时可能阻塞，直接使指纹作废
         let meta = std::fs::metadata(&path).ok()?;
+        if !meta.is_dir() && !meta.is_file() {
+            return None;
+        }
         if meta.is_dir() {
             out.push(HashItem {
                 rel: child_rel.clone(),
@@ -405,6 +423,8 @@ fn walk_hash(
 pub(crate) fn inspect(path: &str) -> Result<TrustDetails, WorkspaceError> {
     let path = normalize(path).ok_or_else(|| WorkspaceError::NotADirectory(path.to_owned()))?;
     let root = Path::new(&path);
+    // 先取指纹再读列表：之后加入的文件会让 trust 时重算的指纹不一致而被拒绝，不会被悄悄信任
+    let fingerprint = primus_hash(root);
     let agents = root.join("AGENTS.md");
     let (agents_md, agents_md_truncated) = match read_prefix(&agents, AGENTS_MD_LIMIT) {
         Ok(Some((bytes, truncated))) => (
@@ -435,7 +455,7 @@ pub(crate) fn inspect(path: &str) -> Result<TrustDetails, WorkspaceError> {
     let skill_dir = primus.join("skills");
     let mut skills = Vec::new();
     let mut visited = std::collections::HashSet::new();
-    list_skills(&skill_dir, "", true, 0, &mut skills, &mut visited)
+    list_skills(&skill_dir, "", true, &mut skills, &mut visited)
         .map_err(|e| WorkspaceError::Read(skill_dir, e))?;
     skills.sort();
     Ok(TrustDetails {
@@ -444,18 +464,21 @@ pub(crate) fn inspect(path: &str) -> Result<TrustDetails, WorkspaceError> {
         extensions,
         skills,
         mcp_servers,
-        fingerprint: primus_hash(root),
+        fingerprint,
         path,
     })
 }
 
 /// 最多读 `limit` 字节（多读 1 字节判断是否截断）；文件不存在为 None。
+/// 先确认是普通文件（跟随符号链接）再打开：FIFO 等打开时可能阻塞，作为错误返回。
 fn read_prefix(path: &Path, limit: usize) -> io::Result<Option<(Vec<u8>, bool)>> {
-    let file = match std::fs::File::open(path) {
-        Ok(f) => f,
+    match std::fs::metadata(path) {
+        Ok(m) if m.is_file() => {}
+        Ok(_) => return Err(io::Error::other("不是普通文件")),
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
-    };
+    }
+    let file = std::fs::File::open(path)?;
     let mut bytes = Vec::new();
     io::Read::read_to_end(&mut io::Read::take(file, limit as u64 + 1), &mut bytes)?;
     let truncated = bytes.len() > limit;
@@ -485,7 +508,7 @@ fn list_extensions(dir: &Path) -> io::Result<Vec<String>> {
         let loads = if meta.is_dir() {
             path.join("index.ts").exists()
                 || path.join("index.js").exists()
-                || has_pi_extensions(&path.join("package.json"))
+                || has_pi_extensions(&path.join("package.json"))?
         } else {
             name.ends_with(".ts") || name.ends_with(".js")
         };
@@ -497,18 +520,28 @@ fn list_extensions(dir: &Path) -> io::Result<Vec<String>> {
     Ok(names)
 }
 
-fn has_pi_extensions(manifest: &Path) -> bool {
-    read_prefix(manifest, 1024 * 1024)
+/// `package.json` 是否声明了 `pi.extensions`。不存在或无法解析为 false（Core 同样不加载）；
+/// 读取失败或超过上限时返回错误，不能猜测为“没有扩展”。
+fn has_pi_extensions(manifest: &Path) -> io::Result<bool> {
+    let Some((bytes, truncated)) = read_prefix(manifest, PACKAGE_JSON_LIMIT)? else {
+        return Ok(false);
+    };
+    if truncated {
+        return Err(io::Error::other(format!(
+            "{} 超过 {} 字节，无法确认其中声明的扩展",
+            manifest.display(),
+            PACKAGE_JSON_LIMIT
+        )));
+    }
+    Ok(serde_json::from_slice::<serde_json::Value>(&bytes)
         .ok()
-        .flatten()
-        .and_then(|(bytes, _)| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
         .and_then(|v| {
             v.get("pi")?
                 .get("extensions")?
                 .as_array()
                 .map(|a| !a.is_empty())
         })
-        .unwrap_or(false)
+        .unwrap_or(false))
 }
 
 /// Core 会加载的技能（与 agent-core 的发现规则一致）：含 `SKILL.md` 的目录是一个技能且不再往下找；
@@ -517,13 +550,9 @@ fn list_skills(
     dir: &Path,
     rel: &str,
     root_files: bool,
-    depth: usize,
     out: &mut Vec<String>,
     visited: &mut std::collections::HashSet<PathBuf>,
 ) -> io::Result<()> {
-    if depth > SKILL_MAX_DEPTH {
-        return Ok(());
-    }
     if let Ok(canonical) = std::fs::canonicalize(dir)
         && !visited.insert(canonical)
     {
@@ -556,7 +585,7 @@ fn list_skills(
             format!("{rel}/{name}")
         };
         if meta.is_dir() {
-            list_skills(&path, &child, false, depth + 1, out, visited)?;
+            list_skills(&path, &child, false, out, visited)?;
         } else if root_files && name.ends_with(".md") {
             out.push(child);
         }
@@ -821,6 +850,59 @@ mod tests {
             ws.trust(&other, false, None),
             Err(WorkspaceError::Unknown(_))
         ));
+        // 打开它：另一个目录时原记录与信任保留；同一个目录（不区分大小写的文件系统）时沿用并改用新写法
+        ws.open(&other).unwrap();
+        if same_dir(&path, &other) {
+            assert!(ws.approved(&other));
+            assert_eq!(ws.list().unwrap().len(), 1);
+        } else {
+            assert!(ws.approved(&path));
+            assert!(!ws.approved(&other));
+            assert_eq!(ws.list().unwrap().len(), 2);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn special_files_do_not_block_and_cannot_be_trusted() {
+        let root = temp_dir("fifo");
+        let proj = root.join("proj");
+        std::fs::create_dir_all(proj.join(".primus")).unwrap();
+        let fifo = proj.join(".primus/pipe");
+        let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+        if !made.is_ok_and(|s| s.success()) {
+            return;
+        }
+        let path = proj.to_string_lossy().into_owned();
+        let d = inspect(&path).unwrap();
+        assert_eq!(d.fingerprint, None);
+
+        std::fs::remove_file(&fifo).unwrap();
+        let agents = proj.join("AGENTS.md");
+        std::process::Command::new("mkfifo")
+            .arg(&agents)
+            .status()
+            .unwrap();
+        assert!(matches!(inspect(&path), Err(WorkspaceError::Read(..))));
+    }
+
+    #[test]
+    fn oversized_manifest_is_an_error_and_deep_skills_are_listed() {
+        let root = temp_dir("big");
+        let proj = root.join("proj");
+        let pkg = proj.join(".primus/extensions/huge");
+        std::fs::create_dir_all(&pkg).unwrap();
+        let mut deep = proj.join(".primus/skills");
+        for i in 0..20 {
+            deep = deep.join(format!("d{i}"));
+        }
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("SKILL.md"), "").unwrap();
+        let path = proj.to_string_lossy().into_owned();
+        assert_eq!(inspect(&path).unwrap().skills.len(), 1);
+
+        std::fs::write(pkg.join("package.json"), vec![b' '; PACKAGE_JSON_LIMIT + 1]).unwrap();
+        assert!(matches!(inspect(&path), Err(WorkspaceError::Read(..))));
     }
 
     #[cfg(unix)]
