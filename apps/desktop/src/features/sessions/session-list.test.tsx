@@ -74,8 +74,10 @@ describe("会话列表", () => {
     render(<SessionList />);
     expect((await screen.findByRole("alert")).textContent).toContain("索引不可用");
     fail = false;
+    const callsBeforeRetry = sessionList.mock.calls.length;
     fireEvent.click(screen.getByRole("button", { name: t.retry }));
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    expect(sessionList.mock.calls.length).toBeGreaterThan(callsBeforeRetry);
     expect(screen.queryByText(t.loading)).toBeNull();
     expect(screen.queryByRole("list")).toBeNull();
   });

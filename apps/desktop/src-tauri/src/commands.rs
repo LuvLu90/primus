@@ -57,23 +57,32 @@ pub(crate) fn workspace_trust(
     workspaces.trust(&path, trusted).map_err(|e| e.to_string())
 }
 
+/// 对话框返回的路径转成本地路径字符串；不是本地路径时报错（不静默丢弃）。
+fn local_path(p: tauri_plugin_dialog::FilePath) -> Result<String, String> {
+    p.into_path()
+        .map(|p| p.to_string_lossy().into_owned())
+        .map_err(|e| format!("所选项目不是本地路径：{e}"))
+}
+
 /// 系统文件夹对话框（tauri-plugin-dialog），以主窗口为父窗口；取消时返回 None。
 /// 异步命令在线程池中执行，阻塞等待对话框不会卡住主线程。
+/// 插件把打开失败与取消都报告为“无结果”，无法区分；所选路径不可用时返回错误。
 #[tauri::command(async)]
-pub(crate) fn dialog_pick_folder(window: tauri::WebviewWindow) -> Option<String> {
+pub(crate) fn dialog_pick_folder(window: tauri::WebviewWindow) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
     window
         .dialog()
         .file()
         .set_parent(&window)
         .blocking_pick_folder()
-        .and_then(|p| p.into_path().ok())
-        .map(|p| p.to_string_lossy().into_owned())
+        .map(local_path)
+        .transpose()
 }
 
-/// 系统文件对话框（可多选）；只返回本地路径，文件不复制。取消时返回空列表。
+/// 系统文件对话框（可多选）；只返回本地路径，文件不复制。取消时返回空列表，
+/// 所选路径不可用时返回错误。
 #[tauri::command(async)]
-pub(crate) fn dialog_pick_files(window: tauri::WebviewWindow) -> Vec<String> {
+pub(crate) fn dialog_pick_files(window: tauri::WebviewWindow) -> Result<Vec<String>, String> {
     use tauri_plugin_dialog::DialogExt;
     window
         .dialog()
@@ -82,8 +91,7 @@ pub(crate) fn dialog_pick_files(window: tauri::WebviewWindow) -> Vec<String> {
         .blocking_pick_files()
         .unwrap_or_default()
         .into_iter()
-        .filter_map(|p| p.into_path().ok())
-        .map(|p| p.to_string_lossy().into_owned())
+        .map(local_path)
         .collect()
 }
 

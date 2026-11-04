@@ -85,7 +85,7 @@ impl Workspaces {
     pub(crate) fn open(&self, path: &str) -> Result<WorkspaceInfo, WorkspaceError> {
         let path = normalize(path).ok_or_else(|| WorkspaceError::NotADirectory(path.to_owned()))?;
         let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-        let mut store = self.load();
+        let mut store = self.load()?;
         let key = crate::platform::path_key(&path);
         let trusted = match store
             .workspaces
@@ -111,7 +111,10 @@ impl Workspaces {
     /// 最近工作区，最近打开的在前；已不存在的目录不列出（记录保留，目录恢复后重新出现）。
     pub(crate) fn list(&self) -> Vec<WorkspaceInfo> {
         let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-        let mut items = self.load().workspaces;
+        let mut items = self.load().map(|s| s.workspaces).unwrap_or_else(|e| {
+            eprintln!("读取工作区列表失败：{e}");
+            Vec::new()
+        });
         items.sort_by_key(|e| std::cmp::Reverse(e.last_opened));
         items
             .iter()
@@ -123,7 +126,7 @@ impl Workspaces {
     /// 设置信任状态；目标必须已打开过。
     pub(crate) fn trust(&self, path: &str, trusted: bool) -> Result<(), WorkspaceError> {
         let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
-        let mut store = self.load();
+        let mut store = self.load()?;
         let key = crate::platform::path_key(path);
         let entry = store
             .workspaces
@@ -139,13 +142,15 @@ impl Workspaces {
     }
 
     /// 读文件；不存在或内容损坏时视为空列表（损坏的文件在下次保存时被覆盖）。
-    fn load(&self) -> StoreFile {
+    /// 其他读取错误原样返回，避免 `open` / `trust` 拿空列表覆盖原有记录。
+    fn load(&self) -> io::Result<StoreFile> {
         match std::fs::read(&self.file) {
-            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+            Ok(bytes) => Ok(serde_json::from_slice(&bytes).unwrap_or_else(|e| {
                 eprintln!("工作区列表损坏，按空列表处理：{e}");
                 StoreFile::default()
-            }),
-            Err(_) => StoreFile::default(),
+            })),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(StoreFile::default()),
+            Err(e) => Err(e),
         }
     }
 
@@ -266,6 +271,22 @@ mod tests {
         std::fs::write(&file, "x").unwrap();
         assert!(ws.open(file.to_str().unwrap()).is_err());
         assert!(ws.list().is_empty());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn unreadable_store_is_reported_not_overwritten() {
+        let root = temp_dir("unreadable");
+        let a = root.join("proj");
+        std::fs::create_dir_all(&a).unwrap();
+        let app = root.join("app");
+        // workspaces.json 位置被目录占用：读取失败（不是“不存在”），不能当空列表写回
+        std::fs::create_dir_all(app.join("workspaces.json")).unwrap();
+        let ws = Workspaces::new(&app);
+        assert!(ws.open(a.to_str().unwrap()).is_err());
+        assert!(ws.trust(a.to_str().unwrap(), true).is_err());
+        assert!(ws.list().is_empty());
+        assert!(app.join("workspaces.json").is_dir());
         std::fs::remove_dir_all(&root).unwrap();
     }
 
