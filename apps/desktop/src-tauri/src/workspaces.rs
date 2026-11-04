@@ -142,18 +142,8 @@ impl Workspaces {
         let entry = {
             let _guard = self.lock.lock().unwrap_or_else(|e| e.into_inner());
             let mut store = self.load()?;
-            let key = crate::platform::path_key(&path);
-            // 同一路径直接沿用；路径键相同但写法不同（如只差大小写）时，只有确认是同一个目录才沿用并改用新写法，
-            // 否则（区分大小写的目录里的另一个目录）保留原记录，新路径单独登记为未确认
-            let same = store
-                .workspaces
-                .iter()
-                .position(|e| e.path == path)
-                .or_else(|| {
-                    store.workspaces.iter().position(|e| {
-                        crate::platform::path_key(&e.path) == key && same_dir(&e.path, &path)
-                    })
-                });
+            // 信任绑定确切路径：只沿用写法完全相同的记录；只差大小写的写法视为另一个目录，单独登记为未确认（V5.3）
+            let same = store.workspaces.iter().position(|e| e.path == path);
             let mut entry = match same {
                 Some(i) => store.workspaces.remove(i),
                 None => untrusted(path.clone()),
@@ -280,14 +270,6 @@ fn normalize(path: &str) -> Option<String> {
         s.pop();
     }
     Some(s)
-}
-
-/// 两个路径是否指向同一个目录（按规范路径比较；任一无法解析时视为不同）。
-fn same_dir(a: &str, b: &str) -> bool {
-    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => false,
-    }
 }
 
 fn untrusted(path: String) -> Entry {
@@ -507,7 +489,17 @@ const O_NONBLOCK: i32 = 0x0004;
 fn read_prefix(path: &Path, limit: usize) -> io::Result<Option<(Vec<u8>, bool)>> {
     let file = match open_regular(path) {
         Ok(f) => f,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        // 只有路径本身不存在才算“没有”；断开的符号链接（链接在、目标缺失）要报错，不能显示成“没有”
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            return match std::fs::symlink_metadata(path) {
+                Err(m) if m.kind() == io::ErrorKind::NotFound => Ok(None),
+                Ok(_) => Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "符号链接的目标不存在",
+                )),
+                Err(m) => Err(m),
+            };
+        }
         Err(e) => return Err(e),
     };
     let mut bytes = Vec::new();
@@ -839,6 +831,13 @@ mod tests {
         assert_eq!(d.agents_md, None);
         assert!(d.extensions.is_empty() && d.skills.is_empty() && d.mcp_servers.is_empty());
         assert!(inspect("relative/path").is_err());
+
+        // AGENTS.md 是断开的符号链接：报错，不显示成“没有”
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(empty.join("missing.md"), empty.join("AGENTS.md")).unwrap();
+            assert!(inspect(&empty.to_string_lossy()).is_err());
+        }
     }
 
     #[test]
@@ -890,16 +889,11 @@ mod tests {
             ws.trust(&other, false, None),
             Err(WorkspaceError::Unknown(_))
         ));
-        // 打开它：另一个目录时原记录与信任保留；同一个目录（不区分大小写的文件系统）时沿用并改用新写法
+        // 打开它：无论是否同一个目录（不区分大小写的文件系统），都单独登记为未确认，原记录与信任保留
         ws.open(&other).unwrap();
-        if same_dir(&path, &other) {
-            assert!(ws.approved(&other));
-            assert_eq!(ws.list().unwrap().len(), 1);
-        } else {
-            assert!(ws.approved(&path));
-            assert!(!ws.approved(&other));
-            assert_eq!(ws.list().unwrap().len(), 2);
-        }
+        assert!(ws.approved(&path));
+        assert!(!ws.approved(&other));
+        assert_eq!(ws.list().unwrap().len(), 2);
     }
 
     #[cfg(unix)]
