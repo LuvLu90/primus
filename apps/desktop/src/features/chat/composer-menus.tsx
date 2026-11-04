@@ -13,7 +13,7 @@ import {
   X,
 } from "lucide-react";
 import { DropdownMenu as Menu } from "radix-ui";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
   GlassPopover,
   GlassPopoverContent,
@@ -82,6 +82,8 @@ export function WorkspacePicker({
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pendingTrust, setPendingTrust] = useState<WorkspaceInfo | null>(null);
+  // 只处理最近一次打开请求的结果：较早的请求晚到时丢弃，不覆盖用户最后的选择
+  const openSeq = useRef(0);
   const canPick = useCanPickFiles();
   // 菜单内显示（菜单仍开着时），同时交给外层显示（选择后菜单已关闭）
   const fail = (message: string) => {
@@ -99,16 +101,21 @@ export function WorkspacePicker({
       .catch((e) => setError(failure(t.workspaceListFailed, e)));
   };
 
-  const open = (path: string) =>
-    getPlatform()
+  const open = (path: string) => {
+    const seq = ++openSeq.current;
+    return getPlatform()
       .then((p) => p.workspaceOpen(path))
       .then((ws) => {
+        if (seq !== openSeq.current) return;
         setError(null);
         onError?.(null);
         if (ws.needsTrust) setPendingTrust(ws);
         else onPicked(ws);
       })
-      .catch((e) => fail(failure(t.workspaceOpenFailed, e)));
+      .catch((e) => {
+        if (seq === openSeq.current) fail(failure(t.workspaceOpenFailed, e));
+      });
+  };
 
   const browse = () =>
     getPlatform()

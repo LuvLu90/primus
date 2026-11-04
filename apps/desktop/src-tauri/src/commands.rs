@@ -55,14 +55,17 @@ pub(crate) fn workspace_inspect(path: String) -> Result<TrustDetails, String> {
     crate::workspaces::inspect(&path).map_err(|e| e.to_string())
 }
 
-/// 设置工作区信任状态。
+/// 记录信任确认的选择；信任时带回 `workspace_inspect` 给出的指纹（第 17.2 节）。
 #[tauri::command(async)]
 pub(crate) fn workspace_trust(
     workspaces: State<'_, Workspaces>,
     path: String,
     trusted: bool,
+    fingerprint: Option<String>,
 ) -> Result<(), String> {
-    workspaces.trust(&path, trusted).map_err(|e| e.to_string())
+    workspaces
+        .trust(&path, trusted, fingerprint.as_deref())
+        .map_err(|e| e.to_string())
 }
 
 /// 对话框返回的路径转成本地路径字符串；不是本地路径时报错（不静默丢弃）。
@@ -202,10 +205,14 @@ pub(crate) fn core_send(
 pub(crate) fn core_restart(
     sessions: State<'_, AppSessions>,
     supervisor: State<'_, Supervisor>,
+    workspaces: State<'_, Workspaces>,
     session_key: String,
 ) -> Result<(), CoreCommandError> {
+    // 重启前重新判定信任：`.primus/` 变化或信任被撤销后不再以 --approve 启动（第 17.2 节）
     sessions
-        .restart(&supervisor, &session_key)
+        .restart_checked(&supervisor, &session_key, |cwd| {
+            workspaces.approved(&cwd.to_string_lossy())
+        })
         .map_err(Into::into)
 }
 

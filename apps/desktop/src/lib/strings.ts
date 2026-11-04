@@ -121,6 +121,7 @@ export const strings = {
     trustExtensions: "扩展",
     trustSkills: "技能",
     trustMcp: "MCP 服务器",
+    trustIncomplete: "项目的 .primus 内容过多或无法完整读取，不能信任，只能选择不信任。",
     trustNothing: "项目内没有扩展、技能、MCP 配置或 AGENTS.md。",
     trustAccept: "信任",
     trustReject: "不信任",

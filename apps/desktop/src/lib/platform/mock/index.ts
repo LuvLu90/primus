@@ -328,6 +328,7 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       extensions: ["guard.ts"],
       skills: ["review"],
       mcpServers: ["github"],
+      fingerprint: "mock",
     }),
 
     sessionList: async (workspace, cursor) => {

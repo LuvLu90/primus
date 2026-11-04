@@ -30,6 +30,8 @@ export interface TrustDetails {
   extensions: string[];
   skills: string[];
   mcpServers: string[];
+  /** 此刻 `.primus/` 的内容指纹，信任时原样带回；内容过多或无法完整读取时为 null（不能信任） */
+  fingerprint: string | null;
 }
 
 /** 会话索引中的一条会话（`session_list` / `session_search`，第 10.2 节、ADR 0006） */
@@ -123,8 +125,11 @@ export interface Platform {
   workspaceList(): Promise<WorkspaceInfo[]>;
   /** 信任确认要展示的 AGENTS.md 与 `.primus/` 下的扩展、技能、MCP 配置 */
   workspaceInspect(path: string): Promise<TrustDetails>;
-  /** 记录信任确认的选择（“信任”或“不信任”都算已确认） */
-  workspaceTrust(path: string, trusted: boolean): Promise<void>;
+  /**
+   * 记录信任确认的选择（“信任”或“不信任”都算已确认）。信任时传入 `workspaceInspect` 给出的指纹，
+   * 内容在展示后有变化则拒绝
+   */
+  workspaceTrust(path: string, trusted: boolean, fingerprint?: string | null): Promise<void>;
 
   /** 系统文件夹对话框；取消时返回 null */
   dialogPickFolder(): Promise<string | null>;
