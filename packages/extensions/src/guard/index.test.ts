@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  approvalKey,
   CHOICES,
   createGuard,
   describeCall,
@@ -56,6 +57,18 @@ describe("primus-guard 权限判断", () => {
     expect(
       needsApproval("ask", { toolName: "mcp_x", input: {} }, cwd, { readOnlyHint: true }, "linux"),
     ).toBe(true);
+  });
+
+  it("“始终允许”的记录键按命令文本或解析后的路径区分", () => {
+    expect(approvalKey({ toolName: "bash", input: { command: "ls" } }, cwd)).not.toBe(
+      approvalKey({ toolName: "bash", input: { command: "ls -la" } }, cwd),
+    );
+    expect(approvalKey({ toolName: "write", input: { path: "a.ts" } }, cwd)).toBe(
+      approvalKey({ toolName: "write", input: { path: "/work/proj/a.ts" } }, cwd),
+    );
+    expect(approvalKey({ toolName: "write", input: { path: "a.ts" } }, cwd)).not.toBe(
+      approvalKey({ toolName: "write", input: { path: "/etc/a.ts" } }, cwd),
+    );
   });
 
   it("询问标题说明操作内容", () => {
@@ -129,5 +142,11 @@ describe("primus-guard 扩展", () => {
     const again = ctx(CHOICES.deny);
     expect(await tool(call, again)).toBe(undefined);
     expect(again.ui.select).not.toHaveBeenCalled();
+    // 只记住完全相同的操作：其他命令、其他路径仍然询问
+    const other = ctx(CHOICES.deny);
+    expect(await tool({ toolName: "bash", input: { command: "rm -rf /" } }, other)).toMatchObject({
+      block: true,
+    });
+    expect(other.ui.select).toHaveBeenCalledTimes(1);
   });
 });

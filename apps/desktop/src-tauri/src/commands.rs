@@ -303,7 +303,9 @@ pub(crate) fn session_delete(
         &index,
         &notifier,
         &session_path,
-        |key| supervisor.stop(key),
+        |key| {
+            supervisor.stop(key);
+        },
         remove_file_retrying,
     )?;
     notifier.notify();
@@ -317,7 +319,12 @@ fn remove_file_retrying(path: &Path) -> io::Result<()> {
         match std::fs::remove_file(path) {
             Ok(()) => return Ok(()),
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
-            Err(e) if attempt < 10 && e.kind() == io::ErrorKind::PermissionDenied => {
+            // 5 = ERROR_ACCESS_DENIED（删除挂起等），32 = ERROR_SHARING_VIOLATION（句柄未带 FILE_SHARE_DELETE）
+            Err(e)
+                if attempt < 10
+                    && (e.kind() == io::ErrorKind::PermissionDenied
+                        || (cfg!(windows) && e.raw_os_error() == Some(32))) =>
+            {
                 attempt += 1;
                 std::thread::sleep(std::time::Duration::from_millis(100));
             }

@@ -536,11 +536,6 @@ impl<S: BatchSink + Clone> Sessions<S> {
             },
         );
     }
-
-    /// 测试用：移除登记（没有进程可结束）。
-    pub(crate) fn close_for_test(&self, key: &str) {
-        self.entries.lock().unwrap().remove(key);
-    }
 }
 
 /// 删除结束（含 panic）时撤销“删除中”登记。

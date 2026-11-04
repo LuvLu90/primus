@@ -68,6 +68,23 @@ export function needsApproval(
   return true;
 }
 
+/**
+ * “本会话内始终允许”记住的范围：命令类工具按完整命令文本，读写类工具按解析后的绝对路径，其他工具按工具名加参数。
+ * 只放行与当时确认的完全相同的操作，不会因为允许过一条命令就放行之后所有命令或其他路径的写入。
+ */
+export function approvalKey(call: ToolCall, cwd: string): string {
+  const input = call.input ?? {};
+  if (call.toolName === "bash" || call.toolName === "powershell")
+    return `${call.toolName}\u0000${String(input.command ?? "")}`;
+  const path = targetPath(call);
+  if (path) return `${call.toolName}\u0000${resolve(cwd, path)}`;
+  let args = "";
+  try {
+    args = JSON.stringify(input);
+  } catch {}
+  return `${call.toolName}\u0000${args}`;
+}
+
 /** 询问对话框的标题：说明要做什么 */
 export function describeCall(call: ToolCall, cwd: string): string {
   const input = call.input ?? {};
@@ -135,7 +152,7 @@ function publishMode(ctx: UiContext, mode: PermissionMode): void {
 
 export interface GuardState {
   mode: PermissionMode;
-  /** 本会话内已“始终允许”的工具 */
+  /** 本会话内已“始终允许”的操作（见 approvalKey） */
   alwaysAllowed: Set<string>;
 }
 
@@ -160,8 +177,9 @@ export function createGuard(initial: PermissionMode = "ask") {
       const call = event as ToolCall;
       const annotations = pi.getAllTools?.().find((t) => t.name === call.toolName)?.annotations;
       if (!needsApproval(state.mode, call, ctx.cwd, annotations)) return undefined;
-      // 用户在本会话内已对这个工具选过“始终允许”
-      if (state.alwaysAllowed.has(call.toolName)) return undefined;
+      // 用户在本会话内已对完全相同的操作选过“始终允许”
+      const key = approvalKey(call, ctx.cwd);
+      if (state.alwaysAllowed.has(key)) return undefined;
       if (!ctx.hasUI) return { block: true, reason: "需要确认，但当前没有可以确认的界面，已拒绝" };
       const choice = await ctx.ui.select(
         describeCall(call, ctx.cwd),
@@ -169,7 +187,7 @@ export function createGuard(initial: PermissionMode = "ask") {
         { signal: ctx.signal },
       );
       if (choice === CHOICES.always) {
-        state.alwaysAllowed.add(call.toolName);
+        state.alwaysAllowed.add(key);
         return undefined;
       }
       if (choice === CHOICES.allow) return undefined;

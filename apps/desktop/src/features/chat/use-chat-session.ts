@@ -133,7 +133,12 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     const mode = useAppStore.getState().permissionMode;
     if (syncedMode.current === mode) return;
     const res = await client.request("prompt", { message: modeCommand(mode) });
-    if (res.success) syncedMode.current = mode;
+    if (!res.success) {
+      // 同步失败时不能继续发送：界面显示的模式与 Core 实际执行的不一致（如界面已改回“每次询问”，Core 仍是完全访问）
+      syncedMode.current = null;
+      throw new Error(`${strings.chat.modeSyncFailed}：${res.error || modeCommand(mode)}`);
+    }
+    syncedMode.current = mode;
   }, []);
 
   /** 会话打开后：应用打开前选的模型与思考强度、同步权限模式，再读取当前模型与可选的思考强度 */
@@ -257,8 +262,9 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
   useEffect(() => {
     const c = conn.current;
     if (!c || syncedMode.current === permissionMode) return;
-    syncMode(c.client).catch(() => {});
-  }, [permissionMode, syncMode]);
+    // 失败时提示；下一次发送前会再同步，仍失败则不发送
+    syncMode(c.client).catch(fail);
+  }, [permissionMode, syncMode, fail]);
 
   // 卸载时关闭会话。推迟到下一个任务再关：React 开发模式（StrictMode）会立即卸载再挂载，
   // 重新挂载时取消关闭，打开中的会话照常复用，不会对同一个会话文件重复打开
