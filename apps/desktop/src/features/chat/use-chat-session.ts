@@ -130,15 +130,19 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
 
   /** 把界面上的权限模式同步给 Core（primus-guard）；已一致时什么也不做 */
   const syncMode = useCallback(async (client: RpcClient) => {
-    const mode = useAppStore.getState().permissionMode;
-    if (syncedMode.current === mode) return;
-    const res = await client.request("prompt", { message: modeCommand(mode) });
-    if (!res.success) {
-      // 同步失败时不能继续发送：界面显示的模式与 Core 实际执行的不一致（如界面已改回“每次询问”，Core 仍是完全访问）
+    // 发送前清空已同步状态、完成后按当前档位复查：快速连续切换时，迟到的旧响应不会让界面与 Core 不一致
+    for (;;) {
+      const mode = useAppStore.getState().permissionMode;
+      if (syncedMode.current === mode) return;
       syncedMode.current = null;
-      throw new Error(`${strings.chat.modeSyncFailed}：${res.error || modeCommand(mode)}`);
+      const res = await client.request("prompt", { message: modeCommand(mode) });
+      if (!res.success) {
+        // 同步失败时不能继续发送：界面显示的模式与 Core 实际执行的不一致（如界面已改回“每次询问”，Core 仍是完全访问）
+        syncedMode.current = null;
+        throw new Error(`${strings.chat.modeSyncFailed}：${res.error || modeCommand(mode)}`);
+      }
+      syncedMode.current = mode;
     }
-    syncedMode.current = mode;
   }, []);
 
   /** 会话打开后：应用打开前选的模型与思考强度、同步权限模式，再读取当前模型与可选的思考强度 */
@@ -246,16 +250,17 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
       for (const batch of early) client.receive(batch);
       conn.current = { platform, client };
       syncedMode.current = null;
-      await applySession(client);
       optionsRef.current.onOpening?.(false);
       optionsRef.current.onOpened?.({ sessionId: sessionId ?? null, workspace: path });
+      // 会话已建立：打开后的设置失败不影响会话本身（提示错误；权限模式在下一次发送前会再同步）
+      await applySession(client).catch(fail);
     })().finally(() => {
       opening.current = null;
       // 失败时也结束“打开中”（成功时已在 onOpened 之前结束，重复调用无影响）
       if (!disposed.current) optionsRef.current.onOpening?.(false);
     });
     return opening.current;
-  }, [enqueue, setError, clearError, syncUnresponsive, applySession]);
+  }, [enqueue, setError, clearError, syncUnresponsive, applySession, fail]);
 
   // 权限模式变化：会话已打开时立即同步（扩展命令运行中也会立即执行）
   const permissionMode = useAppStore((s) => s.permissionMode);

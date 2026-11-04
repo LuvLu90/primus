@@ -3,7 +3,8 @@
 ; 升级 @tauri-apps/cli 时先对比上游模板再重新应用（改动处均以 “Primus：” 注释标出）：
 ;   1. 默认安装目录用不含中文与空格的 INSTALLDIRNAME（Primus），显示名仍是 ${PRODUCTNAME}（乾元 Primus）；
 ;   2. 底部品牌文字显示产品名与版本，不再回落为 “Nullsoft Install System vX”；
-;   3. 简体中文界面用 Microsoft YaHei UI 9pt（NSIS 中文语言文件默认宋体，观感陈旧）。
+;   3. 简体中文界面用 Microsoft YaHei UI 9pt（NSIS 中文语言文件默认宋体，观感陈旧）；
+;   4. 卸载时勾选“删除应用数据”同时删除 <安装目录>\data（不勾选时保留，与 MSI 一致）。
 Unicode true
 ManifestDPIAware true
 ; Add in `dpiAwareness` `PerMonitorV2` to manifest for Windows 10 1607+ (note this should not affect lower versions since they should be able to ignore this and pick up `dpiAware` `true` set by `ManifestDPIAware true`)
@@ -938,6 +939,16 @@ Section Uninstall
     SetShellVarContext current
     RmDir /r "$APPDATA\${BUNDLEID}"
     RmDir /r "$LOCALAPPDATA\${BUNDLEID}"
+    ; Primus：App 的全部数据都在 <安装目录>\data（约束 C2），勾选“删除应用数据”时一并删除。
+    ; data 本身是重解析点（联接 / 符号链接）时不删除，避免以管理员身份删到链接指向的目录
+    System::Call 'kernel32::GetFileAttributesW(w "$INSTDIR\data") i .r0'
+    ${If} $0 <> -1
+      IntOp $1 $0 & 0x400
+      ${If} $1 = 0
+        RmDir /r "$INSTDIR\data"
+      ${EndIf}
+    ${EndIf}
+    RMDir "$INSTDIR"
   ${EndIf}
 
   !ifmacrodef NSIS_HOOK_POSTUNINSTALL

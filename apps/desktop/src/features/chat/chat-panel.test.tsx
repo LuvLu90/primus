@@ -7,6 +7,10 @@ import { strings } from "@/lib/strings";
 import { initialAppState, useAppStore } from "@/stores/app-store";
 import { ChatPanel } from "./chat-panel";
 
+/** 用户消息的 prompt（不含 primus-guard 的 /primus-mode 等扩展命令） */
+const isUserPrompt = (r: { type: string; message?: unknown }) =>
+  r.type === "prompt" && !String(r.message ?? "").startsWith("/primus-");
+
 const t = strings.chat;
 
 describe("对话区（mock 事件流）", () => {
@@ -118,7 +122,7 @@ describe("对话区（mock 事件流）", () => {
       const base = createMockPlatform({
         intervalMs: 1,
         batchSize: 50,
-        stallCommand: (cmd) => stalled && cmd.type === "prompt",
+        stallCommand: (cmd) => stalled && isUserPrompt(cmd),
       });
       const coreRestart = vi.fn(async () => {
         stalled = false;
@@ -143,7 +147,7 @@ describe("对话区（mock 事件流）", () => {
       fireEvent.click(sendButton);
       await vi.advanceTimersByTimeAsync(0);
       expect(coreSend).toHaveBeenCalledTimes(sentBefore);
-      expect(coreSend.mock.calls.filter(([, r]) => r.type === "prompt")).toHaveLength(1);
+      expect(coreSend.mock.calls.filter(([, r]) => isUserPrompt(r))).toHaveLength(1);
 
       fireEvent.click(screen.getByRole("button", { name: t.restartCore }));
       await waitFor(() => expect(coreRestart).toHaveBeenCalledTimes(1));
@@ -185,8 +189,9 @@ describe("对话区（mock 事件流）", () => {
     expect(screen.queryByRole("alert")).toBeNull();
     expect(sendButton.disabled).toBe(false);
     fireEvent.click(sendButton);
+    // 内核未运行时权限模式同步就已失败，第一次的用户消息不会发出；重启后的这次才发出
     await waitFor(() =>
-      expect(coreSend.mock.calls.filter(([, r]) => r.type === "prompt")).toHaveLength(2),
+      expect(coreSend.mock.calls.filter(([, r]) => isUserPrompt(r))).toHaveLength(1),
     );
     // 重启后的发送才到达 mock：其回复应渲染到会话中
     await waitFor(() => expect(screen.getByText(/mock 平台/)).toBeTruthy());
@@ -268,7 +273,7 @@ describe("对话区（mock 事件流）", () => {
       const base = createMockPlatform({
         intervalMs: 1,
         batchSize: 50,
-        stallCommand: (cmd) => stalled && cmd.type === "prompt",
+        stallCommand: (cmd) => stalled && isUserPrompt(cmd),
       });
       let finishRestart: (() => void) | undefined;
       const coreRestart = vi.fn(
