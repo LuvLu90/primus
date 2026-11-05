@@ -125,7 +125,7 @@ export function isProtectedPath(
   const norm = (p: string) => (platform === "win32" ? p.toLowerCase() : p);
   const parts = norm(abs).split(/[\\/]+/);
   if (parts.includes(".git")) return true;
-  if (/^\.env(\..*)?$/.test(parts.at(-1) ?? "")) return true;
+  if ((parts.at(-1) ?? "").startsWith(".env")) return true;
   const within = (root: string) => {
     const rel = relative(norm(resolve(root)), norm(abs));
     return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));

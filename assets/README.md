@@ -5,11 +5,12 @@
 
 ## 重新生成图标
 
-换 logo 时先替换本目录的 `logo.png`，再在仓库根目录执行（Tauri CLI 版本与 `apps/desktop/package.json` 锁定的一致）：
+换 logo 时先替换本目录的 `logo.png`，再在仓库根目录执行（Tauri CLI 版本与 `apps/desktop/package.json` 锁定的一致；Pillow 版本锁定在 `scripts/requirements.txt`）：
 
 ```sh
 pnpm --filter @primus/desktop exec tauri icon ../../assets/logo.png -o src-tauri/icons
 rm -rf apps/desktop/src-tauri/icons/android apps/desktop/src-tauri/icons/ios
+python3 -m pip install -r scripts/requirements.txt   # Pillow==13.0.0
 python3 scripts/render-app-icon.py   # icon.ico 改为白色圆角底 + 黑色线稿（桌面快捷方式在深色桌面上也看得清）
 cp assets/logo.png apps/desktop/src-tauri/icons/app-icon.png
 cp apps/desktop/src-tauri/icons/128x128@2x.png apps/desktop/src/app/icon.png

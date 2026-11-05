@@ -616,7 +616,8 @@ mod tests {
             // 恢复的会话按文件登记、新会话只按会话 ID（文件头的 `x`）登记：两种都先结束 Core 再删除
             for (file, id) in [(true, None), (false, Some("x"))] {
                 let (_tmp, dir, index, sessions) = setup();
-                let path = write_session(&dir, "a.jsonl");
+                // Core 为新会话建的文件名为 `<时间戳>_<会话 ID>.jsonl`
+                let path = write_session(&dir, "2026-11-03T00-00-00-000Z_x.jsonl");
                 index.sync_all().unwrap();
                 sessions.insert_idle_for_test("s1", file.then_some(path.as_str()), id, NoSink);
                 sessions.insert_idle_for_test("other", None, Some("unrelated"), NoSink);
@@ -640,6 +641,28 @@ mod tests {
                 // 无关的会话不受影响
                 assert!(sessions.session_id("other").is_some());
             }
+        }
+
+        #[test]
+        fn deleting_a_copy_keeps_the_new_session_open() {
+            // 副本保留原文件头的会话 ID `x`，但不是 Core 为新会话 `x` 建的文件：删除副本不关闭那个新会话
+            let (_tmp, dir, index, sessions) = setup();
+            let copy = write_session(&dir, "copy.jsonl");
+            index.sync_all().unwrap();
+            sessions.insert_idle_for_test("s1", None, Some("x"), NoSink);
+            let stopped = std::cell::RefCell::new(Vec::new());
+            delete_session(
+                &sessions,
+                &index,
+                &IndexNotifier::default(),
+                &copy,
+                |k| stopped.borrow_mut().push(k.to_owned()),
+                |p| std::fs::remove_file(p),
+            )
+            .unwrap();
+            assert!(stopped.borrow().is_empty());
+            assert!(!Path::new(&copy).exists());
+            assert!(sessions.session_id("s1").is_some());
         }
 
         #[test]

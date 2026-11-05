@@ -256,16 +256,28 @@ impl Shared {
     }
 
     /// 从队首丢弃记录直到 `bytes <= limit`；返回是否丢弃过。
+    ///
+    /// 扩展的对话框请求（`extension_ui_request` 的 select / confirm / input / editor）不丢弃：扩展阻塞等待回答，
+    /// 而前端缺号后的 `get_messages` + `get_state` 重建不会重发它们，丢掉后界面会一直显示运行中却没有确认卡片。
+    /// 这类记录很小，按原顺序留在队首，字节数照常计入。
     fn evict_oldest(&self, pending: &mut Pending, limit: usize) -> bool {
         let mut evicted = false;
+        let mut kept = Vec::new();
         while pending.bytes > limit {
             let Some(old) = pending.records.pop_front() else {
                 break;
             };
+            if is_dialog_request(&old) {
+                kept.push(old);
+                continue;
+            }
             pending.bytes -= old.get().len();
             pending.dropped += 1;
             self.dropped.fetch_add(1, Ordering::Relaxed);
             evicted = true;
+        }
+        for record in kept.into_iter().rev() {
+            pending.records.push_front(record);
         }
         evicted
     }
@@ -486,6 +498,28 @@ struct RecordType<'a> {
 struct ResponseData<'a> {
     #[serde(borrow, default)]
     disposition: Option<&'a str>,
+}
+
+/// 扩展对话框方法（与 `@primus/protocol` 的 `EXTENSION_UI_DIALOG_METHODS` 一致）。
+const DIALOG_METHODS: [&str; 4] = ["select", "confirm", "input", "editor"];
+
+#[derive(Deserialize)]
+struct UiRequestHead<'a> {
+    #[serde(rename = "type", borrow, default)]
+    kind: Option<&'a str>,
+    #[serde(borrow, default)]
+    method: Option<&'a str>,
+}
+
+/// 记录是否为等待前端回答的扩展对话框请求。
+fn is_dialog_request(record: &RawValue) -> bool {
+    matches!(
+        serde_json::from_str::<UiRequestHead>(record.get()),
+        Ok(UiRequestHead {
+            kind: Some("extension_ui_request"),
+            method: Some(method),
+        }) if DIALOG_METHODS.contains(&method)
+    )
 }
 
 fn track_busy(shared: &Shared, record: &RawValue) {
@@ -808,6 +842,45 @@ mod tests {
         assert_eq!(delivered + stats.dropped, 100);
         // 留下的是最新的记录
         assert_eq!(batches.last().unwrap().1.last().unwrap(), "{\"i\":\"099\"}");
+    }
+
+    #[test]
+    fn overflow_keeps_pending_dialog_requests() {
+        let shared = Shared {
+            pending: Mutex::new(Pending::default()),
+            ready: Condvar::new(),
+            received: AtomicU64::new(0),
+            dropped: AtomicU64::new(0),
+            invalid: AtomicU64::new(0),
+            batches: AtomicU64::new(0),
+            writer_closed: AtomicBool::new(false),
+            turn: AtomicBool::new(false),
+            starting: AtomicBool::new(false),
+            prompts: AtomicU64::new(0),
+        };
+        let raw = |s: &str| RawValue::from_string(s.to_owned()).unwrap();
+        let dialog = r#"{"type":"extension_ui_request","id":"u1","method":"select","title":"t","options":["a"]}"#;
+        let notify = r#"{"type":"extension_ui_request","id":"u2","method":"notify","message":"m"}"#;
+        shared.push(raw(r#"{"i":"000"}"#), 4096);
+        shared.push(raw(dialog), 4096);
+        shared.push(raw(notify), 4096);
+        for i in 1..20 {
+            shared.push(raw(&format!("{{\"i\":\"{i:03}\"}}")), 4096);
+        }
+        // 缓冲收紧到只够放几条：对话框请求保留，其余从最旧开始丢
+        shared.trim(dialog.len() + 30);
+        let pending = shared.pending();
+        let left: Vec<&str> = pending.records.iter().map(|r| r.get()).collect();
+        assert_eq!(left.first().copied(), Some(dialog));
+        assert!(!left.contains(&notify), "即发即弃的通知可以丢");
+        assert!(!left.contains(&r#"{"i":"000"}"#));
+        assert_eq!(left.last().copied(), Some(r#"{"i":"019"}"#));
+        assert_eq!(
+            pending.bytes,
+            left.iter().map(|r| r.len()).sum::<usize>(),
+            "字节数与留下的记录一致"
+        );
+        assert_eq!(pending.dropped as usize, 22 - left.len());
     }
 
     #[test]

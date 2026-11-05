@@ -1,0 +1,2 @@
+# 图标与安装界面图片生成脚本（scripts/render-app-icon.py、scripts/render-installer-art.py）的 Python 依赖，精确锁定稳定版
+Pillow==13.0.0

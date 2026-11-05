@@ -99,3 +99,12 @@ export function smokeEnv({ home, coreDir, tmpDir, apiKey, extraEnv = {}, env = p
     TMP: tmpDir,
   };
 }
+
+/**
+ * 上游额度暂时用尽（HTTP 429 且带 model_cooldown / RESOURCE_EXHAUSTED / quota 字样）不是配置或代码问题，
+ * 冒烟把它记为跳过而不是失败；其他 429（如鉴权网关限流但没有额度字样）仍算失败。
+ */
+export function isQuotaExhausted(errorMessage) {
+  if (typeof errorMessage !== "string" || !/\b429\b/.test(errorMessage)) return false;
+  return /model_cooldown|RESOURCE_EXHAUSTED|exhausted your capacity|quota/i.test(errorMessage);
+}

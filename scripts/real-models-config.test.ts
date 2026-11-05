@@ -5,6 +5,7 @@ import {
   hasModelId,
   hasModelLevelApiKey,
   hasOnlyAllowedApis,
+  isQuotaExhausted,
   resolveApiKey,
   smokeEnv,
 } from "./real-models-config.mjs";
@@ -111,5 +112,19 @@ describe("真实模型配置", () => {
       env: { node_extra_ca_certs: "ca.pem", TEST_KEY: "secret" },
     });
     expect(result.node_extra_ca_certs).toBe(resolve("ca.pem"));
+  });
+
+  it("上游额度用尽的 429 记为跳过，其他错误不算", () => {
+    expect(
+      isQuotaExhausted(
+        'API error (429): {"code":"model_cooldown","last_upstream_error":"RESOURCE_EXHAUSTED"}',
+      ),
+    ).toBe(true);
+    expect(
+      isQuotaExhausted("API error (429): You have exhausted your capacity on this model."),
+    ).toBe(true);
+    expect(isQuotaExhausted("API error (429): Too Many Requests")).toBe(false);
+    expect(isQuotaExhausted("API error (500): quota service down")).toBe(false);
+    expect(isQuotaExhausted(undefined)).toBe(false);
   });
 });

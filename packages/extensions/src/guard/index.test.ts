@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -97,26 +97,40 @@ describe("primus-guard 权限判断", () => {
 
   it("工作区内指向外部的符号链接按真实路径判断", () => {
     const root = mkdtempSync(join(tmpdir(), "guard-"));
-    const ws = join(root, "ws");
-    const outside = join(root, "outside");
-    mkdirSync(ws);
-    mkdirSync(outside);
-    symlinkSync(outside, join(ws, "link"), "junction");
-    // 悬空链接（目标还不存在）也按目标判断
-    symlinkSync(join(outside, "later.md"), join(ws, "notes.md"));
-    expect(insideWorkspace(ws, join(ws, "notes.md"), "linux")).toBe(false);
-    expect(insideWorkspace(ws, join(ws, "link", "secret"), "linux")).toBe(false);
-    expect(insideWorkspace(ws, join(ws, "new", "file.ts"), "linux")).toBe(true);
-    const ge = { platform: "linux" as const, home: "/home/u", env: {} };
-    expect(
-      decide("edit", { toolName: "write", input: { path: "link/x" } }, ws, undefined, ge),
-    ).toBe("ask");
+    try {
+      const ws = join(root, "ws");
+      const outside = join(root, "outside");
+      mkdirSync(ws);
+      mkdirSync(outside);
+      symlinkSync(outside, join(ws, "link"), "junction");
+      // 悬空链接（目标还不存在）也按目标判断；Windows 无开发者模式时创建文件符号链接会报 EPERM，只跳过这一项
+      let dangling = true;
+      try {
+        symlinkSync(join(outside, "later.md"), join(ws, "notes.md"));
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "EPERM") throw err;
+        dangling = false;
+      }
+      if (dangling) expect(insideWorkspace(ws, join(ws, "notes.md"), "linux")).toBe(false);
+      expect(insideWorkspace(ws, join(ws, "link", "secret"), "linux")).toBe(false);
+      expect(insideWorkspace(ws, join(ws, "new", "file.ts"), "linux")).toBe(true);
+      const ge = { platform: "linux" as const, home: "/home/u", env: {} };
+      expect(
+        decide("edit", { toolName: "write", input: { path: "link/x" } }, ws, undefined, ge),
+      ).toBe("ask");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("受保护路径的写入不论模式一律拒绝，读取需要确认", () => {
     const env = { PRIMUS_CODING_AGENT_DIR: "/opt/Primus/data/users/S-1/core" };
     const ge = { platform: "linux" as const, home: "/home/u", env };
     expect(isProtectedPath("/work/proj/.env.local", env, "linux", "/home/u")).toBe(true);
+    for (const name of [".envrc", ".env_prod", ".env-local"]) {
+      expect(isProtectedPath(`/work/proj/${name}`, env, "linux", "/home/u")).toBe(true);
+    }
+    expect(isProtectedPath("/work/proj/.environment-notes", env, "linux", "/home/u")).toBe(true);
     expect(isProtectedPath("/work/proj/.git/config", env, "linux", "/home/u")).toBe(true);
     expect(isProtectedPath("/home/u/.ssh/id_rsa", env, "linux", "/home/u")).toBe(true);
     expect(isProtectedPath("/opt/Primus/data/x.json", env, "linux", "/home/u")).toBe(true);
@@ -125,6 +139,9 @@ describe("primus-guard 权限判断", () => {
       expect(decide(mode, { toolName: "write", input: { path: ".env" } }, cwd, undefined, ge)).toBe(
         "deny",
       );
+      expect(
+        decide(mode, { toolName: "write", input: { path: ".envrc" } }, cwd, undefined, ge),
+      ).toBe("deny");
       expect(
         decide(mode, { toolName: "read", input: { path: ".git/HEAD" } }, cwd, undefined, ge),
       ).toBe("ask");
