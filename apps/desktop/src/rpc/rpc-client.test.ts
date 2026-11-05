@@ -93,6 +93,20 @@ describe("RPC 客户端", () => {
     expect(onResponsive).toHaveBeenCalledTimes(1);
   });
 
+  it("可选的统计命令超时不判定无响应，其迟到 response 也不解除别的命令造成的锁", async () => {
+    const { client, push, onUnresponsive, onResponsive } = setup();
+    const stats = client.request("get_session_stats").catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(RESPONSE_TIMEOUT_MS);
+    expect(await stats).toBeInstanceOf(RpcTimeoutError);
+    expect(onUnresponsive).not.toHaveBeenCalled();
+    const state = client.request("get_state").catch(() => {});
+    await vi.advanceTimersByTimeAsync(RESPONSE_TIMEOUT_MS);
+    await state;
+    expect(onUnresponsive).toHaveBeenCalledTimes(1);
+    push([ok("s-1", "get_session_stats", {})]);
+    expect(onResponsive).not.toHaveBeenCalled();
+  });
+
   it("多个命令超时时，任一迟到的 response 即恢复（其余 response 可能已随丢弃的批次丢失）", async () => {
     const { client, push, onUnresponsive, onResponsive } = setup();
     const a = client.request("get_state").catch(() => {});

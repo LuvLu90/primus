@@ -131,6 +131,7 @@ pub fn run() {
         .manage(model_config)
         .invoke_handler(tauri::generate_handler![
             commands::window_set_bounds,
+            commands::open_external,
             commands::workspace_open,
             commands::workspace_list,
             commands::workspace_inspect,

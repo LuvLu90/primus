@@ -343,10 +343,6 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     onOpening: tabId ? (opening) => setTabOpening(tabId, opening) : undefined,
     onOpened: tabId ? (opened) => markOpened(tabId, opened) : undefined,
   });
-  // 运行中的标签不会因标签上限被关闭
-  useEffect(() => {
-    if (tabId) setTabRunning(tabId, state.running);
-  }, [tabId, state.running, setTabRunning]);
   const modelConfig = useModelConfigGate();
   const [draft, setDraft] = useState("");
   const [preview, setPreview] = useState(false);
@@ -450,6 +446,13 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     const id = setTimeout(() => setPendingUser(null), PENDING_ECHO_TIMEOUT_MS);
     return () => clearTimeout(id);
   }, [pendingUser, state.messages.length, submitting, state.running]);
+
+  // 运行中、提交中（prompt 已发出但 agent_start 未到）的标签都不会因标签上限被关闭，
+  // 否则卸载会关掉它的 RPC 客户端与 Core，提交被中断
+  const busy = state.running || submitting || pendingUser !== null;
+  useEffect(() => {
+    if (tabId) setTabRunning(tabId, busy);
+  }, [tabId, busy, setTabRunning]);
 
   // 欢迎页离场：开始对话后先淡出上移，动画结束再卸载
   const conversationStarted = started || pendingUser !== null;

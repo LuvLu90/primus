@@ -738,6 +738,29 @@ mod windows_impl {
         Ok(exit_code == 0)
     }
 
+    /// 用系统默认浏览器打开 URL（调用方已校验只含 http/https）。
+    pub(crate) fn open_url(url: &str) -> io::Result<()> {
+        let verb = wide("open");
+        let target = wide(url);
+        // SAFETY: 字符串以 NUL 结尾
+        let code = unsafe {
+            ShellExecuteW(
+                null_mut(),
+                verb.as_ptr(),
+                target.as_ptr(),
+                null(),
+                null(),
+                SW_SHOWNORMAL,
+            )
+        } as isize;
+        // ShellExecuteW 返回值大于 32 表示成功
+        if code > 32 {
+            Ok(())
+        } else {
+            Err(io::Error::other(format!("ShellExecuteW 失败（{code}）")))
+        }
+    }
+
     pub(crate) fn open_reinstall_page() {
         let verb = wide("open");
         let url = wide(REINSTALL_URL);
@@ -902,6 +925,10 @@ mod fallback_impl {
 
     pub(crate) fn run_elevated_repair() -> io::Result<bool> {
         Ok(false)
+    }
+
+    pub(crate) fn open_url(_url: &str) -> io::Result<()> {
+        Err(io::Error::new(io::ErrorKind::Unsupported, "仅支持 Windows"))
     }
 
     pub(crate) fn open_reinstall_page() {

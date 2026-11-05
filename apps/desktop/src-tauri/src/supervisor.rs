@@ -1069,7 +1069,9 @@ pub(crate) mod tests {
     fn check_reports_missing_files() {
         let tmp = TempDir::new();
         let layout = CoreLayout::installed(&tmp.0);
-        assert!(matches!(layout.check(), Err(SupervisorError::NodeNotFound(p)) if p == layout.node));
+        assert!(
+            matches!(layout.check(), Err(SupervisorError::NodeNotFound(p)) if p == layout.node)
+        );
         let fake = fake_layout(&tmp.0, "");
         assert!(fake.check().is_ok(), "裸命令名 node 交给 PATH 查找");
     }

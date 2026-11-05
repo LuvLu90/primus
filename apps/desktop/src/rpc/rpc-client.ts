@@ -28,6 +28,14 @@ export const UNBOUNDED_COMMANDS: ReadonlySet<RpcCommandType> = new Set<RpcComman
   "compact",
 ]);
 
+/**
+ * 只用于展示的可选命令：超时只让调用方拿到 RpcTimeoutError，
+ * 不判定内核无响应，也不参与“迟到响应即恢复”的跟踪（否则它的迟到响应会误解除别的命令造成的锁）。
+ */
+export const OPTIONAL_COMMANDS: ReadonlySet<RpcCommandType> = new Set<RpcCommandType>([
+  "get_session_stats",
+]);
+
 /** 命令参数：没有必填字段的命令可以省略 */
 export type OptionalParams<T extends RpcCommandType> =
   Partial<RpcCommandParams<T>> extends RpcCommandParams<T>
@@ -258,8 +266,9 @@ export class RpcClient {
     const entry = this.pending.get(id);
     if (!entry) return;
     this.pending.delete(id);
-    this.timedOut.add(id);
     entry.reject(new RpcTimeoutError(id, entry.command));
+    if (OPTIONAL_COMMANDS.has(entry.command)) return;
+    this.timedOut.add(id);
     this.options.onUnresponsive?.({ id, command: entry.command });
   }
 

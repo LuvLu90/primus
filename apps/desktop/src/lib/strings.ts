@@ -52,6 +52,11 @@ export const strings = {
     logsEmpty: "运行日志会显示在这里。",
   },
   chat: {
+    linkTitle: "在浏览器中打开链接？",
+    linkDescription: "这个链接来自回复内容，请确认地址可信后再打开。",
+    linkOpen: "打开",
+    linkCancel: "取消",
+    linkFailed: "无法打开链接",
     inputLabel: "输入消息",
     inputPlaceholder: "问乾元任何事，Enter 发送，Shift+Enter 换行",
     send: "发送",

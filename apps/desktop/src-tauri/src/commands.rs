@@ -17,6 +17,29 @@ use crate::sessions::{AppSessions, SessionError, Sessions};
 use crate::supervisor::Supervisor;
 use crate::workspaces::{TrustDetails, WorkspaceInfo, Workspaces};
 
+/// 外部链接只允许 http/https，长度有限且不含空白与控制字符（防止被当成命令行参数或本地路径执行）。
+fn check_external_url(target: &str) -> Result<(), String> {
+    let lower = target.to_ascii_lowercase();
+    let scheme_ok = lower.starts_with("https://") || lower.starts_with("http://");
+    let host_ok = target.split_once("://").is_some_and(|(_, rest)| {
+        !rest.is_empty() && !rest.starts_with('/') && !rest.starts_with('\\')
+    });
+    if !scheme_ok || !host_ok {
+        return Err("只能打开 http 或 https 链接".into());
+    }
+    if target.len() > 2048 || target.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err("链接格式不正确".into());
+    }
+    Ok(())
+}
+
+/// 用系统默认浏览器打开外部链接（附录 B `open_external`；前端已让用户确认）。
+#[tauri::command]
+pub fn open_external(target: String) -> Result<(), String> {
+    check_external_url(&target)?;
+    crate::platform::open_url(&target).map_err(|e| e.to_string())
+}
+
 /// 原子设置主窗口外框（物理像素），侧栏开关时窗口边缘跟随侧栏逐帧伸缩用。
 #[tauri::command]
 pub fn window_set_bounds(
@@ -432,6 +455,25 @@ pub(crate) fn models_set_default(
 
 #[cfg(test)]
 mod tests {
+    use super::check_external_url;
+
+    #[test]
+    fn external_url_only_http_https() {
+        assert!(check_external_url("https://example.com/a?b=1").is_ok());
+        assert!(check_external_url("HTTP://example.com").is_ok());
+        for bad in [
+            "file:///C:/Windows/System32/cmd.exe",
+            "C:\\Windows\\notepad.exe",
+            "javascript:alert(1)",
+            "https://",
+            "https:///etc/passwd",
+            "https://example.com/a b",
+            "https://example.com/\n",
+        ] {
+            assert!(check_external_url(bad).is_err(), "{bad}");
+        }
+    }
+
     use super::*;
 
     mod delete {
