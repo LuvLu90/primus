@@ -57,7 +57,8 @@ pub fn run() {
                 cfg!(debug_assertions),
                 &exe_dir,
                 &paths::repo_root(),
-            );
+            )
+            .prefer_system_node();
             supervisor::Supervisor::new(layout, data_paths.clone())
                 .map_err(|e| format!("无法创建内核进程作业对象：{e}"))
         });

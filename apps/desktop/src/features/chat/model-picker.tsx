@@ -5,6 +5,7 @@
 import type { ThinkingLevel } from "@primus/protocol";
 import { Check, ChevronDown, Sparkles } from "lucide-react";
 import { DropdownMenu as Menu } from "radix-ui";
+import { type CSSProperties, useEffect, useState } from "react";
 import {
   GlassPopover,
   GlassPopoverContent,
@@ -89,30 +90,70 @@ export function ModelPicker({
         {showThinking && (
           <>
             <Menu.Separator className="mx-3 my-1.5 h-px bg-black/[0.07] dark:bg-white/[0.09]" />
-            <Menu.Label className="px-4 pt-1 pb-1.5 text-[11px] font-medium text-muted">
+            <Menu.Label className="px-4 pt-1 pb-0.5 text-[11px] font-medium text-muted">
               {t.thinking}
             </Menu.Label>
-            <Menu.RadioGroup
-              value={thinkingLevel ?? ""}
-              onValueChange={(v) => onSelectThinking(v as ThinkingLevel)}
-            >
-              {levels.map((level) => (
-                <Menu.RadioItem
-                  key={level}
-                  value={level}
-                  textValue={thinkingLabel(level)}
-                  className={cn(rowClass)}
-                >
-                  <span className="min-w-0 flex-1">{thinkingLabel(level)}</span>
-                  <Menu.ItemIndicator className="shrink-0">
-                    <Check aria-hidden size={14} />
-                  </Menu.ItemIndicator>
-                </Menu.RadioItem>
-              ))}
-            </Menu.RadioGroup>
+            <ThinkingSlider
+              levels={levels}
+              value={thinkingLevel}
+              onCommit={(level) => onSelectThinking(level as ThinkingLevel)}
+            />
           </>
         )}
       </GlassPopoverContent>
     </GlassPopover>
+  );
+}
+
+/**
+ * 思考强度滑杆：档位多时不再把每档列成一行，拖动或用方向键选择，松手（或抬键）才切换，
+ * 避免拖动途中逐档发请求。下方列出各档名称并突出当前档。当前档位未知（默认）时滑块停在中间档。
+ */
+function ThinkingSlider({
+  levels,
+  value,
+  onCommit,
+}: {
+  levels: string[];
+  value: string | undefined;
+  onCommit: (level: string) => void;
+}) {
+  const known = value ? levels.indexOf(value) : -1;
+  const index = known >= 0 ? known : Math.floor((levels.length - 1) / 2);
+  const [draft, setDraft] = useState(index);
+  useEffect(() => setDraft(index), [index]);
+  const max = levels.length - 1;
+  const commit = () => {
+    const level = levels[draft];
+    if (level && level !== value) onCommit(level);
+  };
+  return (
+    <div className="px-4 pb-1.5">
+      <input
+        type="range"
+        min={0}
+        max={max}
+        step={1}
+        value={draft}
+        aria-label={t.thinking}
+        aria-valuetext={thinkingLabel(levels[draft])}
+        onChange={(e) => setDraft(Number(e.target.value))}
+        onPointerUp={commit}
+        onKeyUp={commit}
+        // 方向键、Home/End 留给滑杆，不让菜单拿去移动高亮或做首字母跳转
+        onKeyDown={(e) => {
+          if (e.key !== "Escape" && e.key !== "Tab") e.stopPropagation();
+        }}
+        className="ui-range w-full"
+        style={{ "--pct": `${max > 0 ? (draft / max) * 100 : 0}%` } as CSSProperties}
+      />
+      <div aria-hidden className="flex justify-between text-[11px] text-muted">
+        {levels.map((level, i) => (
+          <span key={level} className={cn(i === draft && "font-medium text-fg")}>
+            {thinkingLabel(level)}
+          </span>
+        ))}
+      </div>
+    </div>
   );
 }

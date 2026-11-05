@@ -514,7 +514,10 @@ describe("对话区（mock 事件流）", () => {
     const button = await screen.findByRole("button", { name: /模型：Mock 大模型/ });
     // 会话打开前选择：记下，打开后发送第一条消息前应用
     fireEvent.keyDown(button, { key: "Enter" });
-    fireEvent.click(await screen.findByRole("menuitemradio", { name: "高" }));
+    // 思考强度是滑杆：拖到“高”，松手才切换（默认档位为 off/low/medium/high/xhigh，“高”是第 3 档）
+    const slider = await screen.findByRole("slider", { name: "思考" });
+    fireEvent.change(slider, { target: { value: "3" } });
+    fireEvent.pointerUp(slider);
     await waitFor(() =>
       expect(screen.getByRole("button", { name: /模型：Mock 大模型，思考高/ })).toBeTruthy(),
     );

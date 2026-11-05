@@ -10,6 +10,7 @@ import {
   Plus,
   Square,
   Wrench,
+  X,
 } from "lucide-react";
 import {
   type FormEvent,
@@ -227,8 +228,10 @@ function WorkspaceBar({
           blur={24}
           radius={18}
           {...glass}
-          sheen={false}
-          className="-mb-5 pb-5 ring-1 ring-black/[0.06] dark:ring-white/[0.08]"
+          // 不要立体高光与投影（投影被外层裁切后只在两侧露出一截）；边框用内描边，
+          // 外描边的上沿会被外层 overflow-hidden 裁掉
+          specular={false}
+          className="-mb-5 pb-5 ring-1 ring-inset ring-black/[0.08] dark:ring-white/[0.1]"
         >
           <div className="flex h-10 items-center px-4">
             <WorkspacePicker current={current} onPicked={onPicked} onError={onError}>
@@ -722,24 +725,39 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                       <span className="max-w-40 truncate text-[12px]">{shownWorkspace.name}</span>
                     </span>
                   ) : (
-                    <WorkspacePicker
-                      current={shownWorkspace}
-                      onPicked={setWorkspace}
-                      onError={setPickError}
-                    >
-                      <GlassButton
-                        variant="capsule"
-                        size={30}
-                        {...glass}
-                        title={`${t.currentWorkspace}：${shownWorkspace.path}`}
-                        className={glassButtonClass}
+                    // 悬停（或键盘聚焦）时右上角出现关闭按钮，取消已选的工作区
+                    <span className="group/ws relative flex">
+                      <WorkspacePicker
+                        current={shownWorkspace}
+                        onPicked={setWorkspace}
+                        onError={setPickError}
                       >
-                        <Folder aria-hidden size={14} />
-                        <span className="max-w-40 truncate text-[12px] font-normal">
-                          {shownWorkspace.name}
-                        </span>
-                      </GlassButton>
-                    </WorkspacePicker>
+                        <GlassButton
+                          variant="capsule"
+                          size={30}
+                          {...glass}
+                          title={`${t.currentWorkspace}：${shownWorkspace.path}`}
+                          className={glassButtonClass}
+                        >
+                          <Folder aria-hidden size={14} />
+                          <span className="max-w-40 truncate text-[12px] font-normal">
+                            {shownWorkspace.name}
+                          </span>
+                        </GlassButton>
+                      </WorkspacePicker>
+                      <button
+                        type="button"
+                        aria-label={`${t.clearWorkspace} ${shownWorkspace.name}`}
+                        title={t.clearWorkspace}
+                        onClick={() => {
+                          setPickError(null);
+                          setWorkspace(null);
+                        }}
+                        className="absolute -right-1 -top-1 z-10 grid size-4 place-items-center rounded-full bg-fg text-surface opacity-0 outline-none transition-opacity group-focus-within/ws:opacity-100 group-hover/ws:opacity-100 focus-visible:opacity-100"
+                      >
+                        <X aria-hidden size={10} strokeWidth={2.5} />
+                      </button>
+                    </span>
                   ))}
                 <span className="flex-1" />
                 <ModelPicker

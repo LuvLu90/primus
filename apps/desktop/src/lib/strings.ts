@@ -128,6 +128,7 @@ export const strings = {
     },
     welcomeTitle: "今天想做点什么？",
     chooseFolder: "选择文件夹",
+    clearWorkspace: "取消选择工作区",
     searchWorkspaces: "搜索工作区",
     noMatchingWorkspaces: "没有匹配的工作区",
     noRecentWorkspaces: "还没有打开过工作区",
