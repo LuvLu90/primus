@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { createInitialSessionsState, findTab, MAX_TABS, useSessionsStore } from "./sessions-store";
+import {
+  createInitialSessionsState,
+  findTab,
+  MAX_IDLE_HIDDEN_TABS,
+  MAX_TABS,
+  useSessionsStore,
+} from "./sessions-store";
 
 const store = () => useSessionsStore.getState();
 const session = (n: number) => ({ path: `/s/${n}.jsonl`, id: `id-${n}`, workspace: "/w" });
@@ -57,10 +63,31 @@ describe("会话标签", () => {
     store().setRunning(running, true);
     for (let i = 2; i <= MAX_TABS + 1; i++) store().openSession(session(i));
     const tabs = store().tabs;
-    expect(tabs).toHaveLength(MAX_TABS);
+    // 空闲的隐藏标签只留最近一个：运行中 + 上一个 + 当前
+    expect(tabs).toHaveLength(2 + MAX_IDLE_HIDDEN_TABS);
     // 初始空标签最早且空闲，先被关掉；运行中的保留
     expect(tabs.some((t) => t.sessionPath === null)).toBe(false);
     expect(tabs.some((t) => t.id === running)).toBe(true);
+    expect(tabs.at(-1)?.sessionPath).toBe(`/s/${MAX_TABS + 1}.jsonl`);
+    expect(tabs.at(-2)?.sessionPath).toBe(`/s/${MAX_TABS}.jsonl`);
+  });
+
+  it("切换标签或运行结束后，多出的空闲隐藏标签被关闭", () => {
+    store().openSession(session(1));
+    const a = store().activeTabId;
+    store().setRunning(a, true);
+    store().openSession(session(2));
+    const b = store().activeTabId;
+    store().setRunning(b, true);
+    store().openSession(session(3));
+    // a、b 运行中，都保留
+    expect(store().tabs.filter((t) => t.sessionPath !== null)).toHaveLength(3);
+    store().setRunning(a, false);
+    expect(store().tabs.some((t) => t.id === a)).toBe(true);
+    store().setRunning(b, false);
+    // 两个隐藏空闲标签超出上限：关掉较早的 a
+    expect(store().tabs.some((t) => t.id === a)).toBe(false);
+    expect(store().tabs.some((t) => t.id === b)).toBe(true);
   });
 
   it("打开会话文件的标签只按路径匹配：复制出的会话（文件头 ID 相同）在新标签中打开", () => {

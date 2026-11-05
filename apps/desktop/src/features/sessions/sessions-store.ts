@@ -7,6 +7,13 @@ import type { SessionSummary } from "@/lib/platform/types";
 /** 同时挂载的标签上限；超出时关闭最早打开、不在当前、也不在运行中的标签 */
 export const MAX_TABS = 8;
 
+/**
+ * 隐藏且空闲（不在运行、不在打开中）的标签最多保留几个。每个打开的会话占一个 Core 进程（约 100 MB）
+ * 和一整份时间线 DOM，而界面上没有标签栏，用户看不到它们：只留最近一个方便切回，更早的关闭（会话随之结束），
+ * 再点开时从会话文件重新加载。运行中的标签不受影响。
+ */
+export const MAX_IDLE_HIDDEN_TABS = 1;
+
 export interface ChatTab {
   id: string;
   /** 打开的历史会话文件；新会话为 null（首次发送时由薄壳新建） */
@@ -101,7 +108,21 @@ function trim(tabs: ChatTab[], activeTabId: string): ChatTab[] {
     if (i < 0) break;
     result.splice(i, 1);
   }
-  return result;
+  return pruneIdle(result, activeTabId);
+}
+
+/** 隐藏且空闲的标签超过 MAX_IDLE_HIDDEN_TABS 时，从最早打开的开始关闭；没有变化时返回原数组 */
+function pruneIdle(tabs: ChatTab[], activeTabId: string): ChatTab[] {
+  const idle = (t: ChatTab) => t.id !== activeTabId && !t.running && !t.opening;
+  let excess = tabs.filter(idle).length - MAX_IDLE_HIDDEN_TABS;
+  if (excess <= 0) return tabs;
+  return tabs.filter((t) => {
+    if (excess > 0 && idle(t)) {
+      excess -= 1;
+      return false;
+    }
+    return true;
+  });
 }
 
 const isBlank = (t: ChatTab) => t.sessionPath === null && t.sessionId === null && !t.opening;
@@ -126,7 +147,7 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
   newTab: () => {
     const blank = get().tabs.find(isBlank);
     if (blank) {
-      set({ activeTabId: blank.id, tabsFull: false });
+      set({ activeTabId: blank.id, tabs: pruneIdle(get().tabs, blank.id), tabsFull: false });
       return true;
     }
     const tab = newTabState();
@@ -142,7 +163,7 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
   openSession: (session) => {
     const existing = findTab(get().tabs, session);
     if (existing) {
-      set({ activeTabId: existing.id, tabsFull: false });
+      set({ activeTabId: existing.id, tabs: pruneIdle(get().tabs, existing.id), tabsFull: false });
       return true;
     }
     const tab: ChatTab = {
@@ -161,7 +182,8 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
   },
 
   activate: (tabId) => {
-    if (get().tabs.some((t) => t.id === tabId)) set({ activeTabId: tabId });
+    const { tabs } = get();
+    if (tabs.some((t) => t.id === tabId)) set({ activeTabId: tabId, tabs: pruneIdle(tabs, tabId) });
   },
 
   closeTab: (tabId) =>
@@ -197,7 +219,9 @@ export const useSessionsStore = create<SessionsState>()((set, get) => ({
     set((s) =>
       s.tabs.some((t) => t.id === tabId && t.running !== running)
         ? {
-            tabs: s.tabs.map((t) => (t.id === tabId ? { ...t, running } : t)),
+            tabs: ((tabs) => (running ? tabs : pruneIdle(tabs, s.activeTabId)))(
+              s.tabs.map((t) => (t.id === tabId ? { ...t, running } : t)),
+            ),
             // 有标签结束运行后再新建或打开就能腾出位置，提示随之失效
             tabsFull: running ? s.tabsFull : false,
           }
