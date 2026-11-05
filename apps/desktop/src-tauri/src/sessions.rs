@@ -126,6 +126,9 @@ pub(crate) struct Sessions<S> {
     launch_done: Condvar,
     /// 删除等待进行中的拉起的上限（默认 [`LAUNCH_WAIT`]，测试可调小）
     launch_wait: Duration,
+    /// 等待拉起超时而没有删除的文件：“删除中”登记保留到这些拉起结束（[`LaunchGuard`] 撤销），期间重试删除或打开都被拒绝。
+    /// 锁顺序：launching → held_deletes；之后才单独加 deleting 锁
+    held_deletes: Mutex<Vec<HeldDelete>>,
     next: AtomicU64,
     config: BridgeConfig,
 }
@@ -147,6 +150,7 @@ impl<S: BatchSink + Clone> Sessions<S> {
             launching: Mutex::new(HashSet::new()),
             launch_done: Condvar::new(),
             launch_wait: LAUNCH_WAIT,
+            held_deletes: Mutex::new(Vec::new()),
             next: AtomicU64::new(0),
             config,
         }
@@ -382,7 +386,7 @@ impl<S: BatchSink + Clone> Sessions<S> {
             }
             keys
         };
-        let _release = DeletingGuard {
+        let mut _release = DeletingGuard {
             sessions: self,
             keys: file_keys,
         };
@@ -391,9 +395,23 @@ impl<S: BatchSink + Clone> Sessions<S> {
         }
         // 移出会话表时正在拉起、进程尚未登记到监管器的会话，上面的 stop 结束不了：等拉起结束——
         // `register` 或 `finish_launch` 发现条目已不在，会在拉起标记撤销前结束新进程（kill 等到进程退出）。
-        // 超时说明拉起卡住，Core 可能仍在运行：不删除文件
+        // 超时说明拉起卡住，Core 可能仍在运行：不删除文件，并把“删除中”登记交给这些拉起，等它们结束才撤销——
+        // 否则会话已移出会话表，立即重试时没有可等待的会话，会在 Core 仍运行时删除文件
         if !self.wait_launches(&closed) {
-            return Err(DeleteRefused::LaunchPending);
+            let launching = self.launching();
+            let pending: Vec<String> = closed
+                .iter()
+                .filter(|k| launching.contains(*k))
+                .cloned()
+                .collect();
+            if !pending.is_empty() {
+                lock(&self.held_deletes).push(HeldDelete {
+                    file_keys: std::mem::take(&mut _release.keys),
+                    launches: pending,
+                });
+                return Err(DeleteRefused::LaunchPending);
+            }
+            // 超时与检查之间拉起已结束：照常删除
         }
         Ok(delete())
     }
@@ -623,13 +641,40 @@ struct LaunchGuard<'a, S> {
 
 impl<S> Drop for LaunchGuard<'_, S> {
     fn drop(&mut self) {
-        self.sessions
-            .launching
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&self.key);
+        let released: Vec<String> = {
+            let mut launching = lock(&self.sessions.launching);
+            launching.remove(&self.key);
+            let mut held = lock(&self.sessions.held_deletes);
+            let mut released = Vec::new();
+            held.retain_mut(|h| {
+                if h.launches.iter().any(|k| launching.contains(k)) {
+                    return true;
+                }
+                released.append(&mut h.file_keys);
+                false
+            });
+            released
+        };
+        // 超时未删除的文件，相关拉起都已结束：撤销“删除中”登记，可以重试删除
+        if !released.is_empty() {
+            let mut deleting = lock(&self.sessions.deleting);
+            for k in &released {
+                deleting.remove(k);
+            }
+        }
         self.sessions.launch_done.notify_all();
     }
+}
+
+/// 等待拉起超时而保留“删除中”登记的文件。
+struct HeldDelete {
+    file_keys: Vec<String>,
+    /// 还没结束的拉起（会话键）
+    launches: Vec<String>,
+}
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// 会话文件是否是 Core 为这个会话 ID 新建的那个文件（Core 命名为 `<时间戳>_<会话 ID>.jsonl`）。
@@ -982,7 +1027,7 @@ process.stdin.on("data", (chunk) => {
         sessions.launch_wait = Duration::from_millis(50);
         let file = std::env::temp_dir().join("2026-11-05T00-00-00-000Z_primus-y.jsonl");
         sessions.insert_idle_for_test("s1", None, Some("primus-y"), Collect::default());
-        let _guard = sessions.begin_launch("s1");
+        let guard = sessions.begin_launch("s1");
         let mut stopped = Vec::new();
         let r = sessions.delete_closing(
             &file,
@@ -992,8 +1037,17 @@ process.stdin.on("data", (chunk) => {
         );
         assert_eq!(r, Err(DeleteRefused::LaunchPending));
         assert_eq!(stopped, ["s1"], "每个会话只结束一次");
-        // 拒绝后撤销“删除中”登记，可以重试
+        // 拉起结束前重试：会话已移出会话表，但“删除中”登记仍在，不能删除
+        let retry =
+            sessions.delete_closing(&file, Some("primus-y"), |_| {}, || panic!("重试也不应删除"));
+        assert_eq!(retry, Err(DeleteRefused::AlreadyDeleting));
+        // 拉起结束：撤销登记，重试可以删除
+        drop(guard);
         assert!(sessions.deleting().is_empty());
+        assert_eq!(
+            sessions.delete_closing(&file, Some("primus-y"), |_| {}, || 7),
+            Ok(7)
+        );
     }
 
     #[test]

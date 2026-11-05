@@ -190,8 +190,6 @@ struct Pending {
     dropped: u64,
     /// stdout 已读到 EOF
     closed: bool,
-    /// 因缓冲超限而丢弃的扩展对话框请求的 ID：写线程替前端回复取消，扩展不会一直等待
-    cancels: Vec<String>,
 }
 
 struct Shared {
@@ -258,37 +256,16 @@ impl Shared {
     }
 
     /// 从队首丢弃记录直到 `bytes <= limit`；返回是否丢弃过。
-    ///
-    /// 扩展的对话框请求（`extension_ui_request` 的 select / confirm / input / editor）尽量不丢：扩展阻塞等待回答，
-    /// 而前端缺号后的 `get_messages` + `get_state` 重建不会重发它们。保留的对话框合计不超过上限的
-    /// 1/[`DIALOG_RESERVE_DIVISOR`]，按原顺序留在队首、字节数照常计入，因此缓冲仍不超过硬上限；
-    /// 超出预留的对话框照常丢弃，并记下 ID 由写线程向 Core 回复取消（扩展收到 undefined / false），不会无限等待。
     fn evict_oldest(&self, pending: &mut Pending, limit: usize) -> bool {
-        let reserve = limit / DIALOG_RESERVE_DIVISOR;
         let mut evicted = false;
-        let mut kept = Vec::new();
-        let mut kept_bytes = 0usize;
         while pending.bytes > limit {
             let Some(old) = pending.records.pop_front() else {
                 break;
             };
-            let len = old.get().len();
-            let dialog = dialog_request_id(&old);
-            if dialog.is_some() && kept_bytes + len <= reserve {
-                kept_bytes += len;
-                kept.push(old);
-                continue;
-            }
-            if let Some(id) = dialog {
-                pending.cancels.push(id);
-            }
-            pending.bytes -= len;
+            pending.bytes -= old.get().len();
             pending.dropped += 1;
             self.dropped.fetch_add(1, Ordering::Relaxed);
             evicted = true;
-        }
-        for record in kept.into_iter().rev() {
-            pending.records.push_front(record);
         }
         evicted
     }
@@ -348,7 +325,12 @@ impl Bridge {
             std::thread::Builder::new()
                 .name("core-stdin".into())
                 .spawn(move || {
-                    writer_loop(stdin, &rx, &writer_shared);
+                    let mut stdin = stdin;
+                    for line in rx {
+                        if stdin.write_all(&line).and_then(|()| stdin.flush()).is_err() {
+                            break;
+                        }
+                    }
                     writer_shared.writer_closed.store(true, Ordering::Release);
                 })?,
         );
@@ -504,71 +486,6 @@ struct RecordType<'a> {
 struct ResponseData<'a> {
     #[serde(borrow, default)]
     disposition: Option<&'a str>,
-}
-
-/// 扩展对话框方法（与 `@primus/protocol` 的 `EXTENSION_UI_DIALOG_METHODS` 一致）。
-const DIALOG_METHODS: [&str; 4] = ["select", "confirm", "input", "editor"];
-
-/// 缓冲超限时，保留的对话框请求合计最多占上限的 1/4。
-const DIALOG_RESERVE_DIVISOR: usize = 4;
-
-/// 写线程检查待回复取消的间隔（没有新记录要写时）。
-const CANCEL_POLL: Duration = Duration::from_millis(50);
-
-#[derive(Deserialize)]
-struct UiRequestHead<'a> {
-    #[serde(rename = "type", borrow, default)]
-    kind: Option<&'a str>,
-    #[serde(borrow, default)]
-    method: Option<&'a str>,
-    #[serde(default)]
-    id: Option<String>,
-}
-
-/// 等待前端回答的扩展对话框请求的 ID；其他记录为 None。
-fn dialog_request_id(record: &RawValue) -> Option<String> {
-    match serde_json::from_str::<UiRequestHead>(record.get()) {
-        Ok(UiRequestHead {
-            kind: Some("extension_ui_request"),
-            method: Some(method),
-            id: Some(id),
-        }) if DIALOG_METHODS.contains(&method) => Some(id),
-        _ => None,
-    }
-}
-
-/// 写线程：把写队列中的记录写入 Core 的 stdin；同时替前端回复因缓冲超限被丢弃的对话框请求（取消）。
-/// 写队列关闭（桥 drop）或写入失败时返回。
-fn writer_loop<W: Write>(mut stdin: W, rx: &mpsc::Receiver<Vec<u8>>, shared: &Shared) {
-    loop {
-        let line = match rx.recv_timeout(CANCEL_POLL) {
-            Ok(line) => Some(line),
-            Err(mpsc::RecvTimeoutError::Timeout) => None,
-            Err(mpsc::RecvTimeoutError::Disconnected) => return,
-        };
-        let cancels = std::mem::take(&mut shared.pending().cancels);
-        for id in cancels {
-            let mut cancel = serde_json::to_vec(&serde_json::json!({
-                "type": "extension_ui_response",
-                "id": id,
-                "cancelled": true,
-            }))
-            .unwrap_or_default();
-            cancel.push(b'\n');
-            if stdin
-                .write_all(&cancel)
-                .and_then(|()| stdin.flush())
-                .is_err()
-            {
-                return;
-            }
-        }
-        if let Some(line) = line
-            && stdin.write_all(&line).and_then(|()| stdin.flush()).is_err()
-        {
-            return;
-        }
-    }
 }
 
 fn track_busy(shared: &Shared, record: &RawValue) {
@@ -891,100 +808,6 @@ mod tests {
         assert_eq!(delivered + stats.dropped, 100);
         // 留下的是最新的记录
         assert_eq!(batches.last().unwrap().1.last().unwrap(), "{\"i\":\"099\"}");
-    }
-
-    fn test_shared() -> Shared {
-        Shared {
-            pending: Mutex::new(Pending::default()),
-            ready: Condvar::new(),
-            received: AtomicU64::new(0),
-            dropped: AtomicU64::new(0),
-            invalid: AtomicU64::new(0),
-            batches: AtomicU64::new(0),
-            writer_closed: AtomicBool::new(false),
-            turn: AtomicBool::new(false),
-            starting: AtomicBool::new(false),
-            prompts: AtomicU64::new(0),
-        }
-    }
-
-    #[test]
-    fn overflow_keeps_pending_dialog_requests() {
-        let shared = test_shared();
-        let raw = |s: &str| RawValue::from_string(s.to_owned()).unwrap();
-        let dialog = r#"{"type":"extension_ui_request","id":"u1","method":"select","title":"t","options":["a"]}"#;
-        let notify = r#"{"type":"extension_ui_request","id":"u2","method":"notify","message":"m"}"#;
-        shared.push(raw(r#"{"i":"000"}"#), 4096);
-        shared.push(raw(dialog), 4096);
-        shared.push(raw(notify), 4096);
-        for i in 1..20 {
-            shared.push(raw(&format!("{{\"i\":\"{i:03}\"}}")), 4096);
-        }
-        // 缓冲收紧：对话框请求在预留（上限的 1/4）内保留，其余从最旧开始丢
-        let limit = dialog.len() * DIALOG_RESERVE_DIVISOR;
-        shared.trim(limit);
-        let pending = shared.pending();
-        let left: Vec<&str> = pending.records.iter().map(|r| r.get()).collect();
-        assert_eq!(left.first().copied(), Some(dialog));
-        assert!(!left.contains(&notify), "即发即弃的通知可以丢");
-        assert!(!left.contains(&r#"{"i":"000"}"#));
-        assert_eq!(left.last().copied(), Some(r#"{"i":"019"}"#));
-        assert!(pending.bytes <= limit, "缓冲仍不超过硬上限");
-        assert_eq!(pending.bytes, left.iter().map(|r| r.len()).sum::<usize>());
-        assert_eq!(pending.dropped as usize, 22 - left.len());
-        assert!(pending.cancels.is_empty());
-    }
-
-    #[test]
-    fn dialogs_beyond_the_reserve_are_dropped_and_cancelled() {
-        let shared = test_shared();
-        let raw = |s: &str| RawValue::from_string(s.to_owned()).unwrap();
-        let big = "x".repeat(200);
-        let a = format!(
-            r#"{{"type":"extension_ui_request","id":"a","method":"editor","title":"t","prefill":"{big}"}}"#
-        );
-        let b = format!(
-            r#"{{"type":"extension_ui_request","id":"b","method":"editor","title":"t","prefill":"{big}"}}"#
-        );
-        shared.push(raw(&a), 4096);
-        shared.push(raw(&b), 4096);
-        shared.push(raw(r#"{"i":"001"}"#), 4096);
-        // 上限只够预留一个对话框：第一个保留，第二个丢弃并记下 ID 待回复取消
-        let limit = a.len() * DIALOG_RESERVE_DIVISOR;
-        for i in 0..40 {
-            shared.push(
-                raw(&format!(r#"{{"pad":"{i:03}{}"}}"#, "y".repeat(40))),
-                4096,
-            );
-        }
-        shared.trim(limit);
-        let pending = shared.pending();
-        assert!(pending.bytes <= limit, "对话框也受硬上限约束");
-        assert_eq!(pending.records.front().map(|r| r.get()), Some(a.as_str()));
-        assert!(!pending.records.iter().any(|r| r.get() == b));
-        assert_eq!(pending.cancels, ["b"]);
-    }
-
-    #[test]
-    fn writer_answers_dropped_dialogs_with_cancel() {
-        let shared = test_shared();
-        shared.pending().cancels.push("u9".into());
-        let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(4);
-        tx.send(b"{\"type\":\"get_state\"}\n".to_vec()).unwrap();
-        drop(tx);
-        let mut out = Vec::new();
-        writer_loop(&mut out, &rx, &shared);
-        let text = String::from_utf8(out).unwrap();
-        let lines: Vec<serde_json::Value> = text
-            .lines()
-            .map(|l| serde_json::from_str(l).unwrap())
-            .collect();
-        assert_eq!(
-            lines[0],
-            serde_json::json!({"type":"extension_ui_response","id":"u9","cancelled":true})
-        );
-        assert_eq!(lines[1], serde_json::json!({"type":"get_state"}));
-        assert!(shared.pending().cancels.is_empty());
     }
 
     #[test]
