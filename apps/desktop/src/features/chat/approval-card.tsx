@@ -36,12 +36,15 @@ export function ApprovalCard({
         <ShieldQuestion aria-hidden size={16} className="mt-0.5 shrink-0 text-muted" />
         <div className="min-w-0 flex-1">
           <p className="font-medium text-fg">{t.title}</p>
-          <p className="mt-0.5 whitespace-pre-wrap break-words font-mono text-[12px] text-muted">
-            {request.title}
-          </p>
-          {request.method === "confirm" && request.message && (
-            <p className="mt-1 whitespace-pre-wrap break-words text-muted">{request.message}</p>
-          )}
+          {/* 长命令（多行脚本、heredoc）限高滚动，卡片不撑高遮住对话 */}
+          <div className="mt-0.5 max-h-[min(9rem,22vh)] overflow-y-auto overscroll-contain pr-1">
+            <p className="whitespace-pre-wrap break-words font-mono text-[12px] text-muted">
+              {request.title}
+            </p>
+            {request.method === "confirm" && request.message && (
+              <p className="mt-1 whitespace-pre-wrap break-words text-muted">{request.message}</p>
+            )}
+          </div>
         </div>
         <button
           type="button"
