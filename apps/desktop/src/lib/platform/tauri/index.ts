@@ -1,6 +1,12 @@
 import type { CoreBatch } from "@primus/protocol";
 import { Channel, invoke } from "@tauri-apps/api/core";
-import { COMMANDS, type Platform, type SessionIndexEvent, toPlatformError } from "../types";
+import {
+  COMMANDS,
+  type Platform,
+  type SessionIndexEvent,
+  toPlatformError,
+  type UpdateStatus,
+} from "../types";
 
 // 真实实现：逐个映射到薄壳命令（附录 B）。参数名用 camelCase，Tauri 会转换为 Rust 端的 snake_case。
 // 会话事件与终端输出经 Channel 推送（第 7.1 节）。
@@ -70,8 +76,19 @@ export function createTauriPlatform(): Platform {
     storageUsage: () => call("storageUsage"),
     storageClean: (category) => call("storageClean", { category }),
     diagnosticsExport: (options) => call("diagnosticsExport", { options }),
-    updateCheck: (channel) => call("updateCheck", { channel }),
-    updateInstall: () => call("updateInstall"),
+    updateStatus: () => call("updateStatus"),
+    updateWatch: (onChange) => {
+      const channel = new Channel<UpdateStatus>();
+      channel.onmessage = onChange;
+      return call("updateWatch", { onEvent: channel });
+    },
+    updateCheck: (channel) => call("updateCheck", { channel: channel ?? null }),
+    updateSettingsSet: (patch) =>
+      call("updateSettingsSet", {
+        autoUpdate: patch.autoUpdate ?? null,
+        channel: patch.channel ?? null,
+      }),
+    updateInstall: (force) => call("updateInstall", { force: force ?? false }),
     logWrite: (level, message) => call("logWrite", { level, message }),
   };
 }

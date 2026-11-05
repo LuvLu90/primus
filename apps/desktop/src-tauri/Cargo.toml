@@ -18,6 +18,13 @@ tauri = { version = "=2.12.5", features = [] }
 tauri-plugin-single-instance = "=2.5.4"
 # 系统文件/文件夹对话框（dialog_pick_folder / dialog_pick_files，附录 B）
 tauri-plugin-dialog = "=2.8.3"
+# 自动更新（第 3.6 节、ADR 0007）：只在 Rust 侧使用（不给 WebView 开插件权限）；只用到 Windows 的 MSI / NSIS 安装包，不要 zip
+tauri-plugin-updater = { version = "=2.14.1", default-features = false, features = ["rustls-tls", "system-proxy"] }
+# 待装包二次校验（安装前从磁盘重读，按 updater 插件同一套 minisign 规则校验）：与插件依赖树中的版本一致
+minisign-verify = "=0.3.0"
+base64 = "=0.23.1"
+# 更新版本比较（SemVer，含预发布）：与 Tauri 依赖树中的版本一致
+semver = "=1.0.28"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.154", features = ["raw_value"] }
 # 会话索引（第 10.2 节、ADR 0006）：bundled 内置 SQLite（含 FTS5 与 trigram 分词器），不依赖系统库
@@ -38,6 +45,7 @@ windows-sys = { version = "=0.61.2", features = [
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_JobObjects",
   "Win32_System_Registry",
+  "Win32_System_SystemInformation",
   "Win32_System_Threading",
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",

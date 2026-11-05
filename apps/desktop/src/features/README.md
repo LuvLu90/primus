@@ -11,5 +11,6 @@
 | `files/` | 右栏 · 文件树与预览 |
 | `plan/` | 右栏 · 计划与待办 |
 | `settings/` | 设置页 |
+| `update/` | 自动更新：状态订阅（`update-store`）与下载完成后的重启提示（第 3.6 节） |
 | `capabilities/` | 能力中心（扩展、技能、提示模板、MCP） |
 | `usage/` | 用量统计 |

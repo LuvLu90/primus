@@ -21,6 +21,7 @@ import { cn } from "@/lib/utils";
 import { type ThemeMode, useAppearanceStore } from "@/stores/appearance-store";
 import { AccountSettings, ModelSettings } from "./account-models";
 import { Row, Section } from "./settings-section";
+import { UpdateSettings } from "./update-settings";
 
 const t = strings.settings;
 export type SettingsGroup = keyof typeof t.groups;
@@ -86,7 +87,11 @@ function GeneralSettings() {
   );
 }
 
-function Placeholder({ group }: { group: Exclude<SettingsGroup, "general" | "account"> }) {
+function Placeholder({
+  group,
+}: {
+  group: Exclude<SettingsGroup, "general" | "account" | "update">;
+}) {
   return (
     <Section title={t.groups[group]}>
       <div className="px-4 py-4 text-sm">
@@ -100,7 +105,7 @@ function Placeholder({ group }: { group: Exclude<SettingsGroup, "general" | "acc
 const NAV_WIDTH = 232;
 
 // 设置（第 18 章）：与主界面同样的吸附样式——左侧导航与右侧内容是贴合的两块液态玻璃，
-// 接缝处直角 + 平滑凹口、无缝隙。已实现"通用"中的外观、启动与通知，"账号"（内置账号）与"模型"（默认模型），
+// 接缝处直角 + 平滑凹口、无缝隙。已实现"通用"中的外观、启动与通知，"账号"（内置账号）、"模型"（默认模型）与"更新"，
 // 其余分组列出将提供的设置项。
 /** 地址中的 `?group=<分组>`（如侧栏菜单的“用量”打开 `/settings/?group=usage`）；无效值返回 null */
 export function groupFromSearch(search: string): SettingsGroup | null {
@@ -181,6 +186,8 @@ export function SettingsView() {
                   <ModelSettings />
                   <Placeholder group="models" />
                 </>
+              ) : group === "update" ? (
+                <UpdateSettings />
               ) : (
                 <Placeholder group={group} />
               )}

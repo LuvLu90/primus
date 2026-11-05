@@ -334,6 +334,12 @@ impl<S: BatchSink + Clone> Sessions<S> {
         Ok(())
     }
 
+    /// 是否有会话正在运行一轮（或正在打开 / 重启）：自动更新据此决定是否需要用户确认后再停掉 Core（第 3.6 节）。
+    pub(crate) fn any_busy(&self) -> bool {
+        let entries = self.entries();
+        entries.keys().any(|key| is_busy(&entries, key))
+    }
+
     /// 薄壳为新会话定好的会话 ID（`--session-id`）；恢复已有会话文件时为 None。
     pub(crate) fn session_id(&self, key: &str) -> Option<String> {
         self.entries()
@@ -1506,6 +1512,7 @@ process.stdin.on("data", (chunk) => {
             )
             .unwrap();
         sink.wait_for(1, |r| r["type"] == "agent_start");
+        assert!(sessions.any_busy(), "运行中的会话让自动更新先确认");
         let result = sessions.open(&supervisor, &paths, "", None, Collect::default());
         assert!(
             matches!(
@@ -1527,6 +1534,7 @@ process.stdin.on("data", (chunk) => {
             )
             .unwrap();
         sink.wait_for(1, |r| r["type"] == "agent_settled");
+        assert!(!sessions.any_busy());
         let b = sessions
             .open(&supervisor, &paths, "", None, Collect::default())
             .unwrap();

@@ -15,6 +15,7 @@ use crate::rpc_bridge::{BatchSink, BridgeError, CoreBatch};
 use crate::session_index::{SessionIndex, SessionPage, SessionSummary};
 use crate::sessions::{AppSessions, SessionError, Sessions};
 use crate::supervisor::Supervisor;
+use crate::updater::{LaunchOutcome, UpdateChannel, UpdateError, UpdateStatus, Updater};
 use crate::workspaces::{TrustDetails, WorkspaceInfo, Workspaces};
 
 /// 外部链接只允许 http/https，长度有限且不含空白与控制字符（防止被当成命令行参数或本地路径执行）。
@@ -451,6 +452,89 @@ pub(crate) fn models_set_default(
     model: String,
 ) -> Result<ModelsInfo, String> {
     models.set_default(&model)
+}
+
+/// 自动更新状态：当前版本、是否可用、设置、进行中的阶段与已下载待装的版本（第 3.6 节、ADR 0007）。
+#[tauri::command]
+pub(crate) fn update_status(updater: State<'_, Arc<Updater>>) -> UpdateStatus {
+    updater.status()
+}
+
+/// 订阅更新状态：注册后立即推送一次，之后每次变化（检查、下载进度、下载完成、设置修改）推送完整状态。
+/// 再次调用替换旧的订阅。
+#[tauri::command]
+pub(crate) fn update_watch(updater: State<'_, Arc<Updater>>, on_event: Channel<UpdateStatus>) {
+    updater.set_listener(move |status| {
+        let _ = on_event.send(status);
+    });
+}
+
+/// 立即检查更新（设置页“立即检查”）；有更高版本时下载、验签并存为待装包，返回检查后的状态。
+/// `channel` 只用于本次检查（不保存），缺省用设置中的通道。
+#[tauri::command]
+pub(crate) async fn update_check(
+    app: tauri::AppHandle,
+    updater: State<'_, Arc<Updater>>,
+    channel: Option<UpdateChannel>,
+) -> Result<UpdateStatus, UpdateError> {
+    let updater = updater.inner().clone();
+    updater.check_and_download(&app, channel).await
+}
+
+/// 修改更新设置（自动更新开关、通道），保存到 `users/<SID>/app/update.json`；自动更新从关到开时立即在后台检查一次。
+#[tauri::command]
+pub(crate) fn update_settings_set(
+    app: tauri::AppHandle,
+    updater: State<'_, Arc<Updater>>,
+    auto_update: Option<bool>,
+    channel: Option<UpdateChannel>,
+) -> Result<UpdateStatus, UpdateError> {
+    if updater.set_settings(auto_update, channel)? && updater.available() {
+        let updater = updater.inner().clone();
+        tauri::async_runtime::spawn(async move {
+            let _ = updater.check_and_download(&app, None).await;
+        });
+    }
+    Ok(updater.status())
+}
+
+/// 立即重启并安装已下载的更新。有正在运行的 Agent 时返回 `busy`，前端确认后带 `force` 再调。
+/// 安装包校验通过后停掉全部 Core，经 UAC 拉起安装器并退出；用户取消 UAC 返回 `cancelled`，待装包保留（下次启动再装）。
+#[tauri::command(async)]
+pub(crate) fn update_install(
+    app: tauri::AppHandle,
+    updater: State<'_, Arc<Updater>>,
+    sessions: State<'_, AppSessions>,
+    supervisor: State<'_, Supervisor>,
+    force: Option<bool>,
+) -> Result<(), UpdateError> {
+    if !force.unwrap_or(false) && sessions.any_busy() {
+        return Err(UpdateError::new(
+            "busy",
+            "有正在运行的 Agent，更新会停止它们",
+        ));
+    }
+    let package = updater.prepare_install()?;
+    updater.set_installing(true);
+    // 安装器会替换 resources 下的 node.exe 与 Core 文件：先结束全部 Core（含工具子进程）
+    supervisor.shutdown();
+    match crate::updater::launch(&updater, package) {
+        Ok(LaunchOutcome::Started) => {
+            app.exit(0);
+            Ok(())
+        }
+        Ok(LaunchOutcome::Cancelled) => {
+            updater.set_installing(false);
+            Err(UpdateError::new(
+                "cancelled",
+                "已取消管理员授权。更新包已保留，下次启动 Primus 时会再次安装",
+            ))
+        }
+        Err(e) => {
+            updater.set_installing(false);
+            Err(e)
+        }
+    }
 }
 
 #[cfg(test)]

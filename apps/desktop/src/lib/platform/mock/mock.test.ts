@@ -15,6 +15,28 @@ describe("mock 平台", () => {
     expect(Object.keys(platform).sort()).toEqual(Object.keys(COMMANDS).sort());
   });
 
+  it("自动更新：默认开、稳定版；有新版本时检查后得到待装版本并推送", async () => {
+    const platform = createMockPlatform({ latestVersion: "9.9.9", now: () => 5 });
+    const seen: string[] = [];
+    await platform.updateWatch((s) => seen.push(s.phase));
+    const initial = await platform.updateStatus();
+    expect(initial.settings).toEqual({ autoUpdate: true, channel: "stable" });
+    expect(initial.pending).toBeNull();
+    const status = await platform.updateCheck();
+    expect(status.pending).toEqual({ version: "9.9.9", notes: null });
+    expect(status.lastCheck).toBe(5);
+    expect(seen).toContain("downloading");
+    await expect(platform.updateSettingsSet({ channel: "beta" })).resolves.toMatchObject({
+      settings: { autoUpdate: true, channel: "beta" },
+    });
+  });
+
+  it("自动更新：没有新版本时检查结果无待装版本，安装被拒绝", async () => {
+    const platform = createMockPlatform();
+    await expect(platform.updateCheck()).resolves.toMatchObject({ pending: null });
+    await expect(platform.updateInstall()).rejects.toMatchObject({ code: "noPending" });
+  });
+
   it("prompt 先回 response，再按 16ms 一批推送完整事件流，seq 连续", async () => {
     const platform = createMockPlatform({ batchSize: 5, now: () => 1000 });
     const batches: CoreBatch[] = [];

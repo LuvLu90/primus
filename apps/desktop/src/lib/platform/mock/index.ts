@@ -16,6 +16,8 @@ import {
   PlatformError,
   type SessionIndexEvent,
   type SessionSummary,
+  UPDATE_BUSY,
+  type UpdateStatus,
   type WorkspaceInfo,
 } from "../types";
 import { promptScenario } from "./scenario";
@@ -34,6 +36,11 @@ export interface MockOptions {
   dropBatch?: (seq: number, records: readonly CoreRecord[]) => boolean;
   /** 模拟内核卡死：返回 true 的命令不回 response（测试超时） */
   stallCommand?: (cmd: RpcCommand) => boolean;
+  /**
+   * 模拟更新源上的最新版本：比当前版本（0.0.0-mock）新时，“立即检查”会经过下载进度后得到待装版本。
+   * 默认没有新版本（检查结果为已是最新）
+   */
+  latestVersion?: string;
 }
 
 /** 浏览器预览的内置账号与模型（与薄壳内置配置同形，模型只是示意，不连接任何端点） */
@@ -193,6 +200,23 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
     error: null,
   });
   let settings: Record<string, unknown> = {};
+  // 自动更新（浏览器预览）：可用、默认自动更新开；有 latestVersion 时检查后模拟下载完成
+  let update: UpdateStatus = {
+    currentVersion: "0.0.0-mock",
+    available: true,
+    installKind: "msi",
+    settings: { autoUpdate: true, channel: "stable" },
+    phase: "idle",
+    progress: null,
+    pending: null,
+    lastCheck: null,
+    lastError: null,
+  };
+  let updateListener: ((status: UpdateStatus) => void) | undefined;
+  const setUpdate = (patch: Partial<UpdateStatus>) => {
+    update = { ...update, ...patch };
+    updateListener?.(structuredClone(update));
+  };
   let nextSession = 1;
   let nextTerminal = 1;
 
@@ -567,8 +591,32 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
     storageUsage: async () => ({ sessions: 0, logs: 0, cache: 0 }),
     storageClean: async () => {},
     diagnosticsExport: () => notAvailable("导出诊断包"),
-    updateCheck: async () => ({ available: false }),
-    updateInstall: () => notAvailable("自动更新"),
+    updateStatus: async () => structuredClone(update),
+    updateWatch: async (onChange) => {
+      updateListener = onChange;
+      onChange(structuredClone(update));
+    },
+    updateCheck: async () => {
+      const latest = options.latestVersion;
+      if (latest && latest !== update.currentVersion && update.pending?.version !== latest) {
+        setUpdate({ phase: "downloading", progress: { downloaded: 0, total: 100 } });
+        setUpdate({ progress: { downloaded: 100, total: 100 } });
+        setUpdate({ pending: { version: latest, notes: null } });
+      }
+      setUpdate({ phase: "idle", progress: null, lastCheck: now(), lastError: null });
+      return structuredClone(update);
+    },
+    updateSettingsSet: async (patch) => {
+      setUpdate({ settings: { ...update.settings, ...patch } });
+      return structuredClone(update);
+    },
+    updateInstall: async (force) => {
+      if (!update.pending) throw new PlatformError("没有已下载的更新", "noPending");
+      const running = [...sessions.values()].some((s) => s.streaming);
+      if (running && !force)
+        throw new PlatformError("有正在运行的 Agent，更新会停止它们", UPDATE_BUSY);
+      return notAvailable("重启安装更新");
+    },
     logWrite: async (level, message) => {
       console[level === "debug" ? "log" : level](`[mock] ${message}`);
     },

@@ -116,6 +116,19 @@ fn path_key_for(path: &str, windows: bool) -> String {
     key
 }
 
+/// 自动更新（ADR 0007）：安装器结束后以当前身份重新打开 Primus 的 PowerShell 脚本。
+/// `handle` 是继承给 PowerShell 的安装器进程句柄（只有 SYNCHRONIZE 权限）：按句柄等待，不按 PID
+/// （非提权进程不一定能按 PID 打开提权的安装器进程，PID 也可能被复用）。路径中的单引号按 PowerShell 规则加倍。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn relaunch_script(handle: usize, exe: &Path) -> String {
+    let exe = exe.to_string_lossy().replace('\'', "''");
+    format!(
+        "$h = [Microsoft.Win32.SafeHandles.SafeWaitHandle]::new([IntPtr]::new({handle}), $true); \
+         $w = [System.Threading.ManualResetEvent]::new($false); $w.SafeWaitHandle = $h; \
+         [void]$w.WaitOne(); Start-Process -FilePath '{exe}'"
+    )
+}
+
 #[cfg(windows)]
 pub(crate) use windows_impl::*;
 
@@ -130,8 +143,8 @@ mod windows_impl {
     use std::ptr::{null, null_mut};
 
     use windows_sys::Win32::Foundation::{
-        CloseHandle, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_CANCELLED, ERROR_SUCCESS,
-        GetLastError, HANDLE, INVALID_HANDLE_VALUE, LocalFree, WIN32_ERROR,
+        CloseHandle, DuplicateHandle, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_CANCELLED,
+        ERROR_SUCCESS, GetLastError, HANDLE, INVALID_HANDLE_VALUE, LocalFree, WIN32_ERROR,
     };
     use windows_sys::Win32::Security::Authorization::{
         ConvertSidToStringSidW, EXPLICIT_ACCESS_W, GRANT_ACCESS, GetSecurityInfo, SE_FILE_OBJECT,
@@ -156,8 +169,10 @@ mod windows_impl {
         FILE_READ_EA, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE,
         GetFileInformationByHandle, OPEN_EXISTING, READ_CONTROL, SYNCHRONIZE, WRITE_DAC,
     };
+    use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
     use windows_sys::Win32::System::Threading::{
-        GetCurrentProcess, GetExitCodeProcess, INFINITE, OpenProcessToken, WaitForSingleObject,
+        CREATE_BREAKAWAY_FROM_JOB, CREATE_NO_WINDOW, GetCurrentProcess, GetExitCodeProcess,
+        INFINITE, OpenProcessToken, WaitForSingleObject,
     };
     use windows_sys::Win32::UI::Shell::{
         SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW, ShellExecuteW,
@@ -670,6 +685,129 @@ mod windows_impl {
         set_dacl(&handle, acl.0, false)
     }
 
+    /// 在现有 DACL 上为 Administrators 追加可继承的只读权限（自动更新的待装包目录，ADR 0007）：
+    /// 标准用户经 UAC 输入管理员账号（“过肩”提权）时，安装器以管理员账号运行，`users/<SID>` 的受限 DACL
+    /// 不含该账号；只读不影响“只有当前用户与 SYSTEM 可写”。目录以不跟随重解析点的句柄打开。
+    pub(crate) fn grant_admins_read(dir: &Path) -> io::Result<()> {
+        let handle = open_dir_no_follow(dir, READ_CONTROL | WRITE_DAC)?;
+        let (_sd, _, old) = get_security(&handle, DACL_SECURITY_INFORMATION)?;
+        let mut admins = WellKnownSid::new(WinBuiltinAdministratorsSid)?;
+        let entry = explicit_access(
+            admins.psid(),
+            FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
+            GRANT_ACCESS,
+            TRUSTEE_IS_WELL_KNOWN_GROUP,
+        );
+        let mut acl: *mut ACL = null_mut();
+        // SAFETY: old 指向 _sd 内部，在 _sd 释放前有效
+        let code = unsafe { SetEntriesInAclW(1, &entry, old, &mut acl) };
+        if code != ERROR_SUCCESS {
+            return Err(win32_err(code));
+        }
+        let acl = LocalBox(acl);
+        set_dacl(&handle, acl.0, false)
+    }
+
+    /// 系统目录（`C:\Windows\System32`），msiexec 与 PowerShell 从这里取，不经 PATH 或环境变量。
+    pub(crate) fn system_dir() -> std::path::PathBuf {
+        let mut buf = [0u16; 260];
+        // SAFETY: 缓冲区长度如实传入
+        let len = unsafe { GetSystemDirectoryW(buf.as_mut_ptr(), buf.len() as u32) } as usize;
+        if len == 0 || len >= buf.len() {
+            return std::path::PathBuf::from("C:\\Windows\\System32");
+        }
+        use std::os::windows::ffi::OsStringExt;
+        std::path::PathBuf::from(std::ffi::OsString::from_wide(&buf[..len]))
+    }
+
+    /// 自动更新（ADR 0007）：经 UAC（`runas`）启动安装器；拿到安装器进程句柄后，以当前（非提权）身份拉起一个隐藏的
+    /// PowerShell，等安装器结束后重新打开 `relaunch`，保证新版本以普通权限运行（不让提权的安装器直接启动 App）。
+    /// 返回 `Ok(true)` 表示安装器已运行（调用方应退出），用户取消 UAC 返回 `Ok(false)`。
+    pub(crate) fn launch_installer(
+        program: &Path,
+        params: &str,
+        relaunch: &Path,
+    ) -> io::Result<bool> {
+        let file = wide(program);
+        let verb = wide("runas");
+        let params = wide(params);
+        let mut info = SHELLEXECUTEINFOW {
+            cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
+            fMask: SEE_MASK_NOCLOSEPROCESS,
+            lpVerb: verb.as_ptr(),
+            lpFile: file.as_ptr(),
+            lpParameters: params.as_ptr(),
+            nShow: SW_SHOWNORMAL,
+            ..Default::default()
+        };
+        // SAFETY: info 中的字符串在调用期间有效
+        if unsafe { ShellExecuteExW(&mut info) } == 0 {
+            // SAFETY: 紧接失败的 API 调用读取错误码
+            let code = unsafe { GetLastError() };
+            if code == ERROR_CANCELLED {
+                return Ok(false);
+            }
+            return Err(win32_err(code));
+        }
+        if info.hProcess.is_null() {
+            // 没有进程句柄（不应发生）：安装器已在运行，只是无法等待它结束后自动重新打开
+            eprintln!("安装器没有返回进程句柄，安装后不会自动重新打开 Primus");
+            return Ok(true);
+        }
+        let process = OwnedHandle(info.hProcess);
+        if let Err(e) = spawn_relauncher(&process, relaunch) {
+            eprintln!("无法安排安装后重新打开 Primus：{e}");
+        }
+        Ok(true)
+    }
+
+    /// 把安装器进程句柄（只给 SYNCHRONIZE）复制成可继承句柄交给隐藏的 PowerShell，由它等待后重新打开 Primus。
+    /// 优先脱离 Primus 所在的作业（若有），作业不允许脱离时退回普通创建。
+    fn spawn_relauncher(process: &OwnedHandle, relaunch: &Path) -> io::Result<()> {
+        use std::os::windows::process::CommandExt;
+        let mut dup: HANDLE = null_mut();
+        // SAFETY: 源句柄有效；当前进程伪句柄无需关闭
+        let ok = unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                process.0,
+                GetCurrentProcess(),
+                &mut dup,
+                SYNCHRONIZE,
+                1,
+                0,
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let dup = OwnedHandle(dup);
+        let script = relaunch_script(dup.0 as usize, relaunch);
+        let powershell = system_dir().join("WindowsPowerShell\\v1.0\\powershell.exe");
+        let spawn = |flags: u32| {
+            std::process::Command::new(&powershell)
+                .args([
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-WindowStyle",
+                    "Hidden",
+                    "-Command",
+                    &script,
+                ])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .creation_flags(flags)
+                .spawn()
+        };
+        spawn(CREATE_NO_WINDOW | CREATE_BREAKAWAY_FROM_JOB)
+            .or_else(|_| spawn(CREATE_NO_WINDOW))
+            .map(drop)
+    }
+
     fn message_box(text: &str, style: u32) -> i32 {
         let text = wide(text);
         let title = wide(GUIDE_TITLE);
@@ -914,6 +1052,26 @@ mod fallback_impl {
         ))
     }
 
+    pub(crate) fn grant_admins_read(_dir: &Path) -> io::Result<()> {
+        // 非 Windows：updates 目录随 users/<SID> 为 0700，提权安装只在 Windows 上提供
+        Ok(())
+    }
+
+    pub(crate) fn system_dir() -> std::path::PathBuf {
+        std::path::PathBuf::from("/usr/bin")
+    }
+
+    pub(crate) fn launch_installer(
+        _program: &Path,
+        _params: &str,
+        _relaunch: &Path,
+    ) -> io::Result<bool> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "自动更新仅在 Windows 上提供",
+        ))
+    }
+
     pub(crate) fn show_data_dir_guide(detail: &str, _repairable: bool) -> RepairChoice {
         eprintln!("{GUIDE_TITLE}\n{}", guide_text(detail, false));
         RepairChoice::Quit
@@ -1123,6 +1281,18 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success());
+    }
+
+    #[test]
+    fn relaunch_script_waits_on_handle_and_quotes_path() {
+        let script = relaunch_script(
+            0x1a4,
+            Path::new("C:\\Program Files\\O'Brien\\Primus.exe"),
+        );
+        assert!(script.contains("[IntPtr]::new(420)"), "{script}");
+        assert!(script.contains("WaitOne()"));
+        assert!(script.ends_with("Start-Process -FilePath 'C:\\Program Files\\O''Brien\\Primus.exe'"));
+        assert!(!script.contains('"'), "脚本不含双引号，整体作为一个命令行参数传给 PowerShell");
     }
 
     #[test]
