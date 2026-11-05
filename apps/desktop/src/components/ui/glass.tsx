@@ -364,6 +364,11 @@ function readForcedRenderer(): "webgl" | "svg" | null {
 
 const forcedRenderer = readForcedRenderer();
 
+/** 空闲判定：连续这么多帧没有变化后降频（约半秒） */
+const IDLE_AFTER = 30;
+/** 空闲时的检查间隔（毫秒） */
+const IDLE_POLL_MS = 250;
+
 // 乾元补丁：用 useSyncExternalStore 读取 <html class="dark">，服务端快照固定为 false，
 // 水合阶段与静态预渲染一致，水合完成后再切到真实值，避免深色下 hydration 属性不匹配。
 function subscribeDarkClass(onChange: () => void): () => void {
@@ -675,6 +680,31 @@ function Glass({
       let raf = 0;
       let lastChroma = -1;
       let lastBlurStd = -1;
+      // 乾元补丁：空闲降频。原实现每个玻璃元素都常驻一个逐帧 rAF 循环（每帧读布局、比对 SVG 滤镜），
+      // 界面静止时也让主线程与 GPU 以刷新率空转，WebView2 下 GPU 占用很高。
+      // 连续 IDLE_AFTER 帧没有任何变化后改为每 IDLE_POLL_MS 检查一次；
+      // 滚动、尺寸变化、指针与键盘操作、CSS 过渡/动画开始时立即恢复逐帧。
+      let idle = 0;
+      let idleTimer: ReturnType<typeof setTimeout> | undefined;
+      let lastParams: unknown = null;
+      let lastDyn = "";
+      const schedule = () => {
+        if (idle > IDLE_AFTER) {
+          idleTimer = setTimeout(() => {
+            idleTimer = undefined;
+            raf = requestAnimationFrame(tick);
+          }, IDLE_POLL_MS);
+        } else raf = requestAnimationFrame(tick);
+      };
+      const wake = () => {
+        const sleeping = idle > IDLE_AFTER;
+        idle = 0;
+        if (sleeping && idleTimer !== undefined) {
+          clearTimeout(idleTimer);
+          idleTimer = undefined;
+          raf = requestAnimationFrame(tick);
+        }
+      };
       const collapse = (slot: SlotEls) => {
         if (slot.lastW === "0.001") {
           return;
@@ -757,6 +787,7 @@ function Glass({
         const G = p.resolution;
         let mapChanged = false;
         let rectChanged = false;
+        let resizingAny = false;
         let hasLens = false;
         let activeCount = 0;
         let base: DOMRect | null = null;
@@ -793,6 +824,7 @@ function Glass({
               Math.abs(r.height - slot.prevH) > 0.3;
             slot.prevW = r.width;
             slot.prevH = r.height;
+            if (resizing) resizingAny = true;
             const radiusParts = getComputedStyle(mark)
               .borderTopLeftRadius.split(" ")
               .map((v) => Math.round(Number.parseFloat(v) * 2) / 2 || 0);
@@ -968,10 +1000,36 @@ function Glass({
           filterRef.current.id = id;
           contentRef.current.style.filter = `url(#${id})`;
         }
-        raf = requestAnimationFrame(tick);
+        const dynKey = `${zoom}|${depthMul}`;
+        const changed =
+          mapChanged || rectChanged || resizingAny || p !== lastParams || dynKey !== lastDyn;
+        lastParams = p;
+        lastDyn = dynKey;
+        idle = changed ? 0 : idle + 1;
+        schedule();
       };
       raf = requestAnimationFrame(tick);
-      return () => cancelAnimationFrame(raf);
+      const wakeEvents = [
+        "resize",
+        "scroll",
+        "pointerdown",
+        "pointermove",
+        "pointerup",
+        "keydown",
+        "wheel",
+        "transitionrun",
+        "animationstart",
+      ] as const;
+      for (const type of wakeEvents)
+        window.addEventListener(type, wake, { capture: true, passive: true });
+      const ro = typeof ResizeObserver === "function" ? new ResizeObserver(wake) : null;
+      ro?.observe(node);
+      return () => {
+        cancelAnimationFrame(raf);
+        clearTimeout(idleTimer);
+        for (const type of wakeEvents) window.removeEventListener(type, wake, { capture: true });
+        ro?.disconnect();
+      };
     },
     [filterId, dynamicsRef, useWebGL]
   );

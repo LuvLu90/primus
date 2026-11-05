@@ -2,6 +2,7 @@ import type {
   AgentMessage,
   AssistantContent,
   AssistantMessageEvent,
+  ContextUsage,
   CoreRecord,
   ExtensionUiDialogRequest,
   RpcResponse,
@@ -60,6 +61,8 @@ export interface SessionState {
   thinkingLevel?: string;
   /** 当前模型支持的思考强度（get_available_thinking_levels） */
   thinkingLevels?: string[];
+  /** 上下文占用（get_session_stats）；每条回复结束后刷新 */
+  contextUsage?: ContextUsage;
 }
 
 export const initialSessionState: SessionState = {
@@ -168,6 +171,8 @@ function applyRecord(draft: SessionState, record: CoreRecord): void {
     case "response": {
       const r: RpcResponse = record;
       if (!r.success) {
+        // 上下文统计是后台刷新，失败不打扰用户（下一条回复结束后再取）
+        if (r.command === "get_session_stats") return;
         draft.lastError = r.error || `${r.command} 失败`;
         return;
       }
@@ -191,6 +196,7 @@ function applyRecord(draft: SessionState, record: CoreRecord): void {
         // 旧模型的档位不再适用：等 get_available_thinking_levels 给出新模型的
         draft.thinkingLevels = undefined;
       }
+      if (r.command === "get_session_stats" && r.data) draft.contextUsage = r.data.contextUsage;
       if (r.command === "get_available_thinking_levels" && Array.isArray(r.data?.levels))
         draft.thinkingLevels = r.data.levels;
       return;

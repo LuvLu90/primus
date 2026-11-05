@@ -22,8 +22,10 @@ export function renderMarkdown(text: string): string {
   return md.render(text);
 }
 
-/** 每帧最多追上积压字符的这一比例：积压多时快、少时慢，约 1/3 秒追平，读起来像连续输出 */
-const CATCH_UP_FRAMES = 20;
+/** 每步追上积压字符的这一比例：积压多时快、少时慢，约 1/3 秒追平，读起来像连续输出 */
+const CATCH_UP_STEPS = 10;
+/** 两步之间至少间隔（毫秒） */
+const MIN_STEP_MS = 32;
 
 /**
  * 平滑显示流式文本：模型往往一次吐出一整段，直接显示会“蹦”出来。
@@ -49,14 +51,19 @@ export function useSmoothText(text: string, animate: boolean): string {
       setShown(text.length);
     }
     let frame = 0;
-    const tick = () => {
+    let lastAt = 0;
+    const tick = (at: number) => {
       const backlog = text.length - shownRef.current;
       if (backlog <= 0) {
         if (!animate) playing.current = false;
         return;
       }
-      shownRef.current += Math.max(1, Math.ceil(backlog / CATCH_UP_FRAMES));
-      setShown(shownRef.current);
+      // 最多约 30 次/秒：每次都要重新解析整段 Markdown，逐帧（60~144Hz）刷新对长回复太重
+      if (at - lastAt >= MIN_STEP_MS) {
+        lastAt = at;
+        shownRef.current += Math.max(1, Math.ceil(backlog / CATCH_UP_STEPS));
+        setShown(shownRef.current);
+      }
       frame = requestAnimationFrame(tick);
     };
     frame = requestAnimationFrame(tick);

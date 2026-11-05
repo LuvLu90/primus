@@ -68,6 +68,8 @@ export const strings = {
     assistant: "乾元",
     thinking: "思考过程",
     thinkingNow: "正在思考",
+    copy: "复制",
+    copied: "已复制",
     work: {
       running: "正在工作",
       elapsed: "用时",
@@ -78,7 +80,15 @@ export const strings = {
       failed: "失败",
       index: "对话索引",
       tools: {
-        read: { done: "已读取文件", running: "正在读取文件" },
+        read: { done: "已读取", running: "正在读取" },
+        bash: { done: "已运行", running: "正在运行" },
+        edit: { done: "已编辑", running: "正在编辑" },
+        write: { done: "已写入", running: "正在写入" },
+        search: { done: "已搜索", running: "正在搜索" },
+        other: { done: "已调用", running: "正在调用" },
+      },
+      groups: {
+        read: { done: "读取了文件", running: "正在读取文件" },
         bash: { done: "运行了命令", running: "正在运行命令" },
         edit: { done: "编辑了文件", running: "正在编辑文件" },
         write: { done: "写入了文件", running: "正在写入文件" },
@@ -174,6 +184,7 @@ export const strings = {
     trustCancel: "取消",
     pickFilesFailed: "选择文件失败",
     contextDetail: "当前会话占用的上下文窗口比例。",
+    contextUnknown: "刚压缩过上下文，下一条回复后更新。",
     welcomeSubtitle: "乾元可以阅读和修改你的项目、运行命令，并在需要时先征求你的确认。",
     suggestions: ["解释这个项目的结构", "找出并修复失败的测试", "为 README 补充安装说明"],
   },

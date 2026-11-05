@@ -48,9 +48,12 @@ describe("对话区（mock 事件流）", () => {
     await waitFor(() => expect((input as HTMLTextAreaElement).value).toBe(""));
     await screen.findByRole("article", { name: t.you });
     await waitFor(() => expect(screen.getByText(/mock 平台/)).toBeTruthy());
-    // 工具调用收进工作过程：合并成“已读取文件”一行；结束后收起成“用时 …”
-    expect(screen.getAllByText(t.work.tools.read.done).length).toBeGreaterThan(0);
-    await waitFor(() => expect(screen.getByRole("button", { name: t.work.expand })).toBeTruthy());
+    // 工具调用收进工作过程：结束后收起成“用时 …”，展开后看到“已读取 路径”一行
+    const expand = await screen.findByRole("button", { name: t.work.expand });
+    fireEvent.click(expand);
+    expect((await screen.findAllByText(new RegExp(t.work.tools.read.done))).length).toBeGreaterThan(
+      0,
+    );
     await waitFor(() => expect(screen.getByRole("button", { name: t.send })).toBeTruthy());
   });
 

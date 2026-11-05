@@ -382,31 +382,25 @@ html.window-effects.glass-clear body {
   pointer-events: none;
 }
 
-/* 流光文字：一道亮带从左向右扫过 */
-@keyframes shimmer {
-  from {
-    background-position: 100% 0;
+/*
+ * 进行中的文字：透明度呼吸。只动 opacity 并提升为独立图层，交给合成器，不触发重绘；
+ * 之前用 background-clip:text 的渐变平移做流光，每帧重绘文字，叠在磨砂玻璃上让 WebView2 的 GPU 持续高占用。
+ */
+@keyframes text-pulse {
+  0%,
+  100% {
+    opacity: 1;
   }
-  to {
-    background-position: 0 0;
+  50% {
+    opacity: 0.45;
   }
 }
 
+.text-pulse,
 .shimmer-text {
-  background:
-    linear-gradient(
-      90deg,
-      var(--color-muted) 0%,
-      var(--color-muted) 40%,
-      var(--color-fg) 50%,
-      var(--color-muted) 60%,
-      var(--color-muted) 100%
-    )
-    0 0 / 300% 100%;
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  animation: shimmer 1.8s linear infinite;
+  color: var(--color-muted);
+  animation: text-pulse 1.8s ease-in-out infinite;
+  will-change: opacity;
 }
 
 @keyframes dot-bounce {
@@ -428,6 +422,7 @@ html.window-effects.glass-clear body {
 }
 
 .thinking-dots i {
+  will-change: transform, opacity;
   width: 5px;
   height: 5px;
   border-radius: 9999px;
@@ -446,12 +441,11 @@ html.window-effects.glass-clear body {
 @media (prefers-reduced-motion: reduce) {
   .msg-in,
   .welcome-out,
+  .text-pulse,
   .shimmer-text,
+  .step-in,
   .thinking-dots i {
     animation: none;
-  }
-  .shimmer-text {
-    color: var(--color-muted);
   }
 }
 
@@ -605,4 +599,31 @@ html.window-effects.glass-clear body {
   .index-pop {
     animation: none;
   }
+}
+
+/* 工作过程里新出现的一步：轻轻淡入上浮（只动 opacity/translate） */
+@keyframes step-in {
+  from {
+    opacity: 0;
+    translate: 0 4px;
+  }
+}
+
+.step-in {
+  animation: step-in 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* 命令输出底部渐隐，提示还有更多 */
+.output-fade {
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 28px), transparent);
+}
+
+/* 进行中的思考只露出最新几行，顶部渐隐 */
+.thought-live {
+  scrollbar-width: none;
+  mask-image: linear-gradient(to bottom, transparent, #000 2.2em);
+}
+
+.thought-live::-webkit-scrollbar {
+  display: none;
 }

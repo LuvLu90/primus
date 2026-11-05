@@ -489,7 +489,7 @@ function PanelToggle({
       }}
       aria-disabled={disabled || undefined}
       className={cn(
-        "absolute top-1.5 z-10 grid size-7 place-items-center rounded-[10px] text-muted transition-colors hover:bg-hover hover:text-fg aria-pressed:text-fg",
+        "absolute top-1.5 z-20 grid size-7 place-items-center rounded-[10px] text-muted transition-colors hover:bg-hover hover:text-fg aria-pressed:text-fg",
         side === "left" ? "left-1.5" : "right-1.5",
       )}
     >

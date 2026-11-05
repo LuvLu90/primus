@@ -1,6 +1,6 @@
 "use client";
 
-import type { AgentMessage } from "@primus/protocol";
+import type { AgentMessage, ContextUsage } from "@primus/protocol";
 import { ArrowUp, Folder, FolderOpen, Maximize2, Minimize2, Plus, Square, X } from "lucide-react";
 import {
   type FormEvent,
@@ -174,16 +174,28 @@ function WorkspaceBar({
   );
 }
 
-/** 上下文占用：只显示小圆环，点击展开详情 */
-function ContextRing({ percent }: { percent: number }) {
+/** 1.2k / 128k / 1M：上下文 token 的紧凑写法 */
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${Math.round(n / 100_000) / 10}M`.replace(".0M", "M");
+  if (n >= 1_000) return `${Math.round(n / 100) / 10}k`.replace(".0k", "k");
+  return String(n);
+}
+
+/** 上下文占用：只显示小圆环，点击展开详情（tokens / 上下文窗口）。压缩后、下一次回复前占用未知 */
+function ContextRing({ usage }: { usage?: ContextUsage }) {
   const r = 7;
   const c = 2 * Math.PI * r;
+  const known = usage?.percent != null && usage.tokens != null;
+  const percent = known ? Math.min(100, Math.max(0, usage?.percent ?? 0)) : 0;
+  const shown = known ? `${percent < 10 ? percent.toFixed(1) : Math.round(percent)}%` : "—";
+  const tone =
+    percent >= 90 ? "stroke-danger" : percent >= 75 ? "stroke-amber-500" : "stroke-accent";
   return (
     <GlassPopover>
       <GlassPopoverTrigger asChild>
         <button
           type="button"
-          aria-label={`${t.context} ${percent}%`}
+          aria-label={`${t.context} ${shown}`}
           className="grid size-8 place-items-center rounded-full outline-none transition-colors hover:bg-hover data-[state=open]:bg-hover"
         >
           <svg aria-hidden width="18" height="18" viewBox="0 0 18 18" className="-rotate-90">
@@ -204,7 +216,7 @@ function ContextRing({ percent }: { percent: number }) {
               strokeLinecap="round"
               strokeDasharray={c}
               strokeDashoffset={c * (1 - percent / 100)}
-              className="stroke-accent"
+              className={cn("transition-[stroke-dashoffset] duration-500 ease-out", tone)}
             />
           </svg>
         </button>
@@ -213,12 +225,24 @@ function ContextRing({ percent }: { percent: number }) {
         <div className="flex flex-col gap-1.5 px-4 py-1.5 text-[13px]">
           <div className="flex items-baseline justify-between gap-6">
             <span className="font-medium">{t.context}</span>
-            <span className="tabular-nums text-muted">{percent}%</span>
+            <span className="tabular-nums text-muted">{shown}</span>
           </div>
           <div className="h-1.5 overflow-hidden rounded-full bg-black/10 dark:bg-white/15">
-            <div className="h-full rounded-full bg-accent" style={{ width: `${percent}%` }} />
+            <div
+              className={cn(
+                "h-full rounded-full transition-[width] duration-500 ease-out",
+                percent >= 90 ? "bg-danger" : percent >= 75 ? "bg-amber-500" : "bg-accent",
+              )}
+              style={{ width: `${percent}%` }}
+            />
           </div>
-          <p className="text-[12px] text-muted">{t.contextDetail}</p>
+          {usage && (
+            <p className="text-[12px] text-muted tabular-nums">
+              {known ? formatTokens(usage.tokens ?? 0) : "—"} / {formatTokens(usage.contextWindow)}{" "}
+              tokens
+            </p>
+          )}
+          <p className="text-[12px] text-muted">{known ? t.contextDetail : t.contextUnknown}</p>
         </div>
       </GlassPopoverContent>
     </GlassPopover>
@@ -515,10 +539,15 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
       <MessageIndex items={indexItems} scrollRef={scrollRef} />
+      {/* 顶部渐隐：滚上去的内容在左右栏开关下方淡出，不和按钮叠在一起 */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 top-0 z-10 h-12 bg-linear-to-b from-[var(--paper)] from-40% to-transparent"
+      />
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        className="scroll-none flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pt-6 text-sm"
+        className="scroll-none flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pt-12 text-sm"
         style={{ paddingBottom: (composerHeight ?? COMPOSER_FALLBACK_PX) + COMPOSER_GAP_PX }}
       >
         <div
@@ -794,7 +823,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                   onSelectModel={(model) => void selectModel({ model })}
                   onSelectThinking={(thinkingLevel) => void selectModel({ thinkingLevel })}
                 />
-                <ContextRing percent={0} />
+                <ContextRing usage={state.contextUsage} />
                 {state.running ? (
                   <button
                     type="button"

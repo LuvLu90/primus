@@ -3,7 +3,9 @@
 import type { AgentMessage } from "@primus/protocol";
 import {
   Brain,
+  Check,
   ChevronRight,
+  Copy,
   FilePen,
   FileText,
   type LucideIcon,
@@ -11,7 +13,7 @@ import {
   SquareTerminal,
   Wrench,
 } from "lucide-react";
-import { memo, type ReactNode, useEffect, useId, useState } from "react";
+import { memo, type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 import type { TimelineContent, ToolRun } from "@/stores/session-store";
@@ -20,8 +22,11 @@ import { MarkdownText, ThinkingIndicator } from "./message-content";
 // 一轮回复（一条用户消息之后的全部助手消息与工具结果）按“工作过程 + 总结”展示：
 // 业界一般叫 Chain of Thought / 推理与工具调用分组（Vercel AI Elements 的 ChainOfThought、
 // assistant-ui 的 GroupedParts、Codex 桌面版的“Worked for 8m 28s”）。
-// 中间的思考、过程说明、工具调用折叠进可展开的工作过程，运行中自动展开、实时追加；
+// 中间的思考、过程说明、工具调用按顺序放进可折叠的工作过程，运行中展开、实时追加；
 // 结束后自动收起成“用时 8m 28s”，最后一条不带工具调用的回复作为总结显示在下面。
+//
+// 性能：运行中只有计时器每秒刷新（独立组件），流光等动画只用 opacity/transform，交给合成器，
+// 不触发重绘（WebView2 下背景裁剪文字的渐变动画会让 GPU 持续重绘磨砂玻璃）。
 
 const t = strings.chat.work;
 
@@ -30,6 +35,7 @@ type ToolKind = keyof typeof t.tools;
 const toolKinds: Record<string, ToolKind> = {
   read: "read",
   bash: "bash",
+  powershell: "bash",
   edit: "edit",
   write: "write",
   grep: "search",
@@ -50,6 +56,13 @@ const toolIcons: Record<ToolKind, LucideIcon> = {
 const kindOf = (name: string): ToolKind => toolKinds[name] ?? "other";
 
 type ToolCallBlock = Extract<TimelineContent, { type: "toolCall" }>;
+type ToolStatus = ToolRun["status"];
+
+/** 一次工具调用的状态与输出：运行中取实时事件，历史会话取工具结果消息 */
+interface CallInfo {
+  status: ToolStatus;
+  output: string;
+}
 
 type Step =
   | { kind: "note"; key: string; text: string; live: boolean }
@@ -63,14 +76,27 @@ interface TurnLayout {
   /** 最后一条助手消息（停止、出错的标记跟在总结后面） */
   last?: Extract<AgentMessage, { role: "assistant" }>;
   end?: number;
+  results: Map<string, { isError: boolean; output: string }>;
 }
 
 const hasText = (b: TimelineContent | undefined) => b?.type === "text" && b.text.trim() !== "";
+
+function textOfContent(content: unknown): string {
+  if (!Array.isArray(content)) return typeof content === "string" ? content : "";
+  return content
+    .map((c: { type?: string; text?: string }) => (c?.type === "text" ? (c.text ?? "") : ""))
+    .join("");
+}
 
 function layoutTurn(messages: AgentMessage[], streaming: boolean): TurnLayout {
   const assistants = messages.filter(
     (m): m is Extract<AgentMessage, { role: "assistant" }> => m.role === "assistant",
   );
+  const results = new Map<string, { isError: boolean; output: string }>();
+  for (const m of messages)
+    if (m.role === "toolResult")
+      results.set(m.toolCallId, { isError: m.isError, output: textOfContent(m.content) });
+
   const last = assistants.at(-1);
   const lastContent = ((last?.content as TimelineContent[]) ?? []).filter(Boolean);
   const lastIsAnswer =
@@ -103,7 +129,13 @@ function layoutTurn(messages: AgentMessage[], streaming: boolean): TurnLayout {
   const stamps = messages
     .map((m) => (m as { timestamp?: number }).timestamp)
     .filter((n): n is number => typeof n === "number" && n > 0);
-  return { steps, answer, last, end: stamps.length ? Math.max(...stamps) : undefined };
+  return {
+    steps,
+    answer,
+    last,
+    end: stamps.length ? Math.max(...stamps) : undefined,
+    results,
+  };
 }
 
 /** 8m 28s / 42s / 1h 3m（与 Codex 一致的紧凑写法） */
@@ -115,156 +147,286 @@ export function formatElapsed(ms: number): string {
   return `${Math.floor(m / 60)}h ${m % 60}m`;
 }
 
-/** 运行中每秒刷新的当前时间 */
-function useNow(active: boolean): number {
+/** 计时：运行中每秒刷新，只重渲染这一小段文字 */
+function Elapsed({ start, end, running }: { start: number; end?: number; running: boolean }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (!active) return;
+    if (!running) return;
     setNow(Date.now());
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [active]);
-  return now;
+  }, [running]);
+  return (
+    <span className="tabular-nums">{formatElapsed((running ? now : (end ?? now)) - start)}</span>
+  );
 }
 
 /** 高度平滑展开/收起：grid 行从 0fr 过渡到 1fr，内容同时淡入 */
 function Collapse({ open, id, children }: { open: boolean; id?: string; children: ReactNode }) {
+  // 收起时不渲染内容：长工作过程里成百上千行输出不必常驻 DOM（等收起动画结束再卸载）
+  const [mounted, setMounted] = useState(open);
+  useEffect(() => {
+    if (open) {
+      setMounted(true);
+      return;
+    }
+    const timer = setTimeout(() => setMounted(false), 400);
+    return () => clearTimeout(timer);
+  }, [open]);
   return (
     <div id={id} className="collapse-grid" data-open={open || undefined} inert={!open}>
-      <div className="min-h-0 overflow-hidden">{children}</div>
+      <div className="min-h-0 overflow-hidden">{(open || mounted) && children}</div>
     </div>
   );
 }
 
-function argSummary(call: ToolCallBlock): string {
+function argOf(call: ToolCallBlock): string {
   const a = call.arguments ?? {};
   const pick = (k: string) => (typeof a[k] === "string" ? (a[k] as string) : undefined);
-  const raw =
+  return (
     pick("command") ??
     pick("path") ??
     pick("file_path") ??
     pick("pattern") ??
     pick("query") ??
     pick("url") ??
-    "";
-  return raw.split("\n")[0] ?? "";
+    ""
+  );
 }
 
-function ToolGroup({
-  calls,
-  toolRuns,
+const firstLine = (s: string) => (s.split("\n")[0] ?? "").trim();
+
+/** 输出最多显示这么多字符（取末尾）：长输出只看结尾 */
+const OUTPUT_LIMIT = 6000;
+
+function StepButton({
+  open,
+  onToggle,
+  controls,
+  icon: Icon,
+  children,
+  live,
+  failed,
 }: {
-  calls: ToolCallBlock[];
-  toolRuns: Record<string, ToolRun>;
+  open: boolean;
+  onToggle: () => void;
+  controls: string;
+  icon: LucideIcon;
+  children: ReactNode;
+  live?: boolean;
+  failed?: boolean;
 }) {
+  return (
+    <button
+      type="button"
+      aria-expanded={open}
+      aria-controls={controls}
+      onClick={onToggle}
+      className="group/step -mx-1.5 flex max-w-full items-center gap-2 rounded-lg px-1.5 py-[3px] text-left text-[13px] text-muted outline-none transition-colors duration-200 hover:bg-hover/60 hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40"
+    >
+      <Icon
+        aria-hidden
+        size={14}
+        strokeWidth={1.75}
+        className={cn("shrink-0", failed && "text-danger")}
+      />
+      <span className={cn("min-w-0 truncate", live && "text-pulse")}>{children}</span>
+      <ChevronRight
+        aria-hidden
+        size={13}
+        className={cn(
+          "shrink-0 opacity-0 transition-[rotate,opacity] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover/step:opacity-60 group-focus-visible/step:opacity-60",
+          open && "rotate-90 opacity-60",
+        )}
+      />
+    </button>
+  );
+}
+
+/** 一次工具调用：一行“已运行 git status”，展开看命令与输出 */
+function ToolCallRow({ call, info }: { call: ToolCallBlock; info: CallInfo }) {
   const [open, setOpen] = useState(false);
   const id = useId();
-  const statuses = calls.map((c) => toolRuns[c.id]?.status);
-  const running = statuses.some((s) => s === "running" || s === undefined);
-  const failed = statuses.filter((s) => s === "error").length;
-  // 组标签：按出现顺序列出不同种类（“已读取文件、运行了命令”）；运行中的那一类用进行时
+  const kind = kindOf(call.name);
+  const running = info.status === "running";
+  const verb = running ? t.tools[kind].running : t.tools[kind].done;
+  const arg = firstLine(argOf(call));
+  const output =
+    info.output.length > OUTPUT_LIMIT ? `…${info.output.slice(-OUTPUT_LIMIT)}` : info.output;
+  return (
+    <div>
+      <StepButton
+        open={open}
+        onToggle={() => setOpen((o) => !o)}
+        controls={id}
+        icon={toolIcons[kind]}
+        live={running}
+        failed={info.status === "error"}
+      >
+        {kind === "other" ? `${verb} ${call.name}` : verb}
+        {arg && <span className="ml-1.5 font-mono text-[12px] opacity-80">{arg}</span>}
+      </StepButton>
+      <Collapse open={open} id={id}>
+        <div className="mt-1 mb-1.5 overflow-hidden rounded-xl bg-hover/70 ring-1 ring-border/60">
+          <div className="px-3 pt-2 text-[11px] text-muted">
+            {kind === "bash" ? "Shell" : call.name}
+          </div>
+          <pre className="output-fade max-h-64 overflow-auto px-3 pt-1.5 pb-3 font-mono text-[12px] leading-[1.6]">
+            {argOf(call) && (
+              <>
+                <span className="text-muted">{kind === "bash" ? "$ " : ""}</span>
+                <span className="text-fg">{argOf(call)}</span>
+                {"\n"}
+              </>
+            )}
+            <span className={cn("text-fg/70", info.status === "error" && "text-danger")}>
+              {output || (running ? "…" : "")}
+            </span>
+          </pre>
+        </div>
+      </Collapse>
+    </div>
+  );
+}
+
+/** 连续的工具调用：一次只显示一行；多次时先一行汇总（“运行了命令、已读取文件 3”），展开列出每一次 */
+function ToolGroup({
+  calls,
+  infoOf,
+  turnRunning,
+}: {
+  calls: ToolCallBlock[];
+  infoOf: (call: ToolCallBlock) => CallInfo;
+  turnRunning: boolean;
+}) {
+  const infos = calls.map(infoOf);
+  const running = infos.some((i) => i.status === "running");
+  // 进行中的那组展开，看得到每一步；完成后收起成一行（用户点过则听用户的）
+  const [userOpen, setUserOpen] = useState<boolean | null>(null);
+  const open = userOpen ?? (running && turnRunning);
+  const id = useId();
+  if (calls.length === 1) {
+    const [call] = calls as [ToolCallBlock];
+    return <ToolCallRow call={call} info={infos[0] as CallInfo} />;
+  }
+  const failed = infos.filter((i) => i.status === "error").length;
   const kinds = [...new Set(calls.map((c) => kindOf(c.name)))];
   const lastKind = kindOf(calls.at(-1)?.name ?? "");
   const label = kinds
-    .map((k) => (running && k === lastKind ? t.tools[k].running : t.tools[k].done))
+    .map((k) => (running && k === lastKind ? t.groups[k].running : t.groups[k].done))
     .join("、");
-  const Icon = toolIcons[lastKind];
   return (
     <div>
-      <button
-        type="button"
-        aria-expanded={open}
-        aria-controls={id}
-        onClick={() => setOpen((o) => !o)}
-        className="group/step flex max-w-full items-center gap-1.5 rounded-md py-0.5 text-[13px] text-muted outline-none transition-colors hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40"
+      <StepButton
+        open={open}
+        onToggle={() => setUserOpen(!open)}
+        controls={id}
+        icon={toolIcons[lastKind]}
+        live={running}
+        failed={failed > 0}
       >
-        <Icon aria-hidden size={14} strokeWidth={1.75} className="shrink-0" />
-        <span className={cn("truncate", running && "shimmer-text")}>{label}</span>
-        {calls.length > 1 && <span className="tabular-nums opacity-70">{calls.length}</span>}
+        {label}
+        <span className="ml-1.5 tabular-nums opacity-60">{calls.length}</span>
         {failed > 0 && (
-          <span className="text-danger">
-            · {failed} {t.failed}
+          <span className="ml-1.5 text-danger">
+            {failed} {t.failed}
           </span>
         )}
-        <ChevronRight
-          aria-hidden
-          size={13}
-          className={cn(
-            "shrink-0 opacity-0 transition-[rotate,opacity] duration-300 ease-out group-hover/step:opacity-70",
-            open && "rotate-90 opacity-70",
-          )}
-        />
-      </button>
+      </StepButton>
       <Collapse open={open} id={id}>
-        <ul className="mt-1 mb-1 ml-[7px] flex flex-col gap-1 border-border border-l pl-3.5">
-          {calls.map((c) => {
-            const status = toolRuns[c.id]?.status ?? "running";
-            const k = kindOf(c.name);
-            return (
-              <li key={c.id} className="flex min-w-0 items-center gap-2 text-[12px] text-muted">
-                <span
-                  aria-hidden
-                  className={cn(
-                    "size-1.5 shrink-0 rounded-full",
-                    status === "running" && "animate-pulse bg-accent",
-                    status === "done" && "bg-emerald-500/80",
-                    status === "error" && "bg-danger",
-                  )}
-                />
-                <span className="shrink-0">{k === "other" ? c.name : t.tools[k].done}</span>
-                <code className="truncate font-mono text-[11.5px] opacity-80" title={argSummary(c)}>
-                  {argSummary(c)}
-                </code>
-              </li>
-            );
-          })}
-        </ul>
+        <div className="mt-0.5 ml-[7px] flex flex-col border-border/80 border-l pl-3">
+          {calls.map((c, i) => (
+            <div key={c.id} className="step-in">
+              <ToolCallRow call={c} info={infos[i] as CallInfo} />
+            </div>
+          ))}
+        </div>
       </Collapse>
     </div>
   );
 }
 
+/** 思考：进行中展开，实时滚动显示最新几行；结束后收起，可再展开 */
 function ThoughtStep({ text, live }: { text: string; live: boolean }) {
-  const [open, setOpen] = useState(false);
+  const [userOpen, setUserOpen] = useState<boolean | null>(null);
+  const open = userOpen ?? live;
   const id = useId();
+  const tailRef = useRef<HTMLDivElement>(null);
+  // 进行中贴着最新内容
+  useLayoutEffect(() => {
+    const el = tailRef.current;
+    if (live && el) el.scrollTop = el.scrollHeight;
+  });
   return (
     <div>
-      <button
-        type="button"
-        aria-expanded={open}
-        aria-controls={id}
-        onClick={() => setOpen((o) => !o)}
-        className="group/step flex items-center gap-1.5 rounded-md py-0.5 text-[13px] text-muted outline-none transition-colors hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40"
+      <StepButton
+        open={open}
+        onToggle={() => setUserOpen(!open)}
+        controls={id}
+        icon={Brain}
+        live={live}
       >
-        <Brain aria-hidden size={14} strokeWidth={1.75} />
-        <span className={cn(live && "shimmer-text")}>{live ? t.thinkingNow : t.thought}</span>
-        <ChevronRight
-          aria-hidden
-          size={13}
-          className={cn(
-            "opacity-0 transition-[rotate,opacity] duration-300 ease-out group-hover/step:opacity-70",
-            open && "rotate-90 opacity-70",
-          )}
-        />
-      </button>
+        {live ? t.thinkingNow : t.thought}
+      </StepButton>
       <Collapse open={open} id={id}>
-        <p className="mt-1 mb-1 ml-[7px] whitespace-pre-wrap border-border border-l pl-3.5 text-[12.5px] text-muted leading-relaxed">
-          {text}
-        </p>
+        <div
+          ref={tailRef}
+          className={cn(
+            "mt-1 mb-1 ml-[7px] overflow-y-auto border-border/80 border-l pl-3 text-[12.5px] text-muted leading-relaxed",
+            live ? "thought-live max-h-[7.5em]" : "max-h-80",
+          )}
+        >
+          <MarkdownText text={text} streaming={live} />
+        </div>
       </Collapse>
     </div>
   );
 }
 
-function StepView({ step, toolRuns }: { step: Step; toolRuns: Record<string, ToolRun> }) {
-  if (step.kind === "tools") return <ToolGroup calls={step.calls} toolRuns={toolRuns} />;
+function StepView({
+  step,
+  infoOf,
+  turnRunning,
+}: {
+  step: Step;
+  infoOf: (call: ToolCallBlock) => CallInfo;
+  turnRunning: boolean;
+}) {
+  if (step.kind === "tools")
+    return <ToolGroup calls={step.calls} infoOf={infoOf} turnRunning={turnRunning} />;
   if (step.kind === "thought") return <ThoughtStep text={step.text} live={step.live} />;
   return (
     <MarkdownText
       text={step.text}
       streaming={step.live}
-      className="text-[14px] text-fg/85 leading-relaxed"
+      className="py-0.5 text-[14px] text-fg/85 leading-relaxed"
     />
+  );
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const id = setTimeout(() => setCopied(false), 1500);
+    return () => clearTimeout(id);
+  }, [copied]);
+  return (
+    <button
+      type="button"
+      aria-label={copied ? strings.chat.copied : strings.chat.copy}
+      title={copied ? strings.chat.copied : strings.chat.copy}
+      onClick={() => {
+        void navigator.clipboard?.writeText(text).then(() => setCopied(true));
+      }}
+      className="grid size-7 place-items-center rounded-lg text-muted outline-none transition-colors hover:bg-hover hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40"
+    >
+      {copied ? (
+        <Check aria-hidden size={14} className="step-in" />
+      ) : (
+        <Copy aria-hidden size={14} />
+      )}
+    </button>
   );
 }
 
@@ -280,6 +442,19 @@ export interface AgentTurnProps {
   startedAt?: number;
 }
 
+function sameTurn(a: AgentTurnProps, b: AgentTurnProps): boolean {
+  if (
+    a.running !== b.running ||
+    a.streaming !== b.streaming ||
+    a.startedAt !== b.startedAt ||
+    a.messages.length !== b.messages.length
+  )
+    return false;
+  for (let i = 0; i < a.messages.length; i++) if (a.messages[i] !== b.messages[i]) return false;
+  // 工具运行状态只影响仍在进行的一轮；历史轮次的状态取自工具结果消息
+  return a.toolRuns === b.toolRuns || !b.running;
+}
+
 export const AgentTurn = memo(function AgentTurn({
   messages,
   toolRuns,
@@ -287,21 +462,29 @@ export const AgentTurn = memo(function AgentTurn({
   streaming,
   startedAt,
 }: AgentTurnProps) {
-  const { steps, answer, last, end } = layoutTurn(messages, streaming);
+  const { steps, answer, last, end, results } = layoutTurn(messages, streaming);
   // 展开状态：用户点过就听用户的；否则运行中展开、结束后自动收起
   const [userOpen, setUserOpen] = useState<boolean | null>(null);
   useEffect(() => {
     if (running) setUserOpen(null);
   }, [running]);
   const open = userOpen ?? running;
-  const now = useNow(running);
   const [mountedAt] = useState(() => Date.now());
   const start = startedAt && startedAt > 0 ? startedAt : mountedAt;
-  const elapsed = formatElapsed((running ? now : (end ?? now)) - start);
   const id = useId();
 
+  const infoOf = (call: ToolCallBlock): CallInfo => {
+    const run = toolRuns[call.id];
+    const result = results.get(call.id);
+    const status: ToolStatus =
+      run?.status ?? (result ? (result.isError ? "error" : "done") : running ? "running" : "done");
+    const output = run?.result ? textOfContent(run.result.content) : (result?.output ?? "");
+    return { status, output };
+  };
+  const answerText = answer.map((a) => a.text).join("\n\n");
+
   return (
-    <article aria-label={strings.chat.assistant} className="msg-in flex flex-col gap-3">
+    <article aria-label={strings.chat.assistant} className="msg-in group/turn flex flex-col gap-3">
       {steps.length > 0 && (
         <div className="flex flex-col">
           <button
@@ -310,10 +493,10 @@ export const AgentTurn = memo(function AgentTurn({
             aria-controls={id}
             aria-label={open ? t.collapse : t.expand}
             onClick={() => setUserOpen(!open)}
-            className="group/work flex items-center gap-1 self-start rounded-md py-0.5 text-[13px] text-muted outline-none transition-colors hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40"
+            className="group/work -mx-1.5 flex items-center gap-1 self-start rounded-lg px-1.5 py-[3px] text-[13px] text-muted outline-none transition-colors duration-200 hover:bg-hover/60 hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40"
           >
-            {running ? <span className="shimmer-text">{t.running}</span> : <span>{t.elapsed}</span>}
-            <span className="tabular-nums">{elapsed}</span>
+            <span className={cn(running && "text-pulse")}>{running ? t.running : t.elapsed}</span>
+            <Elapsed start={start} end={end} running={running} />
             <ChevronRight
               aria-hidden
               size={14}
@@ -325,15 +508,15 @@ export const AgentTurn = memo(function AgentTurn({
           </button>
           <div
             className={cn(
-              "mt-1.5 h-px bg-border transition-opacity duration-300",
-              open ? "opacity-0" : "opacity-100",
+              "mt-1.5 h-px origin-left bg-border transition-[opacity,scale] duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]",
+              open ? "scale-x-0 opacity-0" : "scale-x-100 opacity-100",
             )}
           />
           <Collapse open={open} id={id}>
-            <ol className="flex flex-col gap-2.5 pt-1 pb-1">
+            <ol className="flex flex-col gap-1.5 pt-1.5 pb-1">
               {steps.map((step) => (
-                <li key={step.key} className="msg-in">
-                  <StepView step={step} toolRuns={toolRuns} />
+                <li key={step.key} className="step-in">
+                  <StepView step={step} infoOf={infoOf} turnRunning={running} />
                 </li>
               ))}
             </ol>
@@ -346,7 +529,7 @@ export const AgentTurn = memo(function AgentTurn({
           key={a.key}
           text={a.text}
           streaming={a.live}
-          className="msg-in font-serif text-[15px] leading-relaxed"
+          className="step-in font-serif text-[15px] leading-relaxed"
         />
       ))}
       {last?.stopReason === "aborted" && (
@@ -360,6 +543,11 @@ export const AgentTurn = memo(function AgentTurn({
           {last.errorMessage ? `：${last.errorMessage}` : ""}
         </p>
       )}
+      {!running && answerText && (
+        <div className="-mt-1 -ml-1.5 flex opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover/turn:opacity-100">
+          <CopyButton text={answerText} />
+        </div>
+      )}
     </article>
   );
-});
+}, sameTurn);
