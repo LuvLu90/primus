@@ -253,6 +253,35 @@ describe("会话列表", () => {
     expect(useSessionsStore.getState().tabs.some((x) => x.sessionPath)).toBe(false);
   });
 
+  it("删除完成前该会话不能再打开，完成后恢复", async () => {
+    let finish: () => void = () => {};
+    const sessionDelete = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    withIndex({ sessionList: async () => ({ items: [summary(1)] }), sessionDelete });
+    render(<SessionList />);
+    fireEvent.keyDown(
+      await screen.findByRole("button", { name: `${t.moreActions}：第 1 个会话` }),
+      { key: "Enter" },
+    );
+    fireEvent.click(await screen.findByRole("menuitem", { name: t.delete }));
+    fireEvent.click(await screen.findByRole("button", { name: t.deleteConfirm }));
+    await waitFor(() => expect(sessionDelete).toHaveBeenCalled());
+    const row = screen.getByRole("button", { name: /^第 1 个会话/ });
+    expect((row as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(row);
+    expect(useSessionsStore.getState().tabs.some((x) => x.sessionPath)).toBe(false);
+    await act(async () => finish());
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("button", { name: /^第 1 个会话/ }) as HTMLButtonElement).disabled,
+      ).toBe(false),
+    );
+  });
+
   it("归档与删除失败时显示原因", async () => {
     const sessionArchive = vi.fn(async () => {
       throw new Error("会话不在索引中");

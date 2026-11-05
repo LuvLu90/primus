@@ -374,7 +374,7 @@ fn delete_session<S: BatchSink + Clone>(
         .or_else(|| crate::session_index::session_file_id(path));
     sessions
         .delete_closing(path, id.as_deref(), stop, || remove(path))
-        .ok_or_else(|| CoreCommandError::new(None, "会话正在删除中"))?
+        .map_err(|e| CoreCommandError::new(None, e.to_string()))?
         .map_err(|e| CoreCommandError::new(None, e.to_string()))?;
     index
         .remove(session_path)

@@ -124,6 +124,8 @@ pub(crate) struct Sessions<S> {
     /// 删除据此等待被移出会话表、但进程尚未登记到监管器的拉起结束（那时新进程已被结束），再删除文件
     launching: Mutex<HashSet<String>>,
     launch_done: Condvar,
+    /// 删除等待进行中的拉起的上限（默认 [`LAUNCH_WAIT`]，测试可调小）
+    launch_wait: Duration,
     next: AtomicU64,
     config: BridgeConfig,
 }
@@ -144,6 +146,7 @@ impl<S: BatchSink + Clone> Sessions<S> {
             deleting: Mutex::new(HashSet::new()),
             launching: Mutex::new(HashSet::new()),
             launch_done: Condvar::new(),
+            launch_wait: LAUNCH_WAIT,
             next: AtomicU64::new(0),
             config,
         }
@@ -173,13 +176,13 @@ impl<S: BatchSink + Clone> Sessions<S> {
         }
     }
 
-    /// 等待这些会话进行中的拉起结束（最多 [`LAUNCH_WAIT`]）。
-    fn wait_launches(&self, keys: &[String]) {
-        let deadline = std::time::Instant::now() + LAUNCH_WAIT;
+    /// 等待这些会话进行中的拉起结束（最多 `launch_wait`）；超时仍未结束返回 false。
+    fn wait_launches(&self, keys: &[String]) -> bool {
+        let deadline = std::time::Instant::now() + self.launch_wait;
         let mut launching = self.launching();
         while keys.iter().any(|k| launching.contains(k)) {
             let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) else {
-                break;
+                return false;
             };
             launching = self
                 .launch_done
@@ -187,6 +190,7 @@ impl<S: BatchSink + Clone> Sessions<S> {
                 .unwrap_or_else(PoisonError::into_inner)
                 .0;
         }
+        true
     }
 
     /// 测试用：以未信任（`--no-approve`）打开会话。
@@ -345,16 +349,18 @@ impl<S: BatchSink + Clone> Sessions<S> {
     /// 删除会话文件（永久删除，不进回收站）：打开中的会话不必先关闭——在同一次加锁内把使用这个会话文件或会话 ID 的
     /// 会话（同 [`Self::is_using`]）移出会话表，并把文件登记为“删除中”；然后在锁外用 `stop` 结束这些会话的 Core
     /// （结束进程要等待，不能占着会话表锁），再执行 `delete`，结束后撤销登记。登记期间打开同一文件得到 `Deleting`，
-    /// 不会出现会话关闭后、文件删除前又被打开的情况。同一文件已在删除中时不执行 `delete`，返回 None。
+    /// 不会出现会话关闭后、文件删除前又被打开的情况。同一文件已在删除中时不执行 `delete`，返回
+    /// [`DeleteRefused::AlreadyDeleting`]。
     /// 新会话按会话 ID 匹配时要求文件名是 Core 为该 ID 新建的 `<时间戳>_<会话 ID>.jsonl`（复制出的副本不算）；
-    /// 移出时仍在拉起的会话，等拉起结束、新进程被结束后才执行 `delete`。
+    /// 移出时仍在拉起的会话，等拉起结束、新进程被结束后才执行 `delete`；等待超时则不删除文件，返回
+    /// [`DeleteRefused::LaunchPending`]（文件与索引保留，可稍后重试）。
     pub(crate) fn delete_closing<T>(
         &self,
         session_file: &Path,
         session_id: Option<&str>,
         mut stop: impl FnMut(&str),
         delete: impl FnOnce() -> T,
-    ) -> Option<T> {
+    ) -> Result<T, DeleteRefused> {
         let file_keys = crate::platform::file_keys(session_file);
         let session_id = session_id.filter(|id| named_for_session(session_file, id));
         let closed: Vec<String> = {
@@ -362,7 +368,7 @@ impl<S: BatchSink + Clone> Sessions<S> {
             let mut deleting = self.deleting();
             if file_keys.iter().any(|k| deleting.contains(k)) {
                 // 同一文件已在删除中：不重复删除
-                return None;
+                return Err(DeleteRefused::AlreadyDeleting);
             }
             deleting.extend(file_keys.iter().cloned());
             let keys: Vec<String> = entries
@@ -383,13 +389,13 @@ impl<S: BatchSink + Clone> Sessions<S> {
         for key in &closed {
             stop(key);
         }
-        // 移出会话表时正在拉起、进程尚未登记到监管器的会话，上面的 stop 结束不了：等拉起结束
-        // （登记或 finish_launch 发现条目已不在，会结束新进程），再 stop 一次兜底，然后才删除文件
-        self.wait_launches(&closed);
-        for key in &closed {
-            stop(key);
+        // 移出会话表时正在拉起、进程尚未登记到监管器的会话，上面的 stop 结束不了：等拉起结束——
+        // `register` 或 `finish_launch` 发现条目已不在，会在拉起标记撤销前结束新进程（kill 等到进程退出）。
+        // 超时说明拉起卡住，Core 可能仍在运行：不删除文件
+        if !self.wait_launches(&closed) {
+            return Err(DeleteRefused::LaunchPending);
         }
-        Some(delete())
+        Ok(delete())
     }
 
     /// 关闭会话并结束其 Core；会话不存在时什么也不做。
@@ -588,6 +594,24 @@ impl<S: BatchSink + Clone> Sessions<S> {
                 sink,
             },
         );
+    }
+}
+
+/// [`Sessions::delete_closing`] 没有执行删除的原因。
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum DeleteRefused {
+    /// 同一文件已在删除中
+    AlreadyDeleting,
+    /// 使用这个文件的会话仍在拉起 Core，等待超时
+    LaunchPending,
+}
+
+impl fmt::Display for DeleteRefused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AlreadyDeleting => write!(f, "会话正在删除中"),
+            Self::LaunchPending => write!(f, "会话的内核仍在启动，请稍后再删除"),
+        }
     }
 }
 
@@ -919,7 +943,7 @@ process.stdin.on("data", (chunk) => {
         assert!(
             sessions
                 .delete_closing(&file, None, |k| stopped.push(k.to_owned()), || ())
-                .is_some()
+                .is_ok()
         );
         assert_eq!(stopped, ["s1"]);
         assert!(!sessions.is_using(&file, None));
@@ -948,8 +972,28 @@ process.stdin.on("data", (chunk) => {
         assert!(order.lock().unwrap().is_empty());
         order.lock().unwrap().push("launch done");
         drop(guard);
-        assert!(worker.join().unwrap().is_some());
+        assert!(worker.join().unwrap().is_ok());
         assert_eq!(*order.lock().unwrap(), vec!["launch done", "delete"]);
+    }
+
+    #[test]
+    fn delete_is_refused_when_a_launch_does_not_finish() {
+        let mut sessions = Sessions::<Collect>::new(BridgeConfig::default());
+        sessions.launch_wait = Duration::from_millis(50);
+        let file = std::env::temp_dir().join("2026-11-05T00-00-00-000Z_primus-y.jsonl");
+        sessions.insert_idle_for_test("s1", None, Some("primus-y"), Collect::default());
+        let _guard = sessions.begin_launch("s1");
+        let mut stopped = Vec::new();
+        let r = sessions.delete_closing(
+            &file,
+            Some("primus-y"),
+            |k| stopped.push(k.to_owned()),
+            || panic!("拉起未结束时不应删除文件"),
+        );
+        assert_eq!(r, Err(DeleteRefused::LaunchPending));
+        assert_eq!(stopped, ["s1"], "每个会话只结束一次");
+        // 拒绝后撤销“删除中”登记，可以重试
+        assert!(sessions.deleting().is_empty());
     }
 
     #[test]
@@ -987,9 +1031,8 @@ process.stdin.on("data", (chunk) => {
             .deleting()
             .extend(crate::platform::file_keys(&file));
         assert!(
-            sessions
-                .delete_closing(&file, None, |_| {}, || panic!("不应执行删除"))
-                .is_none()
+            sessions.delete_closing(&file, None, |_| {}, || panic!("不应执行删除"))
+                == Err(DeleteRefused::AlreadyDeleting)
         );
     }
 

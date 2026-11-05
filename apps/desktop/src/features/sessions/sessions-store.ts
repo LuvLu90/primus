@@ -68,16 +68,28 @@ export function findTab(
   );
 }
 
+/** 会话文件是否是 Core 为这个会话 ID 新建的文件（`<时间戳>_<会话 ID>.jsonl`，与薄壳删除时的判断一致）。 */
+function namedForSession(path: string, sessionId: string): boolean {
+  const name = path.split(/[\\/]/).at(-1) ?? "";
+  const suffix = `_${sessionId}.jsonl`.toLowerCase();
+  return name.length > suffix.length && name.toLowerCase().endsWith(suffix);
+}
+
 /**
- * 删除会话时要关掉的标签：路径相同，或会话 ID 相同（硬链接、副本等指向同一会话的其他路径；
- * 后端删除时按文件身份与会话 ID 结束这些会话的 Core，前端的标签随之关闭，避免留下失效的会话键）。
+ * 删除会话时要关掉的标签：打开这个会话文件的标签（路径相同），以及这个文件所属的新会话的标签——新会话标签没有路径，
+ * 只在文件名是 Core 为该会话 ID 新建的文件时按 ID 匹配（与薄壳删除时结束哪些 Core 一致）。
+ * 通过路径打开的副本保留原文件头的会话 ID，但是另一个会话，不关闭。
  */
 export function tabsForDeletion(
   tabs: readonly ChatTab[],
   session: Pick<SessionSummary, "path" | "id">,
 ): ChatTab[] {
-  return tabs.filter(
-    (t) => t.sessionPath === session.path || (t.sessionId !== null && t.sessionId === session.id),
+  return tabs.filter((t) =>
+    t.sessionPath !== null
+      ? t.sessionPath === session.path
+      : t.sessionId !== null &&
+        t.sessionId === session.id &&
+        namedForSession(session.path, session.id),
   );
 }
 

@@ -57,6 +57,8 @@ export function SessionList() {
   const search = useSessionSearch(query, index.version);
   const [actionError, setActionError] = useState<string>();
   const [pendingDelete, setPendingDelete] = useState<SessionSummary | null>(null);
+  // 正在删除的会话路径：删除完成前不允许再打开（否则会留下指向已删除文件的标签）
+  const [deleting, setDeleting] = useState<ReadonlySet<string>>(() => new Set());
   const tabs = useSessionsStore((s) => s.tabs);
   const activeTabId = useSessionsStore((s) => s.activeTabId);
   const openSession = useSessionsStore((s) => s.openSession);
@@ -108,10 +110,18 @@ export function SessionList() {
     setPendingDelete(null);
     if (!s) return;
     setActionError(undefined);
+    setDeleting((prev) => new Set(prev).add(s.path));
     for (const tab of tabsForDeletion(useSessionsStore.getState().tabs, s)) closeTab(tab.id);
     getPlatform()
       .then((p) => p.sessionDelete(s.path))
-      .catch((e) => setActionError(errorText(e)));
+      .catch((e) => setActionError(errorText(e)))
+      .finally(() =>
+        setDeleting((prev) => {
+          const next = new Set(prev);
+          next.delete(s.path);
+          return next;
+        }),
+      );
   };
 
   // 没有会话时列表区留空，不显示提示文字
@@ -187,7 +197,10 @@ export function SessionList() {
                   now={now}
                   active={tab !== undefined && tab.id === activeTabId}
                   running={tab?.running ?? false}
-                  onOpen={() => openSession(s)}
+                  deleting={deleting.has(s.path)}
+                  onOpen={() => {
+                    if (!deleting.has(s.path)) openSession(s);
+                  }}
                   onArchive={() => archive(s)}
                   onDelete={() => setPendingDelete(s)}
                 />
@@ -232,6 +245,8 @@ interface SessionRowProps {
   now: number;
   active: boolean;
   running: boolean;
+  /** 正在删除：行不可打开 */
+  deleting: boolean;
   onOpen: () => void;
   onArchive: () => void;
   onDelete: () => void;
@@ -243,6 +258,7 @@ function SessionRow({
   now,
   active,
   running,
+  deleting,
   onOpen,
   onArchive,
   onDelete,
@@ -253,11 +269,14 @@ function SessionRow({
       <button
         type="button"
         onClick={onOpen}
+        disabled={deleting}
+        aria-busy={deleting ? "true" : undefined}
         aria-current={active ? "true" : undefined}
         title={title}
         className={cn(
           "flex h-[46px] min-w-0 flex-1 flex-col justify-center rounded-[12px] py-1 pr-8 pl-3 text-left outline-none hover:bg-hover focus-visible:bg-hover",
           active && "bg-hover",
+          deleting && "pointer-events-none opacity-50",
         )}
       >
         <span className="flex w-full items-center gap-1.5">
