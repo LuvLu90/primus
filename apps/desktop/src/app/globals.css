@@ -556,3 +556,53 @@ html.window-effects.glass-clear body {
   font-weight: 600;
   background: var(--color-hover);
 }
+
+/* ---------- 工作过程折叠、对话索引 ---------- */
+
+/* 高度平滑展开：grid 行 0fr → 1fr，内容同时淡入并轻微下移 */
+.collapse-grid {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  translate: 0 -4px;
+  transition:
+    grid-template-rows 0.38s cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 0.26s ease,
+    translate 0.38s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.collapse-grid[data-open] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  translate: 0 0;
+}
+
+/* 时间线不显示滚动条，改用左侧对话索引 */
+.scroll-none {
+  scrollbar-width: none;
+}
+.scroll-none::-webkit-scrollbar {
+  display: none;
+}
+
+@keyframes index-pop {
+  from {
+    opacity: 0;
+    scale: 0.96;
+    translate: -6px -50%;
+  }
+}
+
+.index-pop {
+  transform-origin: left center;
+  animation: index-pop 0.2s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .collapse-grid {
+    transition: none;
+  }
+  .index-pop {
+    animation: none;
+  }
+}

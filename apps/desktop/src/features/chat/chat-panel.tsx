@@ -1,23 +1,15 @@
 "use client";
 
 import type { AgentMessage } from "@primus/protocol";
-import {
-  ArrowUp,
-  Folder,
-  FolderOpen,
-  Maximize2,
-  Minimize2,
-  Plus,
-  Square,
-  Wrench,
-  X,
-} from "lucide-react";
+import { ArrowUp, Folder, FolderOpen, Maximize2, Minimize2, Plus, Square, X } from "lucide-react";
 import {
   type FormEvent,
+  Fragment,
   type KeyboardEvent,
   memo,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -37,7 +29,7 @@ import type { ModelsInfo, WorkspaceInfo } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
-import type { TimelineContent, ToolRun } from "@/stores/session-store";
+import { AgentTurn } from "./agent-turn";
 import { ApprovalCard } from "./approval-card";
 import {
   AttachmentChips,
@@ -49,7 +41,8 @@ import {
   WorkspacePicker,
   withAttachments,
 } from "./composer-menus";
-import { MarkdownText, ThinkingIndicator } from "./message-content";
+import { ThinkingIndicator } from "./message-content";
+import { type IndexItem, MessageIndex } from "./message-index";
 import { ModelPicker } from "./model-picker";
 import { useChatSession } from "./use-chat-session";
 
@@ -66,131 +59,41 @@ function textOf(content: unknown): string {
     .join("");
 }
 
-/**
- * 消息没有独立 id：按位置 + 角色（工具结果再加调用 id）区分。时间线只在末尾追加，位置稳定；
- * 不用时间戳，因为流式中的消息可能还没有时间戳，定稿时换 key 会让整条消息重新挂载（进场动画重播、平滑输出中断）
- */
-function messageKey(m: AgentMessage, index: number): string {
-  const r = m as { role: string; toolCallId?: string };
-  return `${index}-${r.role}-${r.toolCallId ?? ""}`;
+/** 一轮：一条用户消息 + 其后的助手消息与工具结果（会话开头若没有用户消息，user 为空） */
+interface Turn {
+  user?: { message: Extract<AgentMessage, { role: "user" }>; index: number };
+  replies: AgentMessage[];
+  /** 第一条回复在时间线中的位置（作 key） */
+  start: number;
 }
 
-/** 等待提示：本轮进行中，且最后一条不是正在输出正文的回复（等首个字、思考中、工具执行后等下一段） */
-function isWaiting(messages: AgentMessage[], streaming: boolean): boolean {
-  const last = messages.at(-1);
-  if (last?.role !== "assistant" || !streaming) return true;
-  const content = (last.content as TimelineContent[]) ?? [];
-  return !content.some((b) => b?.type === "text" && b.text.trim() !== "");
+function groupTurns(messages: AgentMessage[]): Turn[] {
+  const turns: Turn[] = [];
+  messages.forEach((m, i) => {
+    if (m.role === "user")
+      turns.push({ user: { message: m, index: i }, replies: [], start: i + 1 });
+    else {
+      let turn = turns.at(-1);
+      if (!turn) {
+        turn = { replies: [], start: i };
+        turns.push(turn);
+      }
+      turn.replies.push(m);
+    }
+  });
+  return turns;
 }
 
-const statusDot: Record<ToolRun["status"], string> = {
-  running: "bg-accent animate-pulse",
-  done: "bg-emerald-500",
-  error: "bg-danger",
-};
-
-function ToolCard({ name, run }: { name: string; run: ToolRun | undefined }) {
-  const label = run
-    ? { running: t.toolRunning, done: t.toolDone, error: t.toolError }[run.status]
-    : undefined;
+const UserBubble = memo(function UserBubble({ text, index }: { text: string; index: number }) {
   return (
-    <div className="flex items-center gap-2 self-start rounded-xl bg-surface/70 px-3 py-1.5 text-xs ring-1 ring-border">
-      <Wrench aria-hidden size={13} className="text-muted" />
-      <span>
-        {t.tool}：{name}
-      </span>
-      {run && (
-        <span className="ml-1 flex items-center gap-1.5 text-muted">
-          <span aria-hidden className={cn("size-1.5 rounded-full", statusDot[run.status])} />
-          {label}
-        </span>
-      )}
-    </div>
+    <article
+      aria-label={t.you}
+      data-msg-index={index}
+      className="msg-in max-w-[80%] scroll-mt-6 self-end rounded-[18px] rounded-br-md bg-bubble px-3.5 py-2 text-fg"
+    >
+      <p className="whitespace-pre-wrap leading-relaxed">{text}</p>
+    </article>
   );
-}
-
-function AssistantBlocks({
-  content,
-  toolRuns,
-  streaming,
-}: {
-  content: TimelineContent[];
-  toolRuns: Record<string, ToolRun>;
-  /** 这条消息正在流式输出：正文平滑揭示 */
-  streaming: boolean;
-}) {
-  return (
-    <>
-      {content.map((block, i) => {
-        if (!block) return null;
-        const key = `${block.type}-${i}`;
-        if (block.type === "thinking")
-          return (
-            <details key={key} className="group text-xs text-muted">
-              <summary className="cursor-default select-none list-none">
-                <span className="rounded-full bg-hover px-2 py-0.5">{t.thinking}</span>
-              </summary>
-              <p className="mt-1.5 whitespace-pre-wrap border-l-2 border-border pl-3">
-                {block.thinking}
-              </p>
-            </details>
-          );
-        if (block.type === "toolCall")
-          return <ToolCard key={key} name={block.name} run={toolRuns[block.id]} />;
-        return (
-          <MarkdownText
-            key={key}
-            text={block.text}
-            streaming={streaming}
-            className="font-serif text-[15px] leading-relaxed"
-          />
-        );
-      })}
-    </>
-  );
-}
-
-const MessageItem = memo(function MessageItem({
-  message,
-  toolRuns,
-  streaming = false,
-}: {
-  message: AgentMessage;
-  toolRuns: Record<string, ToolRun>;
-  streaming?: boolean;
-}) {
-  if (message.role === "user")
-    return (
-      <article
-        aria-label={t.you}
-        className="msg-in max-w-[80%] self-end rounded-[18px] rounded-br-md bg-bubble px-3.5 py-2 text-fg"
-      >
-        <p className="whitespace-pre-wrap leading-relaxed">{textOf(message.content)}</p>
-      </article>
-    );
-  if (message.role === "assistant")
-    return (
-      <article aria-label={t.assistant} className="msg-in flex flex-col gap-2">
-        <AssistantBlocks
-          content={(message.content as TimelineContent[]) ?? []}
-          toolRuns={toolRuns}
-          streaming={streaming}
-        />
-        {/* 被停止或出错结束的回复：在末尾标明，避免把半截回答当成完整结果 */}
-        {message.stopReason === "aborted" && (
-          <p className="self-start rounded-full bg-hover px-2 py-0.5 text-[11px] text-muted">
-            {t.stopped}
-          </p>
-        )}
-        {message.stopReason === "error" && (
-          <p className="text-xs text-danger">
-            {t.replyFailed}
-            {message.errorMessage ? `：${message.errorMessage}` : ""}
-          </p>
-        )}
-      </article>
-    );
-  return null; // 工具结果并入对应的工具卡片显示
 });
 
 // 欢迎页：标志 + 标题 + 三个液态玻璃建议按钮
@@ -600,13 +503,22 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     ? `${state.model.provider}/${state.model.id}`
     : (pendingModel.model ?? modelConfig.info?.defaultModel ?? null);
   const pendingUi = state.uiRequests[0];
+  const turns = useMemo(() => groupTurns(state.messages), [state.messages]);
+  const indexItems = useMemo<IndexItem[]>(
+    () =>
+      turns.flatMap((turn) =>
+        turn.user ? [{ index: turn.user.index, text: textOf(turn.user.message.content) }] : [],
+      ),
+    [turns],
+  );
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
+      <MessageIndex items={indexItems} scrollRef={scrollRef} />
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        className="scroll-thin flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pt-6 text-sm"
+        className="scroll-none flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pt-6 text-sm"
         style={{ paddingBottom: (composerHeight ?? COMPOSER_FALLBACK_PX) + COMPOSER_GAP_PX }}
       >
         <div
@@ -631,24 +543,48 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
               />
             </div>
           )}
-          {state.messages.map((m, i) => (
-            <MessageItem
-              key={messageKey(m, i)}
-              message={m}
-              toolRuns={state.toolRuns}
-              streaming={state.streamingMessage && i === state.messages.length - 1}
-            />
-          ))}
+          {turns.map((turn, ti) => {
+            const lastTurn = ti === turns.length - 1;
+            return (
+              <Fragment key={turn.start}>
+                {turn.user && (
+                  <UserBubble
+                    key={`${turn.user.index}-user`}
+                    index={turn.user.index}
+                    text={textOf(turn.user.message.content)}
+                  />
+                )}
+                {turn.replies.length > 0 && (
+                  <AgentTurn
+                    key={`${turn.start}-turn`}
+                    messages={turn.replies}
+                    toolRuns={state.toolRuns}
+                    running={lastTurn && state.running}
+                    streaming={lastTurn && state.streamingMessage}
+                    startedAt={
+                      (turn.user?.message as { timestamp?: number } | undefined)?.timestamp
+                    }
+                  />
+                )}
+              </Fragment>
+            );
+          })}
           {pendingUser && state.messages.length <= pendingUser.index && (
-            <MessageItem
-              key={`${pendingUser.index}-user-`}
-              message={{ role: "user", content: pendingUser.text, timestamp: 0 } as AgentMessage}
-              toolRuns={state.toolRuns}
-            />
+            // 与回显后那一轮同样的 key：回显时原地替换，不重播进场动画
+            <Fragment key={pendingUser.index + 1}>
+              <UserBubble
+                key={`${pendingUser.index}-user`}
+                index={pendingUser.index}
+                text={pendingUser.text}
+              />
+            </Fragment>
           )}
+          {/* 已发出、回复还没开始：最后一条是用户消息（或还在等回显） */}
           {(submitting || state.running) &&
             !unresponsive &&
-            isWaiting(state.messages, state.streamingMessage) && <ThinkingIndicator />}
+            (state.messages.length === 0 || state.messages.at(-1)?.role === "user") && (
+              <ThinkingIndicator />
+            )}
           {unresponsive && (
             <div
               role="alert"
