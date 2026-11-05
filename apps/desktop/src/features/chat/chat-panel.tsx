@@ -249,8 +249,6 @@ function ContextRing({ usage }: { usage?: ContextUsage }) {
   );
 }
 
-/** 运行中超过这段时间没有新内容，显示“仍在生成” */
-const QUIET_AFTER_MS = 2000;
 /** 发送成功后等待 Core 回显用户消息的最长时间 */
 const PENDING_ECHO_TIMEOUT_MS = 3000;
 /** 距底部小于该值视为"停在底部" */
@@ -453,18 +451,6 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     return () => clearTimeout(id);
   }, [pendingUser, state.messages.length, submitting, state.running]);
 
-  // 运行中一段时间没有新内容：显示“仍在生成”。有的模型（如 Gemini）生成工具调用参数（例如整份 HTML）时
-  // 不下发任何增量，回复会停在半句话上很久，看起来像被截断或卡死。
-  const [quiet, setQuiet] = useState(false);
-  const toolRunning = Object.values(state.toolRuns).some((r) => r.status === "running");
-  // biome-ignore lint/correctness/useExhaustiveDependencies: 消息或工具状态每次变化都重新计时
-  useEffect(() => {
-    setQuiet(false);
-    if (!state.running || toolRunning) return;
-    const id = setTimeout(() => setQuiet(true), QUIET_AFTER_MS);
-    return () => clearTimeout(id);
-  }, [state.running, state.messages, state.toolRuns, toolRunning]);
-
   // 欢迎页离场：开始对话后先淡出上移，动画结束再卸载
   const conversationStarted = started || pendingUser !== null;
   const [welcomeGone, setWelcomeGone] = useState(conversationStarted);
@@ -638,11 +624,6 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
             (state.messages.length === 0 || state.messages.at(-1)?.role === "user") && (
               <ThinkingIndicator />
             )}
-          {quiet &&
-            state.running &&
-            !unresponsive &&
-            state.uiRequests.length === 0 &&
-            state.messages.at(-1)?.role !== "user" && <ThinkingIndicator label={t.stillWorking} />}
           {unresponsive && (
             <div
               role="alert"

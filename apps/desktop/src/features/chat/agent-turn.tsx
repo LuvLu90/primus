@@ -26,7 +26,7 @@ import {
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 import type { TimelineContent, ToolRun } from "@/stores/session-store";
-import { MarkdownText, ThinkingIndicator } from "./message-content";
+import { MarkdownText } from "./message-content";
 
 // 一轮回复（一条用户消息之后的全部助手消息与工具结果）按“工作过程 + 总结”展示：
 // 业界一般叫 Chain of Thought / 推理与工具调用分组（Vercel AI Elements 的 ChainOfThought、
@@ -496,7 +496,8 @@ export const AgentTurn = memo(function AgentTurn({
 
   return (
     <article aria-label={strings.chat.assistant} className="msg-in group/turn flex flex-col gap-3">
-      {steps.length > 0 && (
+      {/* 运行中始终显示“正在工作”：模型生成长工具参数时可能很久没有新内容，回复会停在半句话上 */}
+      {(steps.length > 0 || running) && (
         <div className="flex flex-col">
           <button
             type="button"
@@ -508,14 +509,16 @@ export const AgentTurn = memo(function AgentTurn({
           >
             <span className={cn(running && "text-pulse")}>{running ? t.running : t.elapsed}</span>
             <Elapsed start={start} end={end} running={running} />
-            <ChevronRight
-              aria-hidden
-              size={14}
-              className={cn(
-                "transition-[rotate] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
-                open && "rotate-90",
-              )}
-            />
+            {steps.length > 0 && (
+              <ChevronRight
+                aria-hidden
+                size={14}
+                className={cn(
+                  "transition-[rotate] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
+                  open && "rotate-90",
+                )}
+              />
+            )}
           </button>
           <div
             className={cn(
@@ -534,7 +537,6 @@ export const AgentTurn = memo(function AgentTurn({
           </Collapse>
         </div>
       )}
-      {steps.length === 0 && answer.length === 0 && running && <ThinkingIndicator />}
       {answer.map((a) => (
         <MarkdownText
           key={a.key}

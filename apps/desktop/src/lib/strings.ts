@@ -68,8 +68,6 @@ export const strings = {
     assistant: "乾元",
     thinking: "思考过程",
     thinkingNow: "正在思考",
-    /** 运行中但界面一段时间没有新内容（如模型正在生成很长的工具参数，部分模型这段时间不下发任何增量） */
-    stillWorking: "仍在生成",
     copy: "复制",
     copied: "已复制",
     work: {
