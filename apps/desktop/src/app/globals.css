@@ -504,12 +504,19 @@ html.window-effects.glass-clear body {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
+/* 行内代码（code span）：参照 GitHub / ChatGPT 的做法，浅底色 + 细描边的小胶囊。
+   颜色从文字色按比例混出，玻璃背景和深浅主题下都能看清；换行时每段各自带底色与圆角 */
 .md code {
   font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
-  font-size: 0.88em;
-  padding: 0.1em 0.35em;
+  font-size: 0.86em;
+  padding: 0.12em 0.4em;
+  margin: 0 0.1em;
   border-radius: 6px;
-  background: var(--color-hover);
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  overflow-wrap: anywhere;
 }
 .md pre {
   padding: 0.8em 1em;
@@ -520,7 +527,10 @@ html.window-effects.glass-clear body {
 }
 .md pre code {
   padding: 0;
+  margin: 0;
+  border: 0;
   background: none;
+  overflow-wrap: normal;
   font-size: 0.85em;
 }
 .md blockquote {
