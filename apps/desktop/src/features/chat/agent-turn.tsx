@@ -550,6 +550,9 @@ export const AgentTurn = memo(function AgentTurn({
           {strings.chat.stopped}
         </p>
       )}
+      {last?.stopReason === "length" && (
+        <p className="text-danger text-xs">{strings.chat.replyTruncated}</p>
+      )}
       {last?.stopReason === "error" && (
         <p className="text-danger text-xs">
           {strings.chat.replyFailed}

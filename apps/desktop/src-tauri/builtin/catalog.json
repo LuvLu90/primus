@@ -15,7 +15,7 @@
             "image"
           ],
           "contextWindow": 128000,
-          "maxTokens": 32768
+          "maxTokens": 65536
         },
         {
           "id": "kimi-k3.1-pro",
@@ -26,7 +26,7 @@
             "image"
           ],
           "contextWindow": 128000,
-          "maxTokens": 32768
+          "maxTokens": 65536
         },
         {
           "id": "kimi-k2.8-preview",
@@ -37,7 +37,7 @@
             "image"
           ],
           "contextWindow": 128000,
-          "maxTokens": 32768
+          "maxTokens": 65536
         },
         {
           "id": "glm-5.3",
@@ -47,7 +47,7 @@
             "text"
           ],
           "contextWindow": 128000,
-          "maxTokens": 32768
+          "maxTokens": 65536
         },
         {
           "id": "glm-5.3-flash",
@@ -58,7 +58,7 @@
             "image"
           ],
           "contextWindow": 128000,
-          "maxTokens": 32768
+          "maxTokens": 65536
         },
         {
           "id": "deepseek-v4-pro",
@@ -69,7 +69,7 @@
             "image"
           ],
           "contextWindow": 128000,
-          "maxTokens": 32768
+          "maxTokens": 65536
         },
         {
           "id": "deepseek-v4-flash",
@@ -78,8 +78,8 @@
           "input": [
             "text"
           ],
-          "contextWindow": 128000,
-          "maxTokens": 32768
+          "contextWindow": 65536,
+          "maxTokens": 16384
         },
         {
           "id": "deepseek-v4.1-flash",
@@ -90,7 +90,7 @@
             "image"
           ],
           "contextWindow": 128000,
-          "maxTokens": 32768
+          "maxTokens": 65536
         },
         {
           "id": "qwen3.8-27b",
@@ -101,7 +101,7 @@
             "image"
           ],
           "contextWindow": 128000,
-          "maxTokens": 32768
+          "maxTokens": 65536
         }
       ]
     }

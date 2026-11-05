@@ -58,6 +58,7 @@ export const strings = {
     stop: "停止",
     stopping: "正在停止",
     stopped: "已停止",
+    replyTruncated: "输出达到模型长度上限，回复被截断。可以发“继续”接着写，或换输出更长的模型。",
     replyFailed: "回复出错",
     attach: "添加附件",
     removeAttachment: "移除附件",
