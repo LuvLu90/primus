@@ -264,8 +264,30 @@ function SessionRow({
   onDelete,
 }: SessionRowProps) {
   const title = sessionTitle(session);
+  // 右键菜单：在点击位置弹出同一套操作（归档、删除），替代浏览器自带菜单
+  const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
+  const items = (
+    <>
+      <GlassPopoverItem
+        icon={session.archived ? <ArchiveRestore /> : <Archive />}
+        label={session.archived ? t.unarchive : t.archive}
+        onSelect={onArchive}
+      />
+      <GlassPopoverSeparator />
+      <GlassPopoverItem icon={<Trash2 />} label={t.delete} destructive onSelect={onDelete} />
+    </>
+  );
   return (
-    <li className="group absolute inset-x-0 flex items-center" style={{ top, height: ROW_HEIGHT }}>
+    <li
+      className="group absolute inset-x-0 flex items-center"
+      style={{ top, height: ROW_HEIGHT }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        if (deleting) return;
+        const box = e.currentTarget.getBoundingClientRect();
+        setMenuAt({ x: e.clientX - box.left, y: e.clientY - box.top });
+      }}
+    >
       <button
         type="button"
         onClick={onOpen}
@@ -284,7 +306,7 @@ function SessionRow({
             <span
               role="img"
               aria-label={t.running}
-              className="size-1.5 shrink-0 animate-pulse rounded-full bg-accent"
+              className="size-1.5 shrink-0 rounded-full bg-accent"
             />
           )}
           <span className="truncate text-[13px] leading-tight">{title}</span>
@@ -305,13 +327,20 @@ function SessionRow({
           </button>
         </GlassPopoverTrigger>
         <GlassPopoverContent side="right" align="start" sideOffset={6} tint={0.75} minWidth={160}>
-          <GlassPopoverItem
-            icon={session.archived ? <ArchiveRestore /> : <Archive />}
-            label={session.archived ? t.unarchive : t.archive}
-            onSelect={onArchive}
+          {items}
+        </GlassPopoverContent>
+      </GlassPopover>
+      <GlassPopover open={menuAt !== null} onOpenChange={(open) => !open && setMenuAt(null)}>
+        <GlassPopoverTrigger asChild>
+          <span
+            aria-hidden
+            tabIndex={-1}
+            className="pointer-events-none absolute size-0"
+            style={{ left: menuAt?.x ?? 0, top: menuAt?.y ?? 0 }}
           />
-          <GlassPopoverSeparator />
-          <GlassPopoverItem icon={<Trash2 />} label={t.delete} destructive onSelect={onDelete} />
+        </GlassPopoverTrigger>
+        <GlassPopoverContent side="bottom" align="start" sideOffset={2} tint={0.75} minWidth={160}>
+          {items}
         </GlassPopoverContent>
       </GlassPopover>
     </li>

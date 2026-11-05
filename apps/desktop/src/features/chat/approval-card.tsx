@@ -30,7 +30,7 @@ export function ApprovalCard({
     <section
       role="alertdialog"
       aria-label={t.label}
-      className="mb-2 flex flex-col gap-2.5 rounded-[18px] bg-surface px-4 py-3 text-[13px] shadow-[0_8px_30px_-12px_rgb(0_0_0/0.35)] ring-1 ring-border"
+      className="mx-auto mb-2 flex w-full max-w-xl flex-col gap-2.5 rounded-[18px] bg-surface px-4 py-3 text-[13px] shadow-[0_8px_30px_-12px_rgb(0_0_0/0.35)] ring-1 ring-border"
     >
       <div className="flex items-start gap-2.5">
         <ShieldQuestion aria-hidden size={16} className="mt-0.5 shrink-0 text-muted" />

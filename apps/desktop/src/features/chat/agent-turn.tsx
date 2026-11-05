@@ -13,7 +13,16 @@ import {
   SquareTerminal,
   Wrench,
 } from "lucide-react";
-import { memo, type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import {
+  memo,
+  type ReactNode,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 import type { TimelineContent, ToolRun } from "@/stores/session-store";
@@ -61,7 +70,8 @@ type ToolStatus = ToolRun["status"];
 /** 一次工具调用的状态与输出：运行中取实时事件，历史会话取工具结果消息 */
 interface CallInfo {
   status: ToolStatus;
-  output: string;
+  /** 输出内容（原始块）：只在展开时才拼成文本，流式过程中每次渲染不去拼接大段输出 */
+  content: unknown;
 }
 
 type Step =
@@ -76,7 +86,7 @@ interface TurnLayout {
   /** 最后一条助手消息（停止、出错的标记跟在总结后面） */
   last?: Extract<AgentMessage, { role: "assistant" }>;
   end?: number;
-  results: Map<string, { isError: boolean; output: string }>;
+  results: Map<string, { isError: boolean; content: unknown }>;
 }
 
 const hasText = (b: TimelineContent | undefined) => b?.type === "text" && b.text.trim() !== "";
@@ -92,10 +102,10 @@ function layoutTurn(messages: AgentMessage[], streaming: boolean): TurnLayout {
   const assistants = messages.filter(
     (m): m is Extract<AgentMessage, { role: "assistant" }> => m.role === "assistant",
   );
-  const results = new Map<string, { isError: boolean; output: string }>();
+  const results = new Map<string, { isError: boolean; content: unknown }>();
   for (const m of messages)
     if (m.role === "toolResult")
-      results.set(m.toolCallId, { isError: m.isError, output: textOfContent(m.content) });
+      results.set(m.toolCallId, { isError: m.isError, content: m.content });
 
   const last = assistants.at(-1);
   const lastContent = ((last?.content as TimelineContent[]) ?? []).filter(Boolean);
@@ -251,8 +261,11 @@ function ToolCallRow({ call, info }: { call: ToolCallBlock; info: CallInfo }) {
   const running = info.status === "running";
   const verb = running ? t.tools[kind].running : t.tools[kind].done;
   const arg = firstLine(argOf(call));
-  const output =
-    info.output.length > OUTPUT_LIMIT ? `…${info.output.slice(-OUTPUT_LIMIT)}` : info.output;
+  const output = useMemo(() => {
+    if (!open) return "";
+    const text = textOfContent(info.content);
+    return text.length > OUTPUT_LIMIT ? `…${text.slice(-OUTPUT_LIMIT)}` : text;
+  }, [open, info.content]);
   return (
     <div>
       <StepButton
@@ -260,7 +273,6 @@ function ToolCallRow({ call, info }: { call: ToolCallBlock; info: CallInfo }) {
         onToggle={() => setOpen((o) => !o)}
         controls={id}
         icon={toolIcons[kind]}
-        live={running}
         failed={info.status === "error"}
       >
         {kind === "other" ? `${verb} ${call.name}` : verb}
@@ -322,7 +334,6 @@ function ToolGroup({
         onToggle={() => setUserOpen(!open)}
         controls={id}
         icon={toolIcons[lastKind]}
-        live={running}
         failed={failed > 0}
       >
         {label}
@@ -353,10 +364,11 @@ function ThoughtStep({ text, live }: { text: string; live: boolean }) {
   const id = useId();
   const tailRef = useRef<HTMLDivElement>(null);
   // 进行中贴着最新内容
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 内容变长时（text）也要滚到底
   useLayoutEffect(() => {
     const el = tailRef.current;
-    if (live && el) el.scrollTop = el.scrollHeight;
-  });
+    if (live && open && el) el.scrollTop = el.scrollHeight;
+  }, [text, live, open]);
   return (
     <div>
       <StepButton
@@ -478,8 +490,7 @@ export const AgentTurn = memo(function AgentTurn({
     const result = results.get(call.id);
     const status: ToolStatus =
       run?.status ?? (result ? (result.isError ? "error" : "done") : running ? "running" : "done");
-    const output = run?.result ? textOfContent(run.result.content) : (result?.output ?? "");
-    return { status, output };
+    return { status, content: run?.result?.content ?? result?.content };
   };
   const answerText = answer.map((a) => a.text).join("\n\n");
 

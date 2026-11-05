@@ -249,6 +249,8 @@ function ContextRing({ usage }: { usage?: ContextUsage }) {
   );
 }
 
+/** 发送成功后等待 Core 回显用户消息的最长时间 */
+const PENDING_ECHO_TIMEOUT_MS = 3000;
 /** 距底部小于该值视为"停在底部" */
 const STICK_THRESHOLD_PX = 48;
 /** 输入框行高与行数范围 */
@@ -435,10 +437,18 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
 
   // 刚发出、Core 还没回显的用户消息：先按它将来的位置显示，回显后同一个 key 原地替换，不闪烁
   const [pendingUser, setPendingUser] = useState<{ text: string; index: number } | null>(null);
+  // 回显后清除；发送失败在 submit 里清除。发送成功后 Core 的确认可能早于 agent_start 和回显，
+  // 中间那一下既不在发送也不在运行：不能据此清除，否则欢迎页和气泡会消失再出现（闪一下）。
+  // 只在发送成功、一段时间后仍没开始运行也没回显（如由扩展处理、不产生消息的命令）时兜底清除。
   useEffect(() => {
     if (!pendingUser) return;
-    if (state.messages.length > pendingUser.index || (!submitting && !state.running))
+    if (state.messages.length > pendingUser.index) {
       setPendingUser(null);
+      return;
+    }
+    if (submitting || state.running) return;
+    const id = setTimeout(() => setPendingUser(null), PENDING_ECHO_TIMEOUT_MS);
+    return () => clearTimeout(id);
   }, [pendingUser, state.messages.length, submitting, state.running]);
 
   // 欢迎页离场：开始对话后先淡出上移，动画结束再卸载
@@ -609,7 +619,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
             </Fragment>
           )}
           {/* 已发出、回复还没开始：最后一条是用户消息（或还在等回显） */}
-          {(submitting || state.running) &&
+          {(submitting || state.running || pendingUser !== null) &&
             !unresponsive &&
             (state.messages.length === 0 || state.messages.at(-1)?.role === "user") && (
               <ThinkingIndicator />

@@ -400,7 +400,6 @@ html.window-effects.glass-clear body {
 .shimmer-text {
   color: var(--color-muted);
   animation: text-pulse 1.8s ease-in-out infinite;
-  will-change: opacity;
 }
 
 @keyframes dot-bounce {
@@ -422,7 +421,6 @@ html.window-effects.glass-clear body {
 }
 
 .thinking-dots i {
-  will-change: transform, opacity;
   width: 5px;
   height: 5px;
   border-radius: 9999px;

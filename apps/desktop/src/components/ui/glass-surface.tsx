@@ -99,6 +99,11 @@ interface GlassSurfaceProps extends ComponentProps<"div"> {
   veil?: number;
   /** 斜向光泽层；大面板拼接时会在接缝处露出亮带，可关掉 */
   sheen?: boolean;
+  /**
+   * 背景模糊与折射（backdrop-filter）。乾元补丁：被实色层盖住、或处在遮罩/隔离组里（取不到背后画面）的玻璃
+   * 关掉它：效果看不见，但其中任何内容变化（流式文字、动画）都会让 GPU 整块重算模糊与 SVG 位移。
+   */
+  backdrop?: boolean;
 }
 
 function GlassSurface({
@@ -112,6 +117,7 @@ function GlassSurface({
   tintColor,
   veil = TINT_MAX_ALPHA,
   sheen: sheenOn = true,
+  backdrop = true,
   className,
   style,
   children,
@@ -131,7 +137,7 @@ function GlassSurface({
   const baseId = useId().replace(/[^a-zA-Z0-9-]/g, "");
   const filterId = `${baseId}-surface`;
   const [supported] = useState(refractionSupported);
-  const refract = useHydrated() && supported;
+  const refract = useHydrated() && supported && backdrop;
   const chromaOn = chroma > 0;
 
   const blurPx = Math.max(t * blur * 0.5, MIN_BLUR);
@@ -218,14 +224,16 @@ function GlassSurface({
       style={{ borderRadius: radius, ...style }}
       {...props}
     >
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute inset-0 rounded-[inherit]"
-        style={{
-          backdropFilter,
-          WebkitBackdropFilter: backdropFilter,
-        }}
-      />
+      {backdrop ? (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 rounded-[inherit]"
+          style={{
+            backdropFilter,
+            WebkitBackdropFilter: backdropFilter,
+          }}
+        />
+      ) : null}
       <div
         aria-hidden="true"
         className="pointer-events-none absolute inset-0 rounded-[inherit]"
