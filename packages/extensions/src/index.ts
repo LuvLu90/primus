@@ -4,6 +4,7 @@
 import auth from "./auth/index.ts";
 import checkpoint from "./checkpoint/index.ts";
 import guard from "./guard/index.ts";
+import narrate from "./narrate/index.ts";
 import plan from "./plan/index.ts";
 import shell from "./shell/index.ts";
 import subagent from "./subagent/index.ts";
@@ -11,8 +12,16 @@ import subagent from "./subagent/index.ts";
 /** 一个第一方扩展模块：接收 Core 的扩展 API（类型不从上游包导入，见 AGENTS.md 第 2.2 节） */
 export type PrimusExtension = (pi: unknown) => void;
 
-/** 注册顺序：guard 最先，保证其他扩展的工具调用都经过审批；auth 只设置模型令牌，不挂工具 */
-export const modules: readonly PrimusExtension[] = [guard, auth, checkpoint, subagent, plan, shell];
+/** 注册顺序：guard 最先，保证其他扩展的工具调用都经过审批；auth 只设置模型令牌，不挂工具；narrate 只追加系统提示词 */
+export const modules: readonly PrimusExtension[] = [
+  guard,
+  auth,
+  checkpoint,
+  subagent,
+  plan,
+  shell,
+  narrate,
+];
 
 export default function primus(pi: unknown): void {
   for (const register of modules) register(pi);

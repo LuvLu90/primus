@@ -27,7 +27,13 @@ describe("对话区（mock 事件流）", () => {
     fireEvent.click(await screen.findByRole("menuitem", { name: /示例工作区/ }));
     await waitFor(() => expect(useAppStore.getState().workspace?.name).toBe("示例工作区"));
     expect(screen.queryByRole("button", { name: new RegExp(t.chooseFolder) })).toBeNull();
-    expect(screen.getByRole("button", { name: /示例工作区/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "示例工作区" })).toBeTruthy();
+    // 名称左侧的关闭按钮取消已选工作区，选择文件夹栏重新出现
+    fireEvent.click(
+      screen.getByRole("button", { name: new RegExp(`${t.clearWorkspace}.*示例工作区`) }),
+    );
+    await waitFor(() => expect(useAppStore.getState().workspace).toBeNull());
+    expect(screen.getByRole("button", { name: new RegExp(t.chooseFolder) })).toBeTruthy();
   });
 
   it("发送消息后流式显示回答，结束后恢复发送按钮", async () => {
@@ -42,7 +48,12 @@ describe("对话区（mock 事件流）", () => {
     await waitFor(() => expect((input as HTMLTextAreaElement).value).toBe(""));
     await screen.findByRole("article", { name: t.you });
     await waitFor(() => expect(screen.getByText(/mock 平台/)).toBeTruthy());
-    expect(screen.getByText(/工具：read/)).toBeTruthy();
+    // 工具调用收进工作过程：结束后收起成“用时 …”，展开后看到“已读取 路径”一行
+    const expand = await screen.findByRole("button", { name: t.work.expand });
+    fireEvent.click(expand);
+    expect((await screen.findAllByText(new RegExp(t.work.tools.read.done))).length).toBeGreaterThan(
+      0,
+    );
     await waitFor(() => expect(screen.getByRole("button", { name: t.send })).toBeTruthy());
   });
 
@@ -514,7 +525,12 @@ describe("对话区（mock 事件流）", () => {
     const button = await screen.findByRole("button", { name: /模型：Mock 大模型/ });
     // 会话打开前选择：记下，打开后发送第一条消息前应用
     fireEvent.keyDown(button, { key: "Enter" });
-    fireEvent.click(await screen.findByRole("menuitemradio", { name: "高" }));
+    // 思考强度是滑杆：拖到“高”，松手才切换（默认档位为 off/low/medium/high/xhigh，“高”是第 3 档）
+    const slider = await screen.findByRole("slider", { name: "思考" });
+    fireEvent.change(slider, { target: { value: "3" } });
+    fireEvent.pointerUp(slider);
+    // 滑杆松手后菜单保持打开，关掉再看按钮
+    fireEvent.keyDown(slider, { key: "Escape" });
     await waitFor(() =>
       expect(screen.getByRole("button", { name: /模型：Mock 大模型，思考高/ })).toBeTruthy(),
     );
@@ -605,8 +621,9 @@ describe("对话区（mock 事件流）", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: t.send })).toBeTruthy());
     const users = screen.getAllByRole("article", { name: t.you }).map((a) => a.textContent);
     expect(users).toEqual(["第一问", "第二问"]);
-    // 每轮一条工具调用回复 + 一条最终回答
-    expect(screen.getAllByRole("article", { name: t.assistant })).toHaveLength(4);
+    // 每轮的工具调用回复与最终回答合成一轮（工作过程 + 总结）
+    expect(screen.getAllByRole("article", { name: t.assistant })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: t.work.expand })).toHaveLength(2);
     expect(screen.getByText(/你刚才说：「第一问」/)).toBeTruthy();
   });
 
@@ -640,7 +657,7 @@ describe("对话区（mock 事件流）", () => {
     });
   });
 
-  it("输入框里按 Esc 停止；停止进行中按钮禁用，不重复发 abort", async () => {
+  it("输入框里按 Esc 不停止；停止进行中按钮禁用，不重复发 abort", async () => {
     const base = createMockPlatform({ intervalMs: 20, batchSize: 2 });
     const coreSend = vi.fn(base.coreSend);
     setPlatformForTesting({ ...base, coreSend });
@@ -648,11 +665,12 @@ describe("对话区（mock 事件流）", () => {
     const input = screen.getByRole("textbox", { name: t.inputLabel });
     fireEvent.change(input, { target: { value: "长任务" } });
     fireEvent.keyDown(input, { key: "Enter" });
-    await screen.findByRole("button", { name: t.stop });
+    const stopBtn = await screen.findByRole("button", { name: t.stop });
     fireEvent.keyDown(input, { key: "Escape" });
+    expect(coreSend.mock.calls.some(([, r]) => r.type === "abort")).toBe(false);
+    fireEvent.click(stopBtn);
     const stopping = await screen.findByRole("button", { name: t.stopping });
     expect((stopping as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.keyDown(input, { key: "Escape" });
     fireEvent.click(stopping);
     await waitFor(() => expect(screen.getByRole("button", { name: t.send })).toBeTruthy());
     expect(coreSend.mock.calls.filter(([, r]) => r.type === "abort")).toHaveLength(1);

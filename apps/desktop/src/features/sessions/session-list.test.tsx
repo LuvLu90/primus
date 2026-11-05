@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { usePathname } from "next/navigation";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type Platform, type SessionSummary, setPlatformForTesting } from "@/lib/platform";
 import { createMockPlatform } from "@/lib/platform/mock";
@@ -251,6 +252,40 @@ describe("会话列表", () => {
     fireEvent.click(screen.getByRole("button", { name: t.deleteConfirm }));
     await waitFor(() => expect(sessionDelete).toHaveBeenCalledWith("/data/sessions/2.jsonl"));
     expect(useSessionsStore.getState().tabs.some((x) => x.sessionPath)).toBe(false);
+  });
+
+  it("右键弹出同一套菜单；关闭后焦点回到本行的“更多操作”按钮", async () => {
+    withIndex({ sessionList: async () => ({ items: [summary(1)] }) });
+    render(<SessionList />);
+    const row = await screen.findByRole("button", { name: /^第 1 个会话/ });
+    fireEvent.contextMenu(row);
+    expect(await screen.findByRole("menuitem", { name: t.delete })).toBeTruthy();
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("menuitem", { name: t.delete })).toBeNull());
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: `${t.moreActions}：第 1 个会话` }),
+    );
+  });
+
+  it("主界面隐藏（离开主页）时关闭右键菜单与“更多操作”菜单", async () => {
+    withIndex({ sessionList: async () => ({ items: [summary(1)] }) });
+    const view = render(<SessionList />);
+    const row = await screen.findByRole("button", { name: /^第 1 个会话/ });
+    fireEvent.contextMenu(row);
+    expect(await screen.findByRole("menuitem", { name: t.delete })).toBeTruthy();
+    vi.mocked(usePathname).mockReturnValue("/settings");
+    view.rerender(<SessionList />);
+    await waitFor(() => expect(screen.queryByRole("menuitem", { name: t.delete })).toBeNull());
+
+    vi.mocked(usePathname).mockReturnValue("/");
+    view.rerender(<SessionList />);
+    fireEvent.keyDown(screen.getByRole("button", { name: `${t.moreActions}：第 1 个会话` }), {
+      key: "Enter",
+    });
+    expect(await screen.findByRole("menuitem", { name: t.delete })).toBeTruthy();
+    vi.mocked(usePathname).mockReturnValue("/settings");
+    view.rerender(<SessionList />);
+    await waitFor(() => expect(screen.queryByRole("menuitem", { name: t.delete })).toBeNull());
   });
 
   it("删除完成前该会话不能再打开，完成后恢复", async () => {

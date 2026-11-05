@@ -1,22 +1,15 @@
 "use client";
 
-import type { AgentMessage } from "@primus/protocol";
-import {
-  ArrowUp,
-  Folder,
-  FolderOpen,
-  Maximize2,
-  Minimize2,
-  Plus,
-  Square,
-  Wrench,
-} from "lucide-react";
+import type { AgentMessage, ContextUsage } from "@primus/protocol";
+import { ArrowUp, Folder, FolderOpen, Maximize2, Minimize2, Plus, Square, X } from "lucide-react";
 import {
   type FormEvent,
+  Fragment,
   type KeyboardEvent,
   memo,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -36,7 +29,7 @@ import type { ModelsInfo, WorkspaceInfo } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
-import type { TimelineContent, ToolRun } from "@/stores/session-store";
+import { AgentTurn } from "./agent-turn";
 import { ApprovalCard } from "./approval-card";
 import {
   AttachmentChips,
@@ -48,11 +41,13 @@ import {
   WorkspacePicker,
   withAttachments,
 } from "./composer-menus";
+import { ThinkingIndicator } from "./message-content";
+import { type IndexItem, MessageIndex } from "./message-index";
 import { ModelPicker } from "./model-picker";
 import { useChatSession } from "./use-chat-session";
 
 // 中央对话区：实色"纸面"上的时间线 + 悬浮在其上的玻璃输入框（滚动内容从玻璃下方折射穿过）。
-// 低保真：纯文本渲染；Markdown、代码高亮、虚拟列表在后续任务补上。
+// 回复按 Markdown 渲染，流式输出平滑揭示；代码高亮、虚拟列表在后续任务补上。
 
 const t = strings.chat;
 
@@ -64,111 +59,41 @@ function textOf(content: unknown): string {
     .join("");
 }
 
-/** 消息没有独立 id：用角色 + 时间戳（工具结果再加调用 id）区分；流式中的消息尚无时间戳 */
-function messageKey(m: AgentMessage): string {
-  const r = m as { role: string; timestamp?: number; toolCallId?: string };
-  return `${r.role}-${r.timestamp ?? "streaming"}-${r.toolCallId ?? ""}`;
+/** 一轮：一条用户消息 + 其后的助手消息与工具结果（会话开头若没有用户消息，user 为空） */
+interface Turn {
+  user?: { message: Extract<AgentMessage, { role: "user" }>; index: number };
+  replies: AgentMessage[];
+  /** 第一条回复在时间线中的位置（作 key） */
+  start: number;
 }
 
-const statusDot: Record<ToolRun["status"], string> = {
-  running: "bg-accent animate-pulse",
-  done: "bg-emerald-500",
-  error: "bg-danger",
-};
+function groupTurns(messages: AgentMessage[]): Turn[] {
+  const turns: Turn[] = [];
+  messages.forEach((m, i) => {
+    if (m.role === "user")
+      turns.push({ user: { message: m, index: i }, replies: [], start: i + 1 });
+    else {
+      let turn = turns.at(-1);
+      if (!turn) {
+        turn = { replies: [], start: i };
+        turns.push(turn);
+      }
+      turn.replies.push(m);
+    }
+  });
+  return turns;
+}
 
-function ToolCard({ name, run }: { name: string; run: ToolRun | undefined }) {
-  const label = run
-    ? { running: t.toolRunning, done: t.toolDone, error: t.toolError }[run.status]
-    : undefined;
+const UserBubble = memo(function UserBubble({ text, index }: { text: string; index: number }) {
   return (
-    <div className="flex items-center gap-2 self-start rounded-xl bg-surface/70 px-3 py-1.5 text-xs ring-1 ring-border">
-      <Wrench aria-hidden size={13} className="text-muted" />
-      <span>
-        {t.tool}：{name}
-      </span>
-      {run && (
-        <span className="ml-1 flex items-center gap-1.5 text-muted">
-          <span aria-hidden className={cn("size-1.5 rounded-full", statusDot[run.status])} />
-          {label}
-        </span>
-      )}
-    </div>
+    <article
+      aria-label={t.you}
+      data-msg-index={index}
+      className="msg-in max-w-[80%] scroll-mt-6 self-end rounded-[18px] rounded-br-md bg-bubble px-3.5 py-2 text-fg"
+    >
+      <p className="whitespace-pre-wrap leading-relaxed">{text}</p>
+    </article>
   );
-}
-
-function AssistantBlocks({
-  content,
-  toolRuns,
-}: {
-  content: TimelineContent[];
-  toolRuns: Record<string, ToolRun>;
-}) {
-  return (
-    <>
-      {content.map((block, i) => {
-        if (!block) return null;
-        const key = `${block.type}-${i}`;
-        if (block.type === "thinking")
-          return (
-            <details key={key} className="group text-xs text-muted">
-              <summary className="cursor-default select-none list-none">
-                <span className="rounded-full bg-hover px-2 py-0.5">{t.thinking}</span>
-              </summary>
-              <p className="mt-1.5 whitespace-pre-wrap border-l-2 border-border pl-3">
-                {block.thinking}
-              </p>
-            </details>
-          );
-        if (block.type === "toolCall")
-          return <ToolCard key={key} name={block.name} run={toolRuns[block.id]} />;
-        return (
-          <p key={key} className="whitespace-pre-wrap font-serif text-[15px] leading-relaxed">
-            {block.text}
-          </p>
-        );
-      })}
-    </>
-  );
-}
-
-const MessageItem = memo(function MessageItem({
-  message,
-  toolRuns,
-}: {
-  message: AgentMessage;
-  toolRuns: Record<string, ToolRun>;
-}) {
-  if (message.role === "user")
-    return (
-      <article
-        aria-label={t.you}
-        className="max-w-[80%] self-end rounded-[18px] rounded-br-md bg-bubble px-3.5 py-2 text-fg"
-      >
-        <p className="whitespace-pre-wrap leading-relaxed">{textOf(message.content)}</p>
-      </article>
-    );
-  if (message.role === "assistant")
-    return (
-      <article aria-label={t.assistant} className="flex flex-col gap-2">
-        <AssistantBlocks
-          content={(message.content as TimelineContent[]) ?? []}
-          toolRuns={toolRuns}
-        />
-        {/* 被停止或出错结束的回复：在末尾标明，避免把半截回答当成完整结果 */}
-        {message.stopReason === "aborted" && (
-          <p className="self-start rounded-full bg-hover px-2 py-0.5 text-[11px] text-muted">
-            {t.stopped}
-          </p>
-        )}
-        {message.stopReason === "error" && (
-          <p className="text-xs text-danger">
-            {t.replyFailed}
-            {message.errorMessage ? `：${message.errorMessage}` : ""}
-          </p>
-        )}
-      </article>
-    );
-  return null; // 工具结果并入对应的工具卡片显示
 });
 
 // 欢迎页：标志 + 标题 + 三个液态玻璃建议按钮
@@ -227,8 +152,10 @@ function WorkspaceBar({
           blur={24}
           radius={18}
           {...glass}
-          sheen={false}
-          className="-mb-5 pb-5 ring-1 ring-black/[0.06] dark:ring-white/[0.08]"
+          // 不要立体高光与投影（投影被外层裁切后只在两侧露出一截）；边框用内描边，
+          // 外描边的上沿会被外层 overflow-hidden 裁掉
+          specular={false}
+          className="-mb-5 pb-5 ring-1 ring-inset ring-black/[0.08] dark:ring-white/[0.1]"
         >
           <div className="flex h-10 items-center px-4">
             <WorkspacePicker current={current} onPicked={onPicked} onError={onError}>
@@ -247,16 +174,28 @@ function WorkspaceBar({
   );
 }
 
-/** 上下文占用：只显示小圆环，点击展开详情 */
-function ContextRing({ percent }: { percent: number }) {
+/** 1.2k / 128k / 1M：上下文 token 的紧凑写法 */
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${Math.round(n / 100_000) / 10}M`.replace(".0M", "M");
+  if (n >= 1_000) return `${Math.round(n / 100) / 10}k`.replace(".0k", "k");
+  return String(n);
+}
+
+/** 上下文占用：只显示小圆环，点击展开详情（tokens / 上下文窗口）。压缩后、下一次回复前占用未知 */
+function ContextRing({ usage }: { usage?: ContextUsage }) {
   const r = 7;
   const c = 2 * Math.PI * r;
+  const known = usage?.percent != null && usage.tokens != null;
+  const percent = known ? Math.min(100, Math.max(0, usage?.percent ?? 0)) : 0;
+  const shown = known ? `${percent < 10 ? percent.toFixed(1) : Math.round(percent)}%` : "—";
+  const tone =
+    percent >= 90 ? "stroke-danger" : percent >= 75 ? "stroke-amber-500" : "stroke-accent";
   return (
     <GlassPopover>
       <GlassPopoverTrigger asChild>
         <button
           type="button"
-          aria-label={`${t.context} ${percent}%`}
+          aria-label={`${t.context} ${shown}`}
           className="grid size-8 place-items-center rounded-full outline-none transition-colors hover:bg-hover data-[state=open]:bg-hover"
         >
           <svg aria-hidden width="18" height="18" viewBox="0 0 18 18" className="-rotate-90">
@@ -277,7 +216,7 @@ function ContextRing({ percent }: { percent: number }) {
               strokeLinecap="round"
               strokeDasharray={c}
               strokeDashoffset={c * (1 - percent / 100)}
-              className="stroke-accent"
+              className={cn("transition-[stroke-dashoffset] duration-500 ease-out", tone)}
             />
           </svg>
         </button>
@@ -286,18 +225,32 @@ function ContextRing({ percent }: { percent: number }) {
         <div className="flex flex-col gap-1.5 px-4 py-1.5 text-[13px]">
           <div className="flex items-baseline justify-between gap-6">
             <span className="font-medium">{t.context}</span>
-            <span className="tabular-nums text-muted">{percent}%</span>
+            <span className="tabular-nums text-muted">{shown}</span>
           </div>
           <div className="h-1.5 overflow-hidden rounded-full bg-black/10 dark:bg-white/15">
-            <div className="h-full rounded-full bg-accent" style={{ width: `${percent}%` }} />
+            <div
+              className={cn(
+                "h-full rounded-full transition-[width] duration-500 ease-out",
+                percent >= 90 ? "bg-danger" : percent >= 75 ? "bg-amber-500" : "bg-accent",
+              )}
+              style={{ width: `${percent}%` }}
+            />
           </div>
-          <p className="text-[12px] text-muted">{t.contextDetail}</p>
+          {usage && (
+            <p className="text-[12px] text-muted tabular-nums">
+              {known ? formatTokens(usage.tokens ?? 0) : "—"} / {formatTokens(usage.contextWindow)}{" "}
+              tokens
+            </p>
+          )}
+          <p className="text-[12px] text-muted">{known ? t.contextDetail : t.contextUnknown}</p>
         </div>
       </GlassPopoverContent>
     </GlassPopover>
   );
 }
 
+/** 发送成功后等待 Core 回显用户消息的最长时间 */
+const PENDING_ECHO_TIMEOUT_MS = 3000;
 /** 距底部小于该值视为"停在底部" */
 const STICK_THRESHOLD_PX = 48;
 /** 输入框行高与行数范围 */
@@ -390,10 +343,6 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     onOpening: tabId ? (opening) => setTabOpening(tabId, opening) : undefined,
     onOpened: tabId ? (opened) => markOpened(tabId, opened) : undefined,
   });
-  // 运行中的标签不会因标签上限被关闭
-  useEffect(() => {
-    if (tabId) setTabRunning(tabId, state.running);
-  }, [tabId, state.running, setTabRunning]);
   const modelConfig = useModelConfigGate();
   const [draft, setDraft] = useState("");
   const [preview, setPreview] = useState(false);
@@ -469,6 +418,57 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     const el = scrollRef.current;
     el?.scrollTo?.({ top: el.scrollHeight, behavior: reducedMotion ? "auto" : "smooth" });
   }, [lastMessage, reducedMotion]);
+  // 平滑输出时正文逐帧变高，记录本身没有变化：内容高度一变就贴底（用户没往上翻时）
+  const timelineRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const inner = timelineRef.current;
+    if (!inner || typeof ResizeObserver !== "function") return;
+    const observer = new ResizeObserver(() => {
+      const el = scrollRef.current;
+      if (el && stickToBottom.current) el.scrollTop = el.scrollHeight;
+    });
+    observer.observe(inner);
+    return () => observer.disconnect();
+  }, []);
+
+  // 刚发出、Core 还没回显的用户消息：先按它将来的位置显示，回显后同一个 key 原地替换，不闪烁
+  const [pendingUser, setPendingUser] = useState<{ text: string; index: number } | null>(null);
+  // 回显后清除；发送失败在 submit 里清除。发送成功后 Core 的确认可能早于 agent_start 和回显，
+  // 中间那一下既不在发送也不在运行：不能据此清除，否则欢迎页和气泡会消失再出现（闪一下）。
+  // 只在发送成功、一段时间后仍没开始运行也没回显（如由扩展处理、不产生消息的命令）时兜底清除。
+  useEffect(() => {
+    if (!pendingUser) return;
+    if (state.messages.length > pendingUser.index) {
+      setPendingUser(null);
+      return;
+    }
+    if (submitting || state.running) return;
+    const id = setTimeout(() => setPendingUser(null), PENDING_ECHO_TIMEOUT_MS);
+    return () => clearTimeout(id);
+  }, [pendingUser, state.messages.length, submitting, state.running]);
+
+  // 运行中、提交中（prompt 已发出但 agent_start 未到）、以及命令超时（Core 可能已受理、仍在执行）的标签
+  // 都不会因标签上限被关闭，否则卸载会关掉它的 RPC 客户端与 Core，提交被中断
+  const busy = state.running || submitting || pendingUser !== null || unresponsive;
+  useEffect(() => {
+    if (tabId) setTabRunning(tabId, busy);
+  }, [tabId, busy, setTabRunning]);
+
+  // 欢迎页离场：开始对话后先淡出上移，动画结束再卸载
+  const conversationStarted = started || pendingUser !== null;
+  const [welcomeGone, setWelcomeGone] = useState(conversationStarted);
+  useEffect(() => {
+    if (!conversationStarted) {
+      setWelcomeGone(false);
+      return;
+    }
+    if (reducedMotion) {
+      setWelcomeGone(true);
+      return;
+    }
+    const id = setTimeout(() => setWelcomeGone(true), 280);
+    return () => clearTimeout(id);
+  }, [conversationStarted, reducedMotion]);
 
   const submit = (e?: FormEvent) => {
     e?.preventDefault();
@@ -484,10 +484,15 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     submittingRef.current = true;
     setSubmitting(true);
     stickToBottom.current = true;
+    const message = withAttachments(text, attachments);
+    setPendingUser({ text: message, index: state.messages.length });
     // 发送成功后才清空输入，失败时保留草稿和附件以便重试
-    void send(withAttachments(text, attachments))
+    void send(message)
       .then((sent) => {
-        if (!sent) return;
+        if (!sent) {
+          setPendingUser(null);
+          return;
+        }
         setDraft("");
         setAttachments([]);
         setExpanded(false);
@@ -523,10 +528,6 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.nativeEvent.isComposing) return;
     if (e.key === "Enter" && !e.shiftKey) submit(e);
-    else if (e.key === "Escape" && state.running) {
-      e.preventDefault();
-      stop();
-    }
   };
 
   const shownError = error ?? state.lastError;
@@ -535,33 +536,93 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     ? `${state.model.provider}/${state.model.id}`
     : (pendingModel.model ?? modelConfig.info?.defaultModel ?? null);
   const pendingUi = state.uiRequests[0];
+  const turns = useMemo(() => groupTurns(state.messages), [state.messages]);
+  const indexItems = useMemo<IndexItem[]>(
+    () =>
+      turns.flatMap((turn) =>
+        turn.user ? [{ index: turn.user.index, text: textOf(turn.user.message.content) }] : [],
+      ),
+    [turns],
+  );
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
+      <MessageIndex items={indexItems} scrollRef={scrollRef} />
+      {/* 顶部渐隐：滚上去的内容在左右栏开关下方淡出，不和按钮叠在一起 */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 top-0 z-10 h-12 bg-linear-to-b from-[var(--paper)] from-40% to-transparent"
+      />
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        className="scroll-thin flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pt-6 text-sm"
+        className="scroll-none flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pt-12 text-sm"
         style={{ paddingBottom: (composerHeight ?? COMPOSER_FALLBACK_PX) + COMPOSER_GAP_PX }}
       >
-        <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-4">
+        <div
+          ref={timelineRef}
+          className="relative mx-auto flex w-full max-w-3xl flex-1 flex-col gap-4"
+        >
           {preview && (
             <p className="self-center rounded-full bg-hover px-2.5 py-0.5 text-[11px] text-muted">
               {t.previewBadge}
             </p>
           )}
-          {state.messages.length === 0 ? (
-            <Welcome
-              onPick={(s) => {
-                setDraft(s);
-                inputRef.current?.focus();
-              }}
-            />
-          ) : (
-            state.messages.map((m) => (
-              <MessageItem key={messageKey(m)} message={m} toolRuns={state.toolRuns} />
-            ))
+          {!welcomeGone && (
+            <div
+              inert={conversationStarted}
+              className={cn("flex flex-1", conversationStarted && "welcome-out absolute inset-0")}
+            >
+              <Welcome
+                onPick={(s) => {
+                  setDraft(s);
+                  inputRef.current?.focus();
+                }}
+              />
+            </div>
           )}
+          {turns.map((turn, ti) => {
+            const lastTurn = ti === turns.length - 1;
+            return (
+              <Fragment key={turn.start}>
+                {turn.user && (
+                  <UserBubble
+                    key={`${turn.user.index}-user`}
+                    index={turn.user.index}
+                    text={textOf(turn.user.message.content)}
+                  />
+                )}
+                {turn.replies.length > 0 && (
+                  <AgentTurn
+                    key={`${turn.start}-turn`}
+                    messages={turn.replies}
+                    toolRuns={state.toolRuns}
+                    running={lastTurn && state.running}
+                    streaming={lastTurn && state.streamingMessage}
+                    startedAt={
+                      (turn.user?.message as { timestamp?: number } | undefined)?.timestamp
+                    }
+                  />
+                )}
+              </Fragment>
+            );
+          })}
+          {pendingUser && state.messages.length <= pendingUser.index && (
+            // 与回显后那一轮同样的 key：回显时原地替换，不重播进场动画
+            <Fragment key={pendingUser.index + 1}>
+              <UserBubble
+                key={`${pendingUser.index}-user`}
+                index={pendingUser.index}
+                text={pendingUser.text}
+              />
+            </Fragment>
+          )}
+          {/* 已发出、回复还没开始：最后一条是用户消息（或还在等回显） */}
+          {(submitting || state.running || pendingUser !== null) &&
+            !unresponsive &&
+            (state.messages.length === 0 || state.messages.at(-1)?.role === "user") && (
+              <ThinkingIndicator />
+            )}
           {unresponsive && (
             <div
               role="alert"
@@ -722,24 +783,44 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                       <span className="max-w-40 truncate text-[12px]">{shownWorkspace.name}</span>
                     </span>
                   ) : (
-                    <WorkspacePicker
-                      current={shownWorkspace}
-                      onPicked={setWorkspace}
-                      onError={setPickError}
-                    >
-                      <GlassButton
-                        variant="capsule"
-                        size={30}
-                        {...glass}
-                        title={`${t.currentWorkspace}：${shownWorkspace.path}`}
-                        className={glassButtonClass}
+                    // 悬停（或键盘聚焦）时文件夹图标换成关闭按钮（在名称左侧），取消已选的工作区。
+                    // 关闭按钮是触发器的兄弟元素、叠在图标位置上（按钮里不能嵌套按钮），点它不会打开菜单
+                    <span className="group/ws relative flex">
+                      <WorkspacePicker
+                        current={shownWorkspace}
+                        onPicked={setWorkspace}
+                        onError={setPickError}
                       >
-                        <Folder aria-hidden size={14} />
-                        <span className="max-w-40 truncate text-[12px] font-normal">
-                          {shownWorkspace.name}
-                        </span>
-                      </GlassButton>
-                    </WorkspacePicker>
+                        <GlassButton
+                          variant="capsule"
+                          size={30}
+                          {...glass}
+                          title={`${t.currentWorkspace}：${shownWorkspace.path}`}
+                          className={glassButtonClass}
+                        >
+                          <Folder
+                            aria-hidden
+                            size={14}
+                            className="transition-opacity group-focus-within/ws:opacity-0 group-hover/ws:opacity-0"
+                          />
+                          <span className="max-w-40 truncate text-[12px] font-normal">
+                            {shownWorkspace.name}
+                          </span>
+                        </GlassButton>
+                      </WorkspacePicker>
+                      <button
+                        type="button"
+                        aria-label={`${t.clearWorkspace} ${shownWorkspace.name}`}
+                        title={t.clearWorkspace}
+                        onClick={() => {
+                          setPickError(null);
+                          setWorkspace(null);
+                        }}
+                        className="absolute left-[12px] top-1/2 z-10 grid size-[18px] -translate-y-1/2 place-items-center rounded-full text-muted opacity-0 outline-none transition-opacity hover:bg-black/[0.07] hover:text-fg focus-visible:opacity-100 group-focus-within/ws:opacity-100 group-hover/ws:opacity-100 dark:hover:bg-white/[0.1]"
+                      >
+                        <X aria-hidden size={13} strokeWidth={2} />
+                      </button>
+                    </span>
                   ))}
                 <span className="flex-1" />
                 <ModelPicker
@@ -751,7 +832,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                   onSelectModel={(model) => void selectModel({ model })}
                   onSelectThinking={(thinkingLevel) => void selectModel({ thinkingLevel })}
                 />
-                <ContextRing percent={0} />
+                <ContextRing usage={state.contextUsage} />
                 {state.running ? (
                   <button
                     type="button"

@@ -2,6 +2,7 @@ import type {
   AgentMessage,
   AssistantContent,
   AssistantMessageEvent,
+  ContextUsage,
   CoreRecord,
   ExtensionUiDialogRequest,
   RpcResponse,
@@ -60,6 +61,8 @@ export interface SessionState {
   thinkingLevel?: string;
   /** 当前模型支持的思考强度（get_available_thinking_levels） */
   thinkingLevels?: string[];
+  /** 上下文占用（get_session_stats）；每条回复结束后刷新 */
+  contextUsage?: ContextUsage;
 }
 
 export const initialSessionState: SessionState = {
@@ -104,6 +107,9 @@ function parseArgs(text: string): Record<string, unknown> | undefined {
  * *_start 新建空块并开始接收增量；*_delta 只追加到同类型、仍在接收增量的块；*_end 用完整内容替换并定稿。
  * start / done / error 不作用于内容块（正常运行中由 message_start / message_end 承担）。
  */
+/** 流式工具参数超过这个长度后，每增长这么多字符才重新解析一次 */
+const PARSE_STEP = 4096;
+
 function applyUpdate(
   draft: SessionState,
   content: TimelineContent[],
@@ -138,8 +144,16 @@ function applyUpdate(
       if (live && block?.type === "toolCall") {
         const call = block as StreamingToolCall;
         call.argsText = (call.argsText ?? "") + e.delta;
-        const args = parseArgs(call.argsText);
-        if (args) call.arguments = args;
+        // 参数很长时（写整份文件）每个增量都重解析一遍是 O(n²)，会拖慢界面：
+        // 短参数逐次解析；长参数每增长 PARSE_STEP 字符解析一次（界面只用到路径、命令等开头的字段），toolcall_end 时定稿
+        const len = call.argsText.length;
+        if (
+          len < PARSE_STEP ||
+          Math.floor(len / PARSE_STEP) !== Math.floor((len - e.delta.length) / PARSE_STEP)
+        ) {
+          const args = parseArgs(call.argsText);
+          if (args) call.arguments = args;
+        }
       }
       return;
     // *_end 携带完整内容，替换累积结果；该块定稿
@@ -168,6 +182,8 @@ function applyRecord(draft: SessionState, record: CoreRecord): void {
     case "response": {
       const r: RpcResponse = record;
       if (!r.success) {
+        // 上下文统计是后台刷新，失败不打扰用户（下一条回复结束后再取）
+        if (r.command === "get_session_stats") return;
         draft.lastError = r.error || `${r.command} 失败`;
         return;
       }
@@ -191,6 +207,7 @@ function applyRecord(draft: SessionState, record: CoreRecord): void {
         // 旧模型的档位不再适用：等 get_available_thinking_levels 给出新模型的
         draft.thinkingLevels = undefined;
       }
+      if (r.command === "get_session_stats" && r.data) draft.contextUsage = r.data.contextUsage;
       if (r.command === "get_available_thinking_levels" && Array.isArray(r.data?.levels))
         draft.thinkingLevels = r.data.levels;
       return;

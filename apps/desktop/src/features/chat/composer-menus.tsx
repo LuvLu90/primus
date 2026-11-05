@@ -84,6 +84,13 @@ export function WorkspacePicker({
   const [pendingTrust, setPendingTrust] = useState<WorkspaceInfo | null>(null);
   // 只处理最近一次打开请求的结果：较早的请求晚到时丢弃，不覆盖用户最后的选择
   const openSeq = useRef(0);
+  // 卸载（如清除工作区）后作废仍在途的打开请求，晚到的结果不再回调 onPicked
+  useEffect(
+    () => () => {
+      openSeq.current++;
+    },
+    [],
+  );
   const canPick = useCanPickFiles();
   // 菜单内显示（菜单仍开着时），同时交给外层显示（选择后菜单已关闭）
   const fail = (message: string) => {

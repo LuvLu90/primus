@@ -6,9 +6,12 @@ afterEach(cleanup);
 
 // 组件里用 useRouter 导航；测试环境没有 App Router，统一替换成可断言的替身（同一个对象）
 const router = { push: vi.fn(), replace: vi.fn(), back: vi.fn(), prefetch: vi.fn() };
-vi.mock("next/navigation", () => ({ useRouter: () => router, usePathname: () => "/" }));
-afterEach(() => {
+// usePathname 默认在主页；需要别的路径的用例用 vi.mocked(usePathname).mockReturnValue(...) 覆盖
+vi.mock("next/navigation", () => ({ useRouter: () => router, usePathname: vi.fn(() => "/") }));
+afterEach(async () => {
   for (const fn of Object.values(router)) fn.mockClear();
+  const { usePathname } = await import("next/navigation");
+  vi.mocked(usePathname).mockImplementation(() => "/");
 });
 
 // jsdom 缺少的浏览器 API（lore-glass 玻璃组件与外观设置会用到）

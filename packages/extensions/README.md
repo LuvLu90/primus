@@ -10,5 +10,6 @@
 | `subagent` | 自定义工具 `subagent` | 子 Agent 进程管理与结果汇总 | `primus:subagents` |
 | `plan` | `setActiveTools`、自定义工具 `todo` | 计划模式、待办 | `primus:plan`、`primus:todo`；`/primus-plan` |
 | `shell` | `tool_call`（bash/powershell） | Windows 编码修正、环境变量清理 | — |
+| `narrate` | `before_agent_start` | 往系统提示词末尾追加“进度说明”：调用工具前、每个阶段结束时用一两句话说明在做什么，最后一条回复写总结（桌面端按“工作过程 + 总结”展示） | — |
 
 数据格式：`{ "v": 1, "type": "<主题>", "data": { ... } }`，通过 `ctx.ui.setWidget("primus:<主题>", [JSON])` 发送。

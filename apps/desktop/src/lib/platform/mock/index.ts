@@ -329,6 +329,29 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
           }),
         );
         return;
+      case "get_session_stats": {
+        // 粗略按 4 字符 1 token 估算上下文占用
+        const window = MOCK_MODELS.find((m) => m.key === s.model)?.contextWindow ?? 128_000;
+        emit(s, () => {
+          const tokens = Math.round(JSON.stringify(s.messages).length / 4);
+          return respond(cmd, {
+            sessionId: s.key,
+            userMessages: 0,
+            assistantMessages: 0,
+            toolCalls: 0,
+            toolResults: 0,
+            totalMessages: s.messages.length,
+            tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: tokens },
+            cost: 0,
+            contextUsage: {
+              tokens,
+              contextWindow: window,
+              percent: Math.round((tokens / window) * 1000) / 10,
+            },
+          });
+        });
+        return;
+      }
       case "get_messages":
         // 推送时才取快照：此前推送的事件都已计入历史；排在它前面、被 abort 丢弃的事件不会进入快照
         emit(s, () => respond(cmd, { messages: s.messages.slice() }));

@@ -170,6 +170,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
       await Promise.all([
         client.request("get_state"),
         client.request("get_available_thinking_levels"),
+        client.request("get_session_stats").catch(() => {}),
       ]);
       if (failures.length > 0)
         throw new Error(`${strings.chat.model.switchFailed}：${failures.join("；")}`);
@@ -275,6 +276,14 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     });
     return opening.current;
   }, [enqueue, setError, clearError, syncUnresponsive, applySession, fail]);
+
+  // 每条消息输出结束（含一轮结束）后刷新上下文占用；切换模型后也刷新（上下文窗口随模型变化）
+  const streamingNow = state.streamingMessage;
+  const modelKey = state.model ? `${state.model.provider}/${state.model.id}` : "";
+  useEffect(() => {
+    if (streamingNow || !modelKey) return;
+    conn.current?.client.request("get_session_stats").catch(() => {});
+  }, [streamingNow, modelKey]);
 
   // 权限模式变化：会话已打开时立即同步（扩展命令运行中也会立即执行）
   const permissionMode = useAppStore((s) => s.permissionMode);

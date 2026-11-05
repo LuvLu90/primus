@@ -30,18 +30,26 @@ export function ApprovalCard({
     <section
       role="alertdialog"
       aria-label={t.label}
-      className="mb-2 flex flex-col gap-2.5 rounded-[18px] bg-surface px-4 py-3 text-[13px] shadow-[0_8px_30px_-12px_rgb(0_0_0/0.35)] ring-1 ring-border"
+      className="mx-auto mb-2 flex w-full max-w-xl flex-col gap-2.5 rounded-[18px] bg-surface px-4 py-3 text-[13px] shadow-[0_8px_30px_-12px_rgb(0_0_0/0.35)] ring-1 ring-border"
     >
       <div className="flex items-start gap-2.5">
         <ShieldQuestion aria-hidden size={16} className="mt-0.5 shrink-0 text-muted" />
         <div className="min-w-0 flex-1">
           <p className="font-medium text-fg">{t.title}</p>
-          <p className="mt-0.5 whitespace-pre-wrap break-words font-mono text-[12px] text-muted">
-            {request.title}
-          </p>
-          {request.method === "confirm" && request.message && (
-            <p className="mt-1 whitespace-pre-wrap break-words text-muted">{request.message}</p>
-          )}
+          {/* 长命令（多行脚本、heredoc）限高滚动，卡片不撑高遮住对话 */}
+          <section
+            aria-label={t.title}
+            // biome-ignore lint/a11y/noNoninteractiveTabindex: 限高后可滚动，键盘用户需要能聚焦滚动查看完整命令
+            tabIndex={0}
+            className="mt-0.5 max-h-[min(9rem,22vh)] overflow-y-auto overscroll-contain rounded-md pr-1 outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          >
+            <p className="whitespace-pre-wrap break-words font-mono text-[12px] text-muted">
+              {request.title}
+            </p>
+            {request.method === "confirm" && request.message && (
+              <p className="mt-1 whitespace-pre-wrap break-words text-muted">{request.message}</p>
+            )}
+          </section>
         </div>
         <button
           type="button"

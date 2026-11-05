@@ -1,4 +1,4 @@
-//! Core 进程监管（技术方案第 2.2、4.4、5.3–5.5 节）：用内置 `node.exe` 拉起 Core、重定向环境变量、
+//! Core 进程监管（技术方案第 2.2、4.4、5.3–5.5 节）：优先用电脑上已安装的 Node、没有时用内置 `node.exe` 拉起 Core、重定向环境变量、
 //! 收集 stderr、放进 Job Object，并管理进程上限与崩溃计数。
 //!
 //! - 启动参数（第 5.3 节）：`node.exe <agent-core>/rpc-entry.js [--session <文件>] --approve|--no-approve
@@ -48,6 +48,8 @@ const STDERR_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 const NODE_EXE: &str = "node.exe";
 #[cfg(not(windows))]
 const NODE_EXE: &str = "node";
+/// Core 要求的最低 Node 版本（agent-core/package.json 的 engines）：低于它的系统 Node 不用，改用内置运行时。
+const MIN_NODE_VERSION: (u32, u32, u32) = (22, 19, 0);
 
 /// Core 运行文件的位置。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +98,14 @@ impl CoreLayout {
         }
     }
 
+    /// 优先使用用户电脑上已安装的 Node（PATH 中第一个版本满足 Core 要求的），没有时保留内置运行时。
+    pub(crate) fn prefer_system_node(mut self) -> Self {
+        if let Some(node) = find_system_node(std::env::var_os("PATH").as_deref()) {
+            self.node = node;
+        }
+        self
+    }
+
     /// 检查运行文件是否齐全（`node` 为裸命令名时交给 PATH 查找，不检查）。
     pub(crate) fn check(&self) -> Result<(), SupervisorError> {
         let node_is_bare = self.node.parent().is_none_or(|p| p.as_os_str().is_empty());
@@ -104,10 +114,53 @@ impl CoreLayout {
             required.insert(0, &self.node);
         }
         match required.into_iter().find(|p| !p.is_file()) {
+            Some(missing) if missing == self.node => {
+                Err(SupervisorError::NodeNotFound(missing.to_path_buf()))
+            }
             Some(missing) => Err(SupervisorError::MissingFile(missing.to_path_buf())),
             None => Ok(()),
         }
     }
+}
+
+/// 在 PATH 中查找版本满足 Core 要求的 Node，返回其绝对路径。只看绝对路径的目录，
+/// 避免当前目录下的同名程序被当成 Node 执行。
+pub(crate) fn find_system_node(path: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
+    std::env::split_paths(path?)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join(NODE_EXE))
+        .filter(|node| node.is_file())
+        .find(|node| node_version(node).is_some_and(|v| v >= MIN_NODE_VERSION))
+}
+
+/// 运行 `node --version` 取版本号；无法运行或输出无法解析时为 None。
+fn node_version(node: &Path) -> Option<(u32, u32, u32)> {
+    let mut cmd = Command::new(node);
+    cmd.arg("--version")
+        .env_remove("NODE_OPTIONS")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let out = cmd.output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    parse_node_version(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// 解析 `v24.22.1` 形式的版本号（忽略预发布后缀）。
+pub(crate) fn parse_node_version(text: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = text.trim().strip_prefix('v')?.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?;
+    let digits: String = patch.chars().take_while(char::is_ascii_digit).collect();
+    Some((major, minor, digits.parse().ok()?))
 }
 
 /// 一次 Core 启动的参数。
@@ -133,6 +186,8 @@ pub(crate) struct LaunchOptions {
 pub(crate) enum SupervisorError {
     /// Core 运行文件缺失（安装损坏，或开发模式下未运行 `pnpm build:core` / `pnpm build:extensions`）
     MissingFile(PathBuf),
+    /// 电脑上没有可用的 Node（未安装或版本过低），内置运行时也不存在（开发模式下未运行 `pnpm build:core`）
+    NodeNotFound(PathBuf),
     /// 该会话已有运行中的 Core 进程
     AlreadyRunning(String),
     /// 1 分钟内已崩溃 3 次，不再自动重启
@@ -147,6 +202,14 @@ impl fmt::Display for SupervisorError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingFile(p) => write!(f, "内核文件缺失：{}", p.display()),
+            Self::NodeNotFound(p) => write!(
+                f,
+                "未找到 Node.js：请安装 Node {}.{}.{} 或更高版本，或提供内置运行时 {}",
+                MIN_NODE_VERSION.0,
+                MIN_NODE_VERSION.1,
+                MIN_NODE_VERSION.2,
+                p.display()
+            ),
             Self::AlreadyRunning(key) => write!(f, "会话 {key} 的内核进程已在运行"),
             Self::CrashLoop(key) => {
                 write!(
@@ -986,10 +1049,29 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn node_version_parsing() {
+        assert_eq!(parse_node_version("v24.22.1\n"), Some((24, 22, 1)));
+        assert_eq!(parse_node_version("v25.0.0-nightly2026"), Some((25, 0, 0)));
+        assert_eq!(parse_node_version("24.22.1"), None);
+        assert_eq!(parse_node_version("v24"), None);
+        assert!((22, 18, 9) < MIN_NODE_VERSION && (22, 19, 0) >= MIN_NODE_VERSION);
+    }
+
+    #[test]
+    fn find_system_node_skips_relative_and_missing_dirs() {
+        let tmp = TempDir::new();
+        let path = std::env::join_paths([Path::new("relative-dir"), &tmp.0]).unwrap();
+        assert_eq!(find_system_node(Some(path.as_os_str())), None);
+        assert_eq!(find_system_node(None), None);
+    }
+
+    #[test]
     fn check_reports_missing_files() {
         let tmp = TempDir::new();
         let layout = CoreLayout::installed(&tmp.0);
-        assert!(matches!(layout.check(), Err(SupervisorError::MissingFile(p)) if p == layout.node));
+        assert!(
+            matches!(layout.check(), Err(SupervisorError::NodeNotFound(p)) if p == layout.node)
+        );
         let fake = fake_layout(&tmp.0, "");
         assert!(fake.check().is_ok(), "裸命令名 node 交给 PATH 查找");
     }

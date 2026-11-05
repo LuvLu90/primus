@@ -100,8 +100,10 @@ export function AppShell() {
             }}
           >
             {/* 中央与两侧同款液态玻璃、同样透明度；接缝一侧外扩 SEAM_BLEED 由纸面裁掉，接缝不露高光线 */}
+            {/* main 带遮罩（seam-mask）且 isolate，玻璃取不到背后画面，模糊/折射看不见却会随时间线每次变化整块重算：关掉 */}
             <GlassPanel
               aria-hidden
+              backdrop={false}
               radius={OUTER_RADIUS}
               className="-z-10 pointer-events-none absolute inset-y-0 shadow-none"
               style={{
@@ -489,7 +491,7 @@ function PanelToggle({
       }}
       aria-disabled={disabled || undefined}
       className={cn(
-        "absolute top-1.5 z-10 grid size-7 place-items-center rounded-[10px] text-muted transition-colors hover:bg-hover hover:text-fg aria-pressed:text-fg",
+        "absolute top-1.5 z-20 grid size-7 place-items-center rounded-[10px] text-muted transition-colors hover:bg-hover hover:text-fg aria-pressed:text-fg",
         side === "left" ? "left-1.5" : "right-1.5",
       )}
     >
