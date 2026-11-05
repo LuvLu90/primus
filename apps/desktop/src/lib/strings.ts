@@ -67,6 +67,7 @@ export const strings = {
     you: "你",
     assistant: "乾元",
     thinking: "思考过程",
+    thinkingNow: "正在思考",
     tool: "工具",
     toolRunning: "运行中",
     toolDone: "完成",

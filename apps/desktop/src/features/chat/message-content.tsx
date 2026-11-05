@@ -1,0 +1,106 @@
+"use client";
+
+// 回复正文：Markdown 渲染 + 流式输出时的平滑打字效果，以及“正在思考”提示。
+import MarkdownIt from "markdown-it";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { strings } from "@/lib/strings";
+import { cn } from "@/lib/utils";
+
+// 不渲染原始 HTML（回复内容不可信，html: false 时所有 HTML 标签按文本转义）；链接自动识别
+const md = new MarkdownIt({ html: false, linkify: true, breaks: true, typographer: false });
+// 链接在系统浏览器中打开，不在应用窗口内跳转
+const defaultLinkOpen =
+  md.renderer.rules.link_open ??
+  ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
+md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
+  tokens[idx]?.attrSet("target", "_blank");
+  tokens[idx]?.attrSet("rel", "noreferrer noopener");
+  return defaultLinkOpen(tokens, idx, options, env, self);
+};
+
+export function renderMarkdown(text: string): string {
+  return md.render(text);
+}
+
+/** 每帧最多追上积压字符的这一比例：积压多时快、少时慢，约 1/3 秒追平，读起来像连续输出 */
+const CATCH_UP_FRAMES = 20;
+
+/**
+ * 平滑显示流式文本：模型往往一次吐出一整段，直接显示会“蹦”出来。
+ * 这里按帧逐步揭示新到的字符；`animate` 为 false（历史消息、减少动态效果）时直接显示全文。
+ * 流式结束后仍把剩余部分播完，不会在最后一下跳出。
+ */
+export function useSmoothText(text: string, animate: boolean): string {
+  const canAnimate = animate && typeof requestAnimationFrame === "function";
+  const [shown, setShown] = useState(() => (canAnimate ? 0 : text.length));
+  const shownRef = useRef(shown);
+  const playing = useRef(canAnimate);
+  if (canAnimate) playing.current = true;
+
+  useEffect(() => {
+    if (!playing.current) {
+      shownRef.current = text.length;
+      setShown(text.length);
+      return;
+    }
+    // 文本被整体替换得更短（如 message_end 定稿）时从新长度继续
+    if (shownRef.current > text.length) {
+      shownRef.current = text.length;
+      setShown(text.length);
+    }
+    let frame = 0;
+    const tick = () => {
+      const backlog = text.length - shownRef.current;
+      if (backlog <= 0) {
+        if (!animate) playing.current = false;
+        return;
+      }
+      shownRef.current += Math.max(1, Math.ceil(backlog / CATCH_UP_FRAMES));
+      setShown(shownRef.current);
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [text, animate]);
+
+  return text.slice(0, Math.min(shown, text.length));
+}
+
+/** Markdown 正文；`streaming` 时平滑揭示新内容 */
+export const MarkdownText = memo(function MarkdownText({
+  text,
+  streaming,
+  className,
+}: {
+  text: string;
+  streaming: boolean;
+  className?: string;
+}) {
+  const shown = useSmoothText(text, streaming);
+  const html = useMemo(() => renderMarkdown(shown), [shown]);
+  return (
+    <div
+      className={cn("md", className)}
+      // biome-ignore lint/security/noDangerouslySetInnerHtml: markdown-it 关闭了 html，输入中的标签已转义
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
+});
+
+/** 等待回复时的提示：流光文字 + 跳动的三个点 */
+export function ThinkingIndicator({ label = strings.chat.thinkingNow }: { label?: string }) {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className="msg-in flex items-center gap-2 self-start text-[13px]"
+    >
+      <span className="thinking-dots" aria-hidden>
+        <i />
+        <i />
+        <i />
+      </span>
+      <span className="shimmer-text">{label}</span>
+    </div>
+  );
+}

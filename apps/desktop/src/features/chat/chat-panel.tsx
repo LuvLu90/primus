@@ -49,11 +49,12 @@ import {
   WorkspacePicker,
   withAttachments,
 } from "./composer-menus";
+import { MarkdownText, ThinkingIndicator } from "./message-content";
 import { ModelPicker } from "./model-picker";
 import { useChatSession } from "./use-chat-session";
 
 // 中央对话区：实色"纸面"上的时间线 + 悬浮在其上的玻璃输入框（滚动内容从玻璃下方折射穿过）。
-// 低保真：纯文本渲染；Markdown、代码高亮、虚拟列表在后续任务补上。
+// 回复按 Markdown 渲染，流式输出平滑揭示；代码高亮、虚拟列表在后续任务补上。
 
 const t = strings.chat;
 
@@ -65,10 +66,21 @@ function textOf(content: unknown): string {
     .join("");
 }
 
-/** 消息没有独立 id：用角色 + 时间戳（工具结果再加调用 id）区分；流式中的消息尚无时间戳 */
-function messageKey(m: AgentMessage): string {
-  const r = m as { role: string; timestamp?: number; toolCallId?: string };
-  return `${r.role}-${r.timestamp ?? "streaming"}-${r.toolCallId ?? ""}`;
+/**
+ * 消息没有独立 id：按位置 + 角色（工具结果再加调用 id）区分。时间线只在末尾追加，位置稳定；
+ * 不用时间戳，因为流式中的消息可能还没有时间戳，定稿时换 key 会让整条消息重新挂载（进场动画重播、平滑输出中断）
+ */
+function messageKey(m: AgentMessage, index: number): string {
+  const r = m as { role: string; toolCallId?: string };
+  return `${index}-${r.role}-${r.toolCallId ?? ""}`;
+}
+
+/** 等待提示：本轮进行中，且最后一条不是正在输出正文的回复（等首个字、思考中、工具执行后等下一段） */
+function isWaiting(messages: AgentMessage[], streaming: boolean): boolean {
+  const last = messages.at(-1);
+  if (last?.role !== "assistant" || !streaming) return true;
+  const content = (last.content as TimelineContent[]) ?? [];
+  return !content.some((b) => b?.type === "text" && b.text.trim() !== "");
 }
 
 const statusDot: Record<ToolRun["status"], string> = {
@@ -100,9 +112,12 @@ function ToolCard({ name, run }: { name: string; run: ToolRun | undefined }) {
 function AssistantBlocks({
   content,
   toolRuns,
+  streaming,
 }: {
   content: TimelineContent[];
   toolRuns: Record<string, ToolRun>;
+  /** 这条消息正在流式输出：正文平滑揭示 */
+  streaming: boolean;
 }) {
   return (
     <>
@@ -123,9 +138,12 @@ function AssistantBlocks({
         if (block.type === "toolCall")
           return <ToolCard key={key} name={block.name} run={toolRuns[block.id]} />;
         return (
-          <p key={key} className="whitespace-pre-wrap font-serif text-[15px] leading-relaxed">
-            {block.text}
-          </p>
+          <MarkdownText
+            key={key}
+            text={block.text}
+            streaming={streaming}
+            className="font-serif text-[15px] leading-relaxed"
+          />
         );
       })}
     </>
@@ -135,25 +153,28 @@ function AssistantBlocks({
 const MessageItem = memo(function MessageItem({
   message,
   toolRuns,
+  streaming = false,
 }: {
   message: AgentMessage;
   toolRuns: Record<string, ToolRun>;
+  streaming?: boolean;
 }) {
   if (message.role === "user")
     return (
       <article
         aria-label={t.you}
-        className="max-w-[80%] self-end rounded-[18px] rounded-br-md bg-bubble px-3.5 py-2 text-fg"
+        className="msg-in max-w-[80%] self-end rounded-[18px] rounded-br-md bg-bubble px-3.5 py-2 text-fg"
       >
         <p className="whitespace-pre-wrap leading-relaxed">{textOf(message.content)}</p>
       </article>
     );
   if (message.role === "assistant")
     return (
-      <article aria-label={t.assistant} className="flex flex-col gap-2">
+      <article aria-label={t.assistant} className="msg-in flex flex-col gap-2">
         <AssistantBlocks
           content={(message.content as TimelineContent[]) ?? []}
           toolRuns={toolRuns}
+          streaming={streaming}
         />
         {/* 被停止或出错结束的回复：在末尾标明，避免把半截回答当成完整结果 */}
         {message.stopReason === "aborted" && (
@@ -472,6 +493,42 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     const el = scrollRef.current;
     el?.scrollTo?.({ top: el.scrollHeight, behavior: reducedMotion ? "auto" : "smooth" });
   }, [lastMessage, reducedMotion]);
+  // 平滑输出时正文逐帧变高，记录本身没有变化：内容高度一变就贴底（用户没往上翻时）
+  const timelineRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const inner = timelineRef.current;
+    if (!inner || typeof ResizeObserver !== "function") return;
+    const observer = new ResizeObserver(() => {
+      const el = scrollRef.current;
+      if (el && stickToBottom.current) el.scrollTop = el.scrollHeight;
+    });
+    observer.observe(inner);
+    return () => observer.disconnect();
+  }, []);
+
+  // 刚发出、Core 还没回显的用户消息：先按它将来的位置显示，回显后同一个 key 原地替换，不闪烁
+  const [pendingUser, setPendingUser] = useState<{ text: string; index: number } | null>(null);
+  useEffect(() => {
+    if (!pendingUser) return;
+    if (state.messages.length > pendingUser.index || (!submitting && !state.running))
+      setPendingUser(null);
+  }, [pendingUser, state.messages.length, submitting, state.running]);
+
+  // 欢迎页离场：开始对话后先淡出上移，动画结束再卸载
+  const conversationStarted = started || pendingUser !== null;
+  const [welcomeGone, setWelcomeGone] = useState(conversationStarted);
+  useEffect(() => {
+    if (!conversationStarted) {
+      setWelcomeGone(false);
+      return;
+    }
+    if (reducedMotion) {
+      setWelcomeGone(true);
+      return;
+    }
+    const id = setTimeout(() => setWelcomeGone(true), 280);
+    return () => clearTimeout(id);
+  }, [conversationStarted, reducedMotion]);
 
   const submit = (e?: FormEvent) => {
     e?.preventDefault();
@@ -487,10 +544,15 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     submittingRef.current = true;
     setSubmitting(true);
     stickToBottom.current = true;
+    const message = withAttachments(text, attachments);
+    setPendingUser({ text: message, index: state.messages.length });
     // 发送成功后才清空输入，失败时保留草稿和附件以便重试
-    void send(withAttachments(text, attachments))
+    void send(message)
       .then((sent) => {
-        if (!sent) return;
+        if (!sent) {
+          setPendingUser(null);
+          return;
+        }
         setDraft("");
         setAttachments([]);
         setExpanded(false);
@@ -547,24 +609,46 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
         className="scroll-thin flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pt-6 text-sm"
         style={{ paddingBottom: (composerHeight ?? COMPOSER_FALLBACK_PX) + COMPOSER_GAP_PX }}
       >
-        <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-4">
+        <div
+          ref={timelineRef}
+          className="relative mx-auto flex w-full max-w-3xl flex-1 flex-col gap-4"
+        >
           {preview && (
             <p className="self-center rounded-full bg-hover px-2.5 py-0.5 text-[11px] text-muted">
               {t.previewBadge}
             </p>
           )}
-          {state.messages.length === 0 ? (
-            <Welcome
-              onPick={(s) => {
-                setDraft(s);
-                inputRef.current?.focus();
-              }}
-            />
-          ) : (
-            state.messages.map((m) => (
-              <MessageItem key={messageKey(m)} message={m} toolRuns={state.toolRuns} />
-            ))
+          {!welcomeGone && (
+            <div
+              inert={conversationStarted}
+              className={cn("flex flex-1", conversationStarted && "welcome-out absolute inset-0")}
+            >
+              <Welcome
+                onPick={(s) => {
+                  setDraft(s);
+                  inputRef.current?.focus();
+                }}
+              />
+            </div>
           )}
+          {state.messages.map((m, i) => (
+            <MessageItem
+              key={messageKey(m, i)}
+              message={m}
+              toolRuns={state.toolRuns}
+              streaming={state.streamingMessage && i === state.messages.length - 1}
+            />
+          ))}
+          {pendingUser && state.messages.length <= pendingUser.index && (
+            <MessageItem
+              key={`${pendingUser.index}-user-`}
+              message={{ role: "user", content: pendingUser.text, timestamp: 0 } as AgentMessage}
+              toolRuns={state.toolRuns}
+            />
+          )}
+          {(submitting || state.running) &&
+            !unresponsive &&
+            isWaiting(state.messages, state.streamingMessage) && <ThinkingIndicator />}
           {unresponsive && (
             <div
               role="alert"
@@ -725,7 +809,8 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                       <span className="max-w-40 truncate text-[12px]">{shownWorkspace.name}</span>
                     </span>
                   ) : (
-                    // 悬停（或键盘聚焦）时右上角出现关闭按钮，取消已选的工作区
+                    // 悬停（或键盘聚焦）时文件夹图标换成关闭按钮（在名称左侧），取消已选的工作区。
+                    // 关闭按钮是触发器的兄弟元素、叠在图标位置上（按钮里不能嵌套按钮），点它不会打开菜单
                     <span className="group/ws relative flex">
                       <WorkspacePicker
                         current={shownWorkspace}
@@ -739,7 +824,11 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                           title={`${t.currentWorkspace}：${shownWorkspace.path}`}
                           className={glassButtonClass}
                         >
-                          <Folder aria-hidden size={14} />
+                          <Folder
+                            aria-hidden
+                            size={14}
+                            className="transition-opacity group-focus-within/ws:opacity-0 group-hover/ws:opacity-0"
+                          />
                           <span className="max-w-40 truncate text-[12px] font-normal">
                             {shownWorkspace.name}
                           </span>
@@ -753,9 +842,9 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                           setPickError(null);
                           setWorkspace(null);
                         }}
-                        className="absolute -right-1 -top-1 z-10 grid size-4 place-items-center rounded-full bg-fg text-surface opacity-0 outline-none transition-opacity group-focus-within/ws:opacity-100 group-hover/ws:opacity-100 focus-visible:opacity-100"
+                        className="absolute left-[12px] top-1/2 z-10 grid size-[18px] -translate-y-1/2 place-items-center rounded-full text-muted opacity-0 outline-none transition-opacity hover:bg-black/[0.07] hover:text-fg focus-visible:opacity-100 group-focus-within/ws:opacity-100 group-hover/ws:opacity-100 dark:hover:bg-white/[0.1]"
                       >
-                        <X aria-hidden size={10} strokeWidth={2.5} />
+                        <X aria-hidden size={13} strokeWidth={2} />
                       </button>
                     </span>
                   ))}

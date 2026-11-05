@@ -4,6 +4,7 @@ import "@fontsource-variable/source-serif-4/opsz.css";
 import "./globals.css";
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import { KeepAliveShell } from "@/components/layout/keep-alive-shell";
 import { AppearanceController } from "@/components/theme/appearance-controller";
 import { strings } from "@/lib/strings";
 
@@ -20,6 +21,8 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       </head>
       <body>
         <AppearanceController />
+        {/* 主界面常驻在布局里，切换页面时不卸载（见 KeepAliveShell）；主页本身不再渲染内容 */}
+        <KeepAliveShell />
         {children}
       </body>
     </html>

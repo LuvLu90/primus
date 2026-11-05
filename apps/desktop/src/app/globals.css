@@ -354,3 +354,205 @@ html.window-effects.glass-clear body {
     0 1px 2px rgb(0 0 0 / 0.16),
     0 0 0 3px color-mix(in srgb, var(--color-accent) 40%, transparent);
 }
+
+/* ---------- 对话：消息进场、等待提示、Markdown 正文 ---------- */
+
+/* 新消息轻轻上浮淡入；欢迎页离场时淡出上移 */
+@keyframes msg-in {
+  from {
+    opacity: 0;
+    translate: 0 10px;
+  }
+}
+
+@keyframes welcome-out {
+  to {
+    opacity: 0;
+    translate: 0 -12px;
+    scale: 0.98;
+  }
+}
+
+.msg-in {
+  animation: msg-in 0.36s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.welcome-out {
+  animation: welcome-out 0.28s cubic-bezier(0.4, 0, 1, 1) both;
+  pointer-events: none;
+}
+
+/* 流光文字：一道亮带从左向右扫过 */
+@keyframes shimmer {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0 0;
+  }
+}
+
+.shimmer-text {
+  background:
+    linear-gradient(
+      90deg,
+      var(--color-muted) 0%,
+      var(--color-muted) 40%,
+      var(--color-fg) 50%,
+      var(--color-muted) 60%,
+      var(--color-muted) 100%
+    )
+    0 0 / 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer 1.8s linear infinite;
+}
+
+@keyframes dot-bounce {
+  0%,
+  80%,
+  100% {
+    opacity: 0.3;
+    translate: 0 0;
+  }
+  40% {
+    opacity: 1;
+    translate: 0 -3px;
+  }
+}
+
+.thinking-dots {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.thinking-dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 9999px;
+  background: var(--color-muted);
+  animation: dot-bounce 1.2s ease-in-out infinite;
+}
+
+.thinking-dots i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.thinking-dots i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .msg-in,
+  .welcome-out,
+  .shimmer-text,
+  .thinking-dots i {
+    animation: none;
+  }
+  .shimmer-text {
+    color: var(--color-muted);
+  }
+}
+
+/* Markdown 正文排版 */
+.md {
+  overflow-wrap: anywhere;
+}
+.md > :first-child {
+  margin-top: 0;
+}
+.md > :last-child {
+  margin-bottom: 0;
+}
+.md p,
+.md ul,
+.md ol,
+.md pre,
+.md blockquote,
+.md table {
+  margin: 0.6em 0;
+}
+.md h1,
+.md h2,
+.md h3,
+.md h4 {
+  margin: 1.1em 0 0.5em;
+  font-weight: 600;
+  line-height: 1.35;
+}
+.md h1 {
+  font-size: 1.35em;
+}
+.md h2 {
+  font-size: 1.2em;
+}
+.md h3 {
+  font-size: 1.08em;
+}
+.md strong {
+  font-weight: 600;
+}
+.md ul {
+  list-style: disc;
+  padding-left: 1.4em;
+}
+.md ol {
+  list-style: decimal;
+  padding-left: 1.6em;
+}
+.md li {
+  margin: 0.2em 0;
+}
+.md li > ul,
+.md li > ol {
+  margin: 0.2em 0;
+}
+.md a {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.md code {
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 0.88em;
+  padding: 0.1em 0.35em;
+  border-radius: 6px;
+  background: var(--color-hover);
+}
+.md pre {
+  padding: 0.8em 1em;
+  border-radius: 12px;
+  background: var(--color-hover);
+  overflow-x: auto;
+  line-height: 1.5;
+}
+.md pre code {
+  padding: 0;
+  background: none;
+  font-size: 0.85em;
+}
+.md blockquote {
+  padding-left: 0.9em;
+  border-left: 3px solid var(--color-border);
+  color: var(--color-muted);
+}
+.md hr {
+  margin: 1em 0;
+  border: 0;
+  border-top: 1px solid var(--color-border);
+}
+.md table {
+  border-collapse: collapse;
+  display: block;
+  overflow-x: auto;
+}
+.md th,
+.md td {
+  padding: 0.35em 0.7em;
+  border: 1px solid var(--color-border);
+  text-align: left;
+}
+.md th {
+  font-weight: 600;
+  background: var(--color-hover);
+}
