@@ -447,9 +447,9 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     return () => clearTimeout(id);
   }, [pendingUser, state.messages.length, submitting, state.running]);
 
-  // 运行中、提交中（prompt 已发出但 agent_start 未到）的标签都不会因标签上限被关闭，
-  // 否则卸载会关掉它的 RPC 客户端与 Core，提交被中断
-  const busy = state.running || submitting || pendingUser !== null;
+  // 运行中、提交中（prompt 已发出但 agent_start 未到）、以及命令超时（Core 可能已受理、仍在执行）的标签
+  // 都不会因标签上限被关闭，否则卸载会关掉它的 RPC 客户端与 Core，提交被中断
+  const busy = state.running || submitting || pendingUser !== null || unresponsive;
   useEffect(() => {
     if (tabId) setTabRunning(tabId, busy);
   }, [tabId, busy, setTabRunning]);

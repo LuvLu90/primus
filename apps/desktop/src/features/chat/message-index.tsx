@@ -82,6 +82,17 @@ export function MessageIndex({
 
   if (items.length < 2 || !overflowing) return null;
   const ticks = sample(items);
+  // 当前提问可能不在取样里：高亮离它最近的刻度
+  const activeTick =
+    active === null
+      ? null
+      : (ticks.reduce<IndexItem | null>(
+          (best, item) =>
+            best === null || Math.abs(item.index - active) < Math.abs(best.index - active)
+              ? item
+              : best,
+          null,
+        )?.index ?? null);
 
   const jump = (item: IndexItem) => {
     const el = scrollRef.current;
@@ -112,7 +123,7 @@ export function MessageIndex({
     >
       <div ref={railRef} className="pointer-events-auto relative flex flex-col py-1">
         {ticks.map((item) => {
-          const isActive = item.index === active;
+          const isActive = item.index === activeTick;
           return (
             <button
               key={item.index}

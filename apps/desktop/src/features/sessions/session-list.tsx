@@ -2,6 +2,7 @@
 
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Archive, ArchiveRestore, Ellipsis, Search, Trash2 } from "lucide-react";
+import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import {
   GlassDialog,
@@ -57,6 +58,11 @@ export function SessionList() {
   const search = useSessionSearch(query, index.version);
   const [actionError, setActionError] = useState<string>();
   const [pendingDelete, setPendingDelete] = useState<SessionSummary | null>(null);
+  // 主界面切到设置等页面时只隐藏不卸载，Portal 里的浮层要主动关掉，否则会盖在目标页面上
+  const shellHidden = useShellHidden();
+  useEffect(() => {
+    if (shellHidden) setPendingDelete(null);
+  }, [shellHidden]);
   // 正在删除的会话路径：删除完成前不允许再打开（否则会留下指向已删除文件的标签）
   const [deleting, setDeleting] = useState<ReadonlySet<string>>(() => new Set());
   const tabs = useSessionsStore((s) => s.tabs);
@@ -239,6 +245,12 @@ export function SessionList() {
   );
 }
 
+/** 主界面是否被隐藏（当前不在主页） */
+function useShellHidden(): boolean {
+  const pathname = usePathname();
+  return pathname !== null && pathname !== "/" && pathname !== "";
+}
+
 interface SessionRowProps {
   session: SessionSummary;
   top: number;
@@ -266,6 +278,14 @@ function SessionRow({
   const title = sessionTitle(session);
   // 右键菜单：在点击位置弹出同一套操作（归档、删除），替代浏览器自带菜单
   const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreRef = useRef<HTMLButtonElement>(null);
+  const shellHidden = useShellHidden();
+  useEffect(() => {
+    if (!shellHidden) return;
+    setMenuAt(null);
+    setMoreOpen(false);
+  }, [shellHidden]);
   const items = (
     <>
       <GlassPopoverItem
@@ -316,9 +336,10 @@ function SessionRow({
           {session.archived && <span>· {t.archived}</span>}
         </span>
       </button>
-      <GlassPopover>
+      <GlassPopover open={moreOpen} onOpenChange={setMoreOpen}>
         <GlassPopoverTrigger asChild>
           <button
+            ref={moreRef}
             type="button"
             aria-label={`${t.moreActions}：${title}`}
             className="absolute right-1.5 flex size-6 items-center justify-center rounded-full text-muted opacity-0 outline-none hover:bg-hover focus-visible:opacity-100 group-hover:opacity-100 data-[state=open]:opacity-100"
@@ -339,7 +360,18 @@ function SessionRow({
             style={{ left: menuAt?.x ?? 0, top: menuAt?.y ?? 0 }}
           />
         </GlassPopoverTrigger>
-        <GlassPopoverContent side="bottom" align="start" sideOffset={2} tint={0.75} minWidth={160}>
+        <GlassPopoverContent
+          side="bottom"
+          align="start"
+          sideOffset={2}
+          tint={0.75}
+          minWidth={160}
+          // 触发点是不可见的零尺寸元素：关闭后把焦点交给本行可见的“更多操作”按钮
+          onCloseAutoFocus={(e) => {
+            e.preventDefault();
+            moreRef.current?.focus();
+          }}
+        >
           {items}
         </GlassPopoverContent>
       </GlassPopover>

@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { setPlatformForTesting } from "@/lib/platform";
 import { createMockPlatform } from "@/lib/platform/mock";
 import { strings } from "@/lib/strings";
-import { MarkdownText } from "./message-content";
+import { MarkdownText, renderMarkdown } from "./message-content";
 
 const t = strings.chat;
 
@@ -29,5 +29,9 @@ describe("回复中的链接", () => {
     fireEvent.click(await screen.findByRole("button", { name: t.linkCancel }));
     await waitFor(() => expect(screen.queryByRole("button", { name: t.linkOpen })).toBeNull());
     expect(openExternal).not.toHaveBeenCalled();
+  });
+
+  it("不渲染图片，避免加载远程资源", () => {
+    expect(renderMarkdown("![x](https://example.com/a.png)")).not.toContain("<img");
   });
 });

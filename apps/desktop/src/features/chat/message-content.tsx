@@ -16,6 +16,8 @@ import { cn } from "@/lib/utils";
 
 // 不渲染原始 HTML（回复内容不可信，html: false 时所有 HTML 标签按文本转义）；链接自动识别
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true, typographer: false });
+// 不加载远程图片（技术方案：Markdown 禁用原始 HTML、不加载远程图片）：图片语法按普通文本显示
+md.disable("image");
 // 链接不在应用窗口内跳转：点击时由 MarkdownText 拦截，确认后交给系统浏览器（open_external）
 const defaultLinkOpen =
   md.renderer.rules.link_open ??
@@ -153,7 +155,9 @@ export const MarkdownText = memo(function MarkdownText({
           <GlassDialogContent>
             <GlassDialogTitle>{strings.chat.linkTitle}</GlassDialogTitle>
             <GlassDialogDescription>{strings.chat.linkDescription}</GlassDialogDescription>
-            <p className="mt-3 break-all font-mono text-[12px] text-muted">{pendingLink}</p>
+            <p className="mt-3 max-h-32 overflow-y-auto break-all font-mono text-[12px] text-muted">
+              {pendingLink}
+            </p>
             {linkError && <p className="mt-2 text-[13px] text-danger">{linkError}</p>}
             <div className="mt-5 flex justify-end gap-2 text-sm">
               <GlassDialogClose asChild>

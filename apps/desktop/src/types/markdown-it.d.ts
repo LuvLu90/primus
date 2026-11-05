@@ -25,6 +25,8 @@ declare module "markdown-it" {
   export default class MarkdownIt {
     constructor(options?: Options);
     renderer: RendererWithRules;
+    /** 关闭指定的解析规则（如 "image"） */
+    disable(rules: string | string[]): this;
     render(src: string, env?: unknown): string;
   }
 }

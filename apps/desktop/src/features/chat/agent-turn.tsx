@@ -491,9 +491,13 @@ export const AgentTurn = memo(function AgentTurn({
   const infoOf = (call: ToolCallBlock): CallInfo => {
     const run = toolRuns[call.id];
     const result = results.get(call.id);
-    const status: ToolStatus =
-      run?.status ?? (result ? (result.isError ? "error" : "done") : running ? "running" : "done");
-    return { status, content: run?.result?.content ?? result?.content };
+    // 工具结果消息是定稿：有它就以它为准（tool_execution_end 丢失时 toolRuns 会一直停在 running）
+    const status: ToolStatus = result
+      ? result.isError
+        ? "error"
+        : "done"
+      : (run?.status ?? (running ? "running" : "done"));
+    return { status, content: result?.content ?? run?.result?.content };
   };
   const answerText = answer.map((a) => a.text).join("\n\n");
 
