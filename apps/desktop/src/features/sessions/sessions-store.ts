@@ -68,6 +68,19 @@ export function findTab(
   );
 }
 
+/**
+ * 删除会话时要关掉的标签：路径相同，或会话 ID 相同（硬链接、副本等指向同一会话的其他路径；
+ * 后端删除时按文件身份与会话 ID 结束这些会话的 Core，前端的标签随之关闭，避免留下失效的会话键）。
+ */
+export function tabsForDeletion(
+  tabs: readonly ChatTab[],
+  session: Pick<SessionSummary, "path" | "id">,
+): ChatTab[] {
+  return tabs.filter(
+    (t) => t.sessionPath === session.path || (t.sessionId !== null && t.sessionId === session.id),
+  );
+}
+
 /** 超出上限时去掉最早打开、不在当前、不在运行中的标签 */
 function trim(tabs: ChatTab[], activeTabId: string): ChatTab[] {
   const result = tabs.slice();

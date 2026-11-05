@@ -142,3 +142,20 @@ describe("会话标签", () => {
     expect(store().activeTabId).toBe(before[0]?.id);
   });
 });
+
+describe("tabsForDeletion", () => {
+  it("按路径或会话 ID 找出要关掉的标签", async () => {
+    const { tabsForDeletion } = await import("./sessions-store");
+    const tab = (id: string, sessionPath: string | null, sessionId: string | null) =>
+      ({ id, sessionPath, sessionId }) as Parameters<typeof tabsForDeletion>[0][number];
+    const tabs = [
+      tab("a", "/s/a.jsonl", "1"),
+      tab("b", "/s/link.jsonl", "1"),
+      tab("c", "/s/c.jsonl", "2"),
+    ];
+    expect(tabsForDeletion(tabs, { path: "/s/a.jsonl", id: "1" }).map((t) => t.id)).toEqual([
+      "a",
+      "b",
+    ]);
+  });
+});

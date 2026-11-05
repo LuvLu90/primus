@@ -21,7 +21,7 @@ import { getPlatform } from "@/lib/platform";
 import type { SessionSummary } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
-import { findTab, useSessionsStore } from "./sessions-store";
+import { findTab, tabsForDeletion, useSessionsStore } from "./sessions-store";
 import { useSessionIndex, useSessionSearch } from "./use-session-index";
 
 // 左栏会话列表（第 10.2、16.2 节，ADR 0006）：搜索框 + 虚拟滚动的会话列表，滚到底加载下一页；
@@ -108,8 +108,7 @@ export function SessionList() {
     setPendingDelete(null);
     if (!s) return;
     setActionError(undefined);
-    const tab = findTab(useSessionsStore.getState().tabs, s);
-    if (tab) closeTab(tab.id);
+    for (const tab of tabsForDeletion(useSessionsStore.getState().tabs, s)) closeTab(tab.id);
     getPlatform()
       .then((p) => p.sessionDelete(s.path))
       .catch((e) => setActionError(errorText(e)));
