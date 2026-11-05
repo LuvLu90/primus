@@ -27,7 +27,13 @@ describe("对话区（mock 事件流）", () => {
     fireEvent.click(await screen.findByRole("menuitem", { name: /示例工作区/ }));
     await waitFor(() => expect(useAppStore.getState().workspace?.name).toBe("示例工作区"));
     expect(screen.queryByRole("button", { name: new RegExp(t.chooseFolder) })).toBeNull();
-    expect(screen.getByRole("button", { name: /示例工作区/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "示例工作区" })).toBeTruthy();
+    // 名称左侧的关闭按钮取消已选工作区，选择文件夹栏重新出现
+    fireEvent.click(
+      screen.getByRole("button", { name: new RegExp(`${t.clearWorkspace}.*示例工作区`) }),
+    );
+    await waitFor(() => expect(useAppStore.getState().workspace).toBeNull());
+    expect(screen.getByRole("button", { name: new RegExp(t.chooseFolder) })).toBeTruthy();
   });
 
   it("发送消息后流式显示回答，结束后恢复发送按钮", async () => {
@@ -42,7 +48,9 @@ describe("对话区（mock 事件流）", () => {
     await waitFor(() => expect((input as HTMLTextAreaElement).value).toBe(""));
     await screen.findByRole("article", { name: t.you });
     await waitFor(() => expect(screen.getByText(/mock 平台/)).toBeTruthy());
-    expect(screen.getByText(/工具：read/)).toBeTruthy();
+    // 工具调用收进工作过程：合并成“已读取文件”一行；结束后收起成“用时 …”
+    expect(screen.getAllByText(t.work.tools.read.done).length).toBeGreaterThan(0);
+    await waitFor(() => expect(screen.getByRole("button", { name: t.work.expand })).toBeTruthy());
     await waitFor(() => expect(screen.getByRole("button", { name: t.send })).toBeTruthy());
   });
 
@@ -518,6 +526,8 @@ describe("对话区（mock 事件流）", () => {
     const slider = await screen.findByRole("slider", { name: "思考" });
     fireEvent.change(slider, { target: { value: "3" } });
     fireEvent.pointerUp(slider);
+    // 滑杆松手后菜单保持打开，关掉再看按钮
+    fireEvent.keyDown(slider, { key: "Escape" });
     await waitFor(() =>
       expect(screen.getByRole("button", { name: /模型：Mock 大模型，思考高/ })).toBeTruthy(),
     );
@@ -608,8 +618,9 @@ describe("对话区（mock 事件流）", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: t.send })).toBeTruthy());
     const users = screen.getAllByRole("article", { name: t.you }).map((a) => a.textContent);
     expect(users).toEqual(["第一问", "第二问"]);
-    // 每轮一条工具调用回复 + 一条最终回答
-    expect(screen.getAllByRole("article", { name: t.assistant })).toHaveLength(4);
+    // 每轮的工具调用回复与最终回答合成一轮（工作过程 + 总结）
+    expect(screen.getAllByRole("article", { name: t.assistant })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: t.work.expand })).toHaveLength(2);
     expect(screen.getByText(/你刚才说：「第一问」/)).toBeTruthy();
   });
 
