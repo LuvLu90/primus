@@ -3,111 +3,112 @@
   "providers": {
     "primus-messages": {
       "name": "乾元 · Anthropic Messages",
-      "baseUrl": "https://34.4.106.122:8318",
+      "baseUrl": "http://218.93.48.244:3304/api",
       "api": "anthropic-messages",
       "models": [
         {
-          "id": "claude-opus-5-5-high",
-          "name": "Claude Opus 5.5（High）",
+          "id": "kimi-k2.8-code",
+          "name": "Kimi K2.8 Code",
           "reasoning": true,
-          "input": ["text", "image"],
-          "contextWindow": 1000000,
-          "maxTokens": 128000,
-          "thinkingLevelMap": {
-            "off": null,
-            "xhigh": "xhigh",
-            "max": "max"
-          },
-          "compat": {
-            "forceAdaptiveThinking": true,
-            "supportsTemperature": false
-          }
+          "input": [
+            "text",
+            "image"
+          ],
+          "contextWindow": 128000,
+          "maxTokens": 32768
         },
         {
-          "id": "claude-sonnet-5-5-high",
-          "name": "Claude Sonnet 5.5（High）",
+          "id": "kimi-k3.1-pro",
+          "name": "Kimi K3.1 Pro",
           "reasoning": true,
-          "input": ["text", "image"],
-          "contextWindow": 1000000,
-          "maxTokens": 128000,
-          "thinkingLevelMap": {
-            "xhigh": "xhigh",
-            "max": "max"
-          },
-          "compat": {
-            "forceAdaptiveThinking": true,
-            "supportsTemperature": false
-          }
-        }
-      ]
-    },
-    "primus-responses": {
-      "name": "乾元 · OpenAI Responses",
-      "baseUrl": "https://34.4.106.122:8318/v1",
-      "api": "openai-responses",
-      "models": [
-        {
-          "id": "gemini-4-argon-high",
-          "name": "Gemini 4 Argon（High）",
-          "reasoning": true,
-          "input": ["text", "image"],
-          "contextWindow": 1048576,
-          "maxTokens": 65536
+          "input": [
+            "text",
+            "image"
+          ],
+          "contextWindow": 128000,
+          "maxTokens": 32768
         },
         {
-          "id": "gemini-3.8-flash-high",
-          "name": "Gemini 3.8 Flash（High）",
+          "id": "kimi-k2.8-preview",
+          "name": "Kimi K2.8 Preview",
           "reasoning": true,
-          "input": ["text", "image"],
-          "contextWindow": 1048576,
-          "maxTokens": 65536
+          "input": [
+            "text",
+            "image"
+          ],
+          "contextWindow": 128000,
+          "maxTokens": 32768
         },
         {
-          "id": "gemini-3-flash",
-          "name": "Gemini 3 Flash",
+          "id": "glm-5.3",
+          "name": "GLM-5.3",
           "reasoning": true,
-          "input": ["text", "image"],
-          "contextWindow": 1048576,
-          "maxTokens": 65536
+          "input": [
+            "text"
+          ],
+          "contextWindow": 128000,
+          "maxTokens": 32768
         },
         {
-          "id": "gemini-3.5-flash-lite",
-          "name": "Gemini 3.5 Flash-Lite",
+          "id": "glm-5.3-flash",
+          "name": "GLM-5.3 Flash",
           "reasoning": true,
-          "input": ["text", "image"],
-          "contextWindow": 1048576,
-          "maxTokens": 65535
+          "input": [
+            "text",
+            "image"
+          ],
+          "contextWindow": 128000,
+          "maxTokens": 32768
         },
         {
-          "id": "gemini-3.1-flash-lite",
-          "name": "Gemini 3.1 Flash-Lite",
+          "id": "deepseek-v4-pro",
+          "name": "DeepSeek V4 Pro",
           "reasoning": true,
-          "input": ["text", "image"],
-          "contextWindow": 1048576,
-          "maxTokens": 65535
+          "input": [
+            "text",
+            "image"
+          ],
+          "contextWindow": 128000,
+          "maxTokens": 32768
         },
         {
-          "id": "gemini-3.1-flash-image",
-          "name": "Gemini 3.1 Flash Image",
+          "id": "deepseek-v4-flash",
+          "name": "DeepSeek V4 Flash",
           "reasoning": true,
-          "input": ["text", "image"],
-          "contextWindow": 200000,
-          "maxTokens": 64000
+          "input": [
+            "text"
+          ],
+          "contextWindow": 128000,
+          "maxTokens": 32768
         },
         {
-          "id": "gpt-oss-120b-medium",
-          "name": "GPT-OSS 120B（Medium）",
+          "id": "deepseek-v4.1-flash",
+          "name": "DeepSeek V4.1 Flash",
+          "reasoning": false,
+          "input": [
+            "text",
+            "image"
+          ],
+          "contextWindow": 128000,
+          "maxTokens": 32768
+        },
+        {
+          "id": "qwen3.8-27b",
+          "name": "Qwen3.8 27B",
           "reasoning": true,
-          "input": ["text"],
-          "contextWindow": 114000,
+          "input": [
+            "text",
+            "image"
+          ],
+          "contextWindow": 128000,
           "maxTokens": 32768
         }
       ]
     }
   },
   "defaults": {
-    "model": "primus-messages/claude-opus-5-5-high",
-    "compactionModel": "primus-responses/gemini-3.5-flash-lite",
-    "titleModel": "primus-responses/gemini-3.5-flash-lite"
+    "model": "primus-messages/kimi-k2.8-code",
+    "compactionModel": "primus-messages/glm-5.3-flash",
+    "titleModel": "primus-messages/glm-5.3-flash"
   }
 }

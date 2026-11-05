@@ -8,7 +8,7 @@
 /// 内置模型网关的访问令牌。
 ///
 /// 临时内置，后续改为账号服务下发。更换令牌只改这一行：下次启动时薄壳发现与保险库中的值不同，会自动重写保险库。
-pub(crate) const BUILTIN_API_KEY: &str = "meai123654789";
+pub(crate) const BUILTIN_API_KEY: &str = "sk-bb4055656ec644379b3571c8be0dc74e";
 
 /// 内置客户端配置（第 9.2 节的下发格式）。
 pub(crate) const BUILTIN_CATALOG: &str = include_str!("../builtin/catalog.json");

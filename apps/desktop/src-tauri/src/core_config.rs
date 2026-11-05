@@ -2,7 +2,7 @@
 //!
 //! - 客户端配置的格式就是账号服务“客户端配置”接口的下发格式（`version` / `providers` / `defaults`）。
 //!   当前来源是内置配置（`builtin` 模块，临时方案）；接入账号服务后只换来源，校验与写入不变。
-//! - 校验（约束 C1）：`api` 只允许 `openai-responses` / `anthropic-messages`，`baseUrl` 必须是 HTTPS，
+//! - 校验（约束 C1）：`api` 只允许 `openai-responses` / `anthropic-messages`，`baseUrl` 必须是 HTTP(S) 地址（内置网关当前为内网 HTTP），
 //!   配置中不得出现 `apiKey`；任一项不合格整份拒绝。
 //! - 写入：每个供应商的 `apiKey` 统一写成取令牌命令 `!"<Primus.exe>" --secret model-token`（第 9.4 节），
 //!   `models.json` 不含明文令牌；内容不变时不重写文件。
@@ -257,9 +257,13 @@ fn check_api(owner: &str, api: &str) -> Result<(), InvalidConfig> {
 }
 
 fn check_https(owner: &str, url: &str) -> Result<(), InvalidConfig> {
-    let rest = url.strip_prefix("https://").unwrap_or_default();
+    // 用户 2026-11-05 要求内置网关改为 HTTP 地址，放宽为 HTTP 或 HTTPS
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .unwrap_or_default();
     if rest.is_empty() || rest.starts_with('/') || url.chars().any(char::is_whitespace) {
-        return Err(bad(format!("{owner} 的 baseUrl 必须是 HTTPS 地址")));
+        return Err(bad(format!("{owner} 的 baseUrl 必须是 HTTP(S) 地址")));
     }
     Ok(())
 }
@@ -514,15 +518,11 @@ mod tests {
     }
 
     #[test]
-    fn builtin_catalog_is_valid_and_uses_both_protocols() {
+    fn builtin_catalog_is_valid() {
         let config =
             ClientConfig::parse(crate::builtin::BUILTIN_CATALOG).expect("内置配置必须通过校验");
-        for api in ALLOWED_APIS {
-            assert!(
-                config.models.iter().any(|m| m.api == api),
-                "内置配置应包含 {api} 模型"
-            );
-        }
+        // 当前内置网关只提供 Anthropic Messages；协议范围仍由解析时的 C1 校验保证
+        assert!(!config.models.is_empty());
         assert!(config.has_model(&config.default_model));
         assert!(!crate::builtin::BUILTIN_CATALOG.contains(crate::builtin::BUILTIN_API_KEY));
     }
@@ -572,7 +572,7 @@ mod tests {
             (
                 "HTTP",
                 Box::new(|v| {
-                    v["providers"]["gw-messages"]["baseUrl"] = "http://gw.example:8318".into()
+                    v["providers"]["gw-messages"]["baseUrl"] = "ftp://gw.example:8318".into()
                 }),
             ),
             (
@@ -582,7 +582,7 @@ mod tests {
             (
                 "模型级 HTTP",
                 Box::new(|v| {
-                    v["providers"]["gw-messages"]["models"][0]["baseUrl"] = "http://x".into()
+                    v["providers"]["gw-messages"]["models"][0]["baseUrl"] = "ws://x".into()
                 }),
             ),
             (
@@ -773,9 +773,7 @@ mod tests {
         let root = temp_dir("state");
         let state = ModelConfigState::new(root.join("core"), root.join("vault"));
         assert!(
-            state
-                .set_default("primus-messages/claude-opus-5-5-high")
-                .is_err(),
+            state.set_default("primus-messages/kimi-k2.8-code").is_err(),
             "未就绪时拒绝"
         );
         let info = state.refresh();
