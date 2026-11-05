@@ -1,6 +1,3 @@
-// 字体随包本地打包（@fontsource，woff2 在构建产物里），不走任何在线资源
-import "@fontsource-variable/inter";
-import "@fontsource-variable/source-serif-4/opsz.css";
 import "./globals.css";
 import type { Metadata } from "next";
 import type { ReactNode } from "react";

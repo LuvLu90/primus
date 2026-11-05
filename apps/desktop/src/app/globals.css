@@ -24,12 +24,13 @@
   /* Windows 11 标题栏关闭按钮（系统红），浅深色一致 */
   --color-caption-close: #e81123;
   --color-caption-close-pressed: #f1707a;
-  /* 西文：界面 Inter，标题与助手回复 Source Serif 4（均为 OFL 开源、本地打包）；中文回落系统黑体 */
+  /* 全部用 Windows 系统字体：西文 Segoe UI，中文微软雅黑，代码 Cascadia（Win11 自带）回落 Consolas。
+     标题与回复也用同一套无衬线字体，不再单独打包西文字体 */
   --font-sans:
-    "Inter Variable", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
-  --font-serif:
-    "Source Serif 4 Variable", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", Georgia,
-    serif;
+    "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC",
+    system-ui, sans-serif;
+  --font-serif: var(--font-sans);
+  --font-mono: "Cascadia Code", "Cascadia Mono", Consolas, "Microsoft YaHei UI", monospace;
 }
 
 :root {
@@ -507,7 +508,7 @@ html.window-effects.glass-clear body {
 /* 行内代码（code span）：参照 GitHub / ChatGPT 的做法，浅底色 + 细描边的小胶囊。
    颜色从文字色按比例混出，玻璃背景和深浅主题下都能看清；换行时每段各自带底色与圆角 */
 .md code {
-  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 0.86em;
   padding: 0.12em 0.4em;
   margin: 0 0.1em;
