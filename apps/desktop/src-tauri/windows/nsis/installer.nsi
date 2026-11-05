@@ -4,7 +4,10 @@
 ;   1. 默认安装目录用不含中文与空格的 INSTALLDIRNAME（Primus），显示名仍是 ${PRODUCTNAME}（乾元 Primus）；
 ;   2. 底部品牌文字显示产品名与版本，不再回落为 “Nullsoft Install System vX”；
 ;   3. 简体中文界面用 Microsoft YaHei UI 9pt（NSIS 中文语言文件默认宋体，观感陈旧）；
-;   4. 卸载时勾选“删除应用数据”同时删除 <安装目录>\data（不勾选时保留，与 MSI 一致）。
+;   4. 按机器安装只认 HKLM 的 WebView2；内嵌引导程序放在只有管理员可写的临时目录并加引号执行；
+;   5. 同版本选“卸载”后退出安装程序；静默安装检测到已装的 MSI 时中止；沿用 MSI 记下的安装目录。
+; <安装目录>\data 卸载时始终保留（与 MSI 一致）：data 对 Users 开放修改权限，以管理员身份递归删除
+; 会跟随其中的目录联接删到别处，因此不在卸载程序里删除。
 Unicode true
 ManifestDPIAware true
 ; Add in `dpiAwareness` `PerMonitorV2` to manifest for Windows 10 1607+ (note this should not affect lower versions since they should be able to ignore this and pick up `dpiAware` `true` set by `ManifestDPIAware true`)
@@ -196,6 +199,8 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 ; 4. Custom page to ask user if he wants to reinstall/uninstall
 ;    only if a previous installation was detected
 Var ReinstallPageCheck
+; Primus：同版本时用户选了“卸载”（卸载完成后退出安装程序，不再继续安装）
+Var UninstallOnly
 Page custom PageReinstall PageLeaveReinstall
 
 ; Find a previous WiX installation and set $R6 to its uninstall registry key, or to "" if none.
@@ -356,6 +361,7 @@ Function PageLeaveReinstall
     ${If} $R1 = 1              ; User chose to add/reinstall
       Goto reinst_done
     ${Else}                    ; User chose to uninstall
+      StrCpy $UninstallOnly 1
       Goto reinst_uninstall
     ${EndIf}
   ${ElseIf} $R0 = 1 ; Upgrading
@@ -417,6 +423,10 @@ Function PageLeaveReinstall
     ${AndIf} $4 != ""
       Delete "$4\uninstall.exe"
       RMDir "$4"
+    ${EndIf}
+    ; Primus：只是卸载（同版本选“卸载”）时到此结束，不再显示目录页与安装页
+    ${If} $UninstallOnly = 1
+      Quit
     ${EndIf}
   reinst_done:
 FunctionEnd
@@ -568,6 +578,16 @@ Function .onInit
     !insertmacro MULTIUSER_INIT
   !endif
 
+  ; Primus：静默安装不经过“重新安装”页，不会先卸载已装的 MSI；两者装在同一目录，之后卸载 MSI 会删掉
+  ; NSIS 装的程序文件。检测到 MSI 时中止静默安装（退出码 2），请先卸载 MSI 或用界面安装
+  ${If} ${Silent}
+    Call FindWixInstall
+    ${If} $R6 != ""
+      SetErrorLevel 2
+      Abort
+    ${EndIf}
+  ${EndIf}
+
   ; Abort downgrades if they are disabled, in the modes that skip the reinstall page choice:
   ; silent, passive and update
   !if "${ALLOWDOWNGRADES}" == "false"
@@ -608,9 +628,7 @@ Section WebView2
   ${Else}
     ReadRegStr $4 HKLM "SOFTWARE\Microsoft\EdgeUpdate\Clients\${WEBVIEW2APPGUID}" "pv"
   ${EndIf}
-  ${If} $4 == ""
-    ReadRegStr $4 HKCU "SOFTWARE\Microsoft\EdgeUpdate\Clients\${WEBVIEW2APPGUID}" "pv"
-  ${EndIf}
+  ; Primus：按机器安装只认 HKLM 的 WebView2（HKCU 的按用户运行时只属于安装者，其他账户用不了；与 Primus.wxs 一致）
 
   ${If} $4 == ""
     ; Webview2 installation
@@ -633,10 +651,14 @@ Section WebView2
       !endif
 
       !if "${INSTALLWEBVIEW2MODE}" == "embedBootstrapper"
-        Delete "$TEMP\MicrosoftEdgeWebview2Setup.exe"
-        File "/oname=$TEMP\MicrosoftEdgeWebview2Setup.exe" "${WEBVIEW2BOOTSTRAPPERPATH}"
+        ; Primus：引导程序以管理员身份运行，不放在普通进程可改写的 $TEMP，而是放在 Program Files 下
+        ; 新建的临时目录（继承 Program Files 的 ACL，只有管理员与 SYSTEM 可写），用完删除
+        StrCpy $7 "$PROGRAMFILES64\Primus WebView2 Setup"
+        RMDir /r "$7"
+        CreateDirectory "$7"
+        File "/oname=$7\MicrosoftEdgeWebview2Setup.exe" "${WEBVIEW2BOOTSTRAPPERPATH}"
         DetailPrint "$(installingWebview2)"
-        StrCpy $6 "$TEMP\MicrosoftEdgeWebview2Setup.exe"
+        StrCpy $6 "$7\MicrosoftEdgeWebview2Setup.exe"
         Goto install_webview2
       !endif
 
@@ -653,7 +675,12 @@ Section WebView2
       install_webview2:
         DetailPrint "$(installingWebview2)"
         ; $6 holds the path to the webview2 installer
-        ExecWait "$6 ${WEBVIEW2INSTALLERARGS} /install" $1
+        ; Primus：路径加引号（用户目录等含空格时不会被拆开）
+        ExecWait '"$6" ${WEBVIEW2INSTALLERARGS} /install' $1
+        !if "${INSTALLWEBVIEW2MODE}" == "embedBootstrapper"
+          Delete "$6"
+          RMDir "$7"
+        !endif
         ${If} $1 = 0
           DetailPrint "$(webview2InstallSuccess)"
         ${Else}
@@ -939,16 +966,6 @@ Section Uninstall
     SetShellVarContext current
     RmDir /r "$APPDATA\${BUNDLEID}"
     RmDir /r "$LOCALAPPDATA\${BUNDLEID}"
-    ; Primus：App 的全部数据都在 <安装目录>\data（约束 C2），勾选“删除应用数据”时一并删除。
-    ; data 本身是重解析点（联接 / 符号链接）时不删除，避免以管理员身份删到链接指向的目录
-    System::Call 'kernel32::GetFileAttributesW(w "$INSTDIR\data") i .r0'
-    ${If} $0 <> -1
-      IntOp $1 $0 & 0x400
-      ${If} $1 = 0
-        RmDir /r "$INSTDIR\data"
-      ${EndIf}
-    ${EndIf}
-    RMDir "$INSTDIR"
   ${EndIf}
 
   !ifmacrodef NSIS_HOOK_POSTUNINSTALL
@@ -963,6 +980,13 @@ Section Uninstall
 SectionEnd
 
 Function RestorePreviousInstallLocation
+  ; Primus：先沿用 MSI 记下的安装目录（Primus.wxs 写在 HKLM\Software\Primus\InstallDir），
+  ; 从 MSI 迁移时装回原目录、继续使用原来的 data；NSIS 自己记下的目录优先
+  SetRegView 64
+  ReadRegStr $4 HKLM "Software\Primus" "InstallDir"
+  SetRegView lastused
+  StrCmp $4 "" +2 0
+    StrCpy $INSTDIR $4
   ReadRegStr $4 SHCTX "${MANUPRODUCTKEY}" ""
   StrCmp $4 "" +2 0
     StrCpy $INSTDIR $4

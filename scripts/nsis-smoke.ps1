@@ -4,7 +4,7 @@
   NSIS 安装程序（EXE）静默安装 / 卸载冒烟（技术方案第 3.2、3.4、23 章）。CI 的 Windows 作业使用，与 msi-smoke.ps1 对应。
 
 .DESCRIPTION
-  1. <安装程序> /S /D=<目录> 静默安装（默认 C:\Program Files\Primus）
+  1. <安装程序> /S /D=<目录> 静默安装（默认 C:\Program Files\乾元 Primus）
   2. 检查安装布局：Primus.exe、uninstall.exe、resources\runtime\node.exe（官方签名）、resources\agent-core
      （按 manifest.json 逐个校验 SHA-256）、Core 的 MIT 许可文件、primus-bundle.js、卸载信息（显示名“乾元 Primus”、
      版本与 tauri.conf.json 一致）、开始菜单快捷方式
@@ -20,7 +20,7 @@
   NSIS 安装程序路径（Primus_<ver>_<arch>-setup.exe）。
 
 .PARAMETER InstallDir
-  安装目录（/D=，NSIS 要求它是最后一个参数且不加引号，可含空格与中文），默认 "$env:ProgramFiles\Primus"（与安装程序的默认目录一致，不含中文与空格）。
+  安装目录（/D=，NSIS 要求它是最后一个参数且不加引号，可含空格与中文），默认 "$env:ProgramFiles\乾元 Primus"。
 
 .PARAMETER Node
   运行 smoke-core-rpc.mjs 的 Node.js，默认用安装目录中的 resources\runtime\node.exe。
@@ -37,7 +37,7 @@
 [CmdletBinding()]
 param(
   [Parameter(Mandatory)] [string] $Exe,
-  [string] $InstallDir = (Join-Path $env:ProgramFiles 'Primus'),
+  [string] $InstallDir = (Join-Path $env:ProgramFiles '乾元 Primus'),
   [string] $Node,
   [string] $Gsudo,
   [switch] $KeepData

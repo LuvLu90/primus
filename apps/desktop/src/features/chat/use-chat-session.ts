@@ -150,16 +150,21 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     async (client: RpcClient) => {
       const { model, thinkingLevel } = pendingModelRef.current;
       const [provider, ...rest] = model?.split("/") ?? [];
-      setPendingModel({});
-      // 失败响应同样报错（由调用方提示）；按钮随后按 get_state 显示 Core 实际使用的模型
+      // 成功应用的才从待应用选择中移除；失败的保留，下一次发送前再试（失败响应同样报错，由调用方提示）
       const failures: string[] = [];
       if (provider && rest.length > 0) {
         const res = await client.request("set_model", { provider, modelId: rest.join("/") });
-        if (!res.success) failures.push(res.error || "set_model");
+        if (res.success)
+          setPendingModel((p) => (p.model === model ? { ...p, model: undefined } : p));
+        else failures.push(res.error || "set_model");
       }
       if (thinkingLevel) {
         const res = await client.request("set_thinking_level", { level: thinkingLevel });
-        if (!res.success) failures.push(res.error || "set_thinking_level");
+        if (res.success)
+          setPendingModel((p) =>
+            p.thinkingLevel === thinkingLevel ? { ...p, thinkingLevel: undefined } : p,
+          );
+        else failures.push(res.error || "set_thinking_level");
       }
       await syncMode(client);
       await Promise.all([
@@ -333,7 +338,9 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
         // coreSend 只表示已提交；以 Core 的响应为准（失败原因由 session-store 显示为 lastError）
         const c = conn.current;
         if (!c) throw new Error(strings.chat.sessionNotOpen);
-        // 权限模式没能在打开时同步（如当时失败）：发送前再同步一次，确保按界面上的模式审批
+        // 打开时没能应用的模型选择与权限模式：发送前再应用一次（任一仍失败则不发送，并提示原因）
+        const pendingChoice = pendingModelRef.current;
+        if (pendingChoice.model || pendingChoice.thinkingLevel) await applySession(c.client);
         await syncMode(c.client);
         const res = await c.client.request("prompt", { message });
         return res.success;
@@ -343,7 +350,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
         return false;
       }
     },
-    [ensureOpen, loadHistory, fail, syncMode],
+    [ensureOpen, loadHistory, fail, syncMode, applySession],
   );
 
   const respondUi = useCallback(
@@ -375,11 +382,13 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
             modelId: rest.join("/"),
           });
           if (!res.success) throw new Error(`${strings.chat.model.switchFailed}：${res.error}`);
+          setPendingModel((p) => ({ ...p, model: undefined }));
           await c.client.request("get_available_thinking_levels");
         }
         if (choice.thinkingLevel) {
           const res = await c.client.request("set_thinking_level", { level: choice.thinkingLevel });
           if (!res.success) throw new Error(`${strings.chat.model.switchFailed}：${res.error}`);
+          setPendingModel((p) => ({ ...p, thinkingLevel: undefined }));
           store.setState((s) => withModel(s, undefined, choice.thinkingLevel), true);
           // Core 会把强度夹到模型支持的范围内：读回实际生效的值
           await c.client.request("get_state");

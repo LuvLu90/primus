@@ -315,6 +315,7 @@ describe("会话 store：流式消息重建（第 7.4 节）", () => {
     ]);
     expect(s.model).toEqual({ provider: "p", id: "m2" });
     expect(s.thinkingLevel).toBe("high");
-    expect(s.thinkingLevels).toEqual(["off", "high"]);
+    // 换模型后旧模型的档位作废，等新的 get_available_thinking_levels
+    expect(s.thinkingLevels).toBeUndefined();
   });
 });

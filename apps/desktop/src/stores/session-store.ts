@@ -186,8 +186,11 @@ function applyRecord(draft: SessionState, record: CoreRecord): void {
         if (model) draft.model = { provider: model.provider, id: model.id };
         if (thinkingLevel) draft.thinkingLevel = thinkingLevel;
       }
-      if (r.command === "set_model" && r.data)
+      if (r.command === "set_model" && r.data) {
         draft.model = { provider: r.data.provider, id: r.data.id };
+        // 旧模型的档位不再适用：等 get_available_thinking_levels 给出新模型的
+        draft.thinkingLevels = undefined;
+      }
       if (r.command === "get_available_thinking_levels" && Array.isArray(r.data?.levels))
         draft.thinkingLevels = r.data.levels;
       return;
