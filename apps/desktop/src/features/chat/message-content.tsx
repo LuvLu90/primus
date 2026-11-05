@@ -2,6 +2,7 @@
 
 // 回复正文：Markdown 渲染 + 流式输出时的平滑打字效果，以及“正在思考”提示。
 import MarkdownIt from "markdown-it";
+import { usePathname } from "next/navigation";
 import { type MouseEvent, memo, useEffect, useMemo, useRef, useState } from "react";
 import {
   GlassDialog,
@@ -118,6 +119,13 @@ export const MarkdownText = memo(function MarkdownText({
   const html = useMemo(() => renderMarkdown(shown), [shown]);
   const [pendingLink, setPendingLink] = useState<string | null>(null);
   const [linkError, setLinkError] = useState<string | null>(null);
+  // 主界面隐藏时（如 Alt+← 回到设置页）关掉确认框，否则它会盖在别的页面上
+  const pathname = usePathname();
+  // biome-ignore lint/correctness/useExhaustiveDependencies: pathname 变化即关闭
+  useEffect(() => {
+    setPendingLink(null);
+    setLinkError(null);
+  }, [pathname]);
 
   // 回复内容不可信：只处理 http/https 链接，打开前先确认（技术方案：点击外部链接前先确认）
   const onClick = (e: MouseEvent<HTMLDivElement>) => {

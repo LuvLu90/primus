@@ -17,11 +17,24 @@ export interface IndexItem {
 /** 刻度最多显示这么多道；更多时按比例取样，保证首尾都在 */
 const MAX_TICKS = 24;
 
-function sample(items: IndexItem[]): IndexItem[] {
+export function sample(items: IndexItem[], active: number | null = null): IndexItem[] {
   if (items.length <= MAX_TICKS) return items;
   const out: IndexItem[] = [];
   for (let i = 0; i < MAX_TICKS; i++)
     out.push(items[Math.round((i * (items.length - 1)) / (MAX_TICKS - 1))] as IndexItem);
+  // 当前提问必须有自己的刻度（高亮与 aria-current 指向它本身）：替换离它最近的中间刻度，首尾保留
+  const current = active === null ? undefined : items.find((x) => x.index === active);
+  if (current && !out.includes(current)) {
+    let at = 1;
+    for (let i = 2; i < out.length - 1; i++)
+      if (
+        Math.abs((out[i] as IndexItem).index - current.index) <
+        Math.abs((out[at] as IndexItem).index - current.index)
+      )
+        at = i;
+    out[at] = current;
+    out.sort((a, b) => a.index - b.index);
+  }
   return out;
 }
 
@@ -81,18 +94,7 @@ export function MessageIndex({
   }, [items, scrollRef, elementOf]);
 
   if (items.length < 2 || !overflowing) return null;
-  const ticks = sample(items);
-  // 当前提问可能不在取样里：高亮离它最近的刻度
-  const activeTick =
-    active === null
-      ? null
-      : (ticks.reduce<IndexItem | null>(
-          (best, item) =>
-            best === null || Math.abs(item.index - active) < Math.abs(best.index - active)
-              ? item
-              : best,
-          null,
-        )?.index ?? null);
+  const ticks = sample(items, active);
 
   const jump = (item: IndexItem) => {
     const el = scrollRef.current;
@@ -123,7 +125,7 @@ export function MessageIndex({
     >
       <div ref={railRef} className="pointer-events-auto relative flex flex-col py-1">
         {ticks.map((item) => {
-          const isActive = item.index === activeTick;
+          const isActive = item.index === active;
           return (
             <button
               key={item.index}
