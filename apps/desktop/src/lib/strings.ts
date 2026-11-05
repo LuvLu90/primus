@@ -53,7 +53,7 @@ export const strings = {
   },
   chat: {
     inputLabel: "输入消息",
-    inputPlaceholder: "问乾元任何事，Enter 发送，Shift+Enter 换行，Esc 停止",
+    inputPlaceholder: "问乾元任何事，Enter 发送，Shift+Enter 换行",
     send: "发送",
     stop: "停止",
     stopping: "正在停止",

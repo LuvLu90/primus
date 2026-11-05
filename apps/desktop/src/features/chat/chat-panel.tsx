@@ -525,10 +525,6 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.nativeEvent.isComposing) return;
     if (e.key === "Enter" && !e.shiftKey) submit(e);
-    else if (e.key === "Escape" && state.running) {
-      e.preventDefault();
-      stop();
-    }
   };
 
   const shownError = error ?? state.lastError;

@@ -657,7 +657,7 @@ describe("对话区（mock 事件流）", () => {
     });
   });
 
-  it("输入框里按 Esc 停止；停止进行中按钮禁用，不重复发 abort", async () => {
+  it("输入框里按 Esc 不停止；停止进行中按钮禁用，不重复发 abort", async () => {
     const base = createMockPlatform({ intervalMs: 20, batchSize: 2 });
     const coreSend = vi.fn(base.coreSend);
     setPlatformForTesting({ ...base, coreSend });
@@ -665,11 +665,12 @@ describe("对话区（mock 事件流）", () => {
     const input = screen.getByRole("textbox", { name: t.inputLabel });
     fireEvent.change(input, { target: { value: "长任务" } });
     fireEvent.keyDown(input, { key: "Enter" });
-    await screen.findByRole("button", { name: t.stop });
+    const stopBtn = await screen.findByRole("button", { name: t.stop });
     fireEvent.keyDown(input, { key: "Escape" });
+    expect(coreSend.mock.calls.some(([, r]) => r.type === "abort")).toBe(false);
+    fireEvent.click(stopBtn);
     const stopping = await screen.findByRole("button", { name: t.stopping });
     expect((stopping as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.keyDown(input, { key: "Escape" });
     fireEvent.click(stopping);
     await waitFor(() => expect(screen.getByRole("button", { name: t.send })).toBeTruthy());
     expect(coreSend.mock.calls.filter(([, r]) => r.type === "abort")).toHaveLength(1);
