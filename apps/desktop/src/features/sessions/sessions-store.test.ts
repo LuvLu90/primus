@@ -142,3 +142,26 @@ describe("会话标签", () => {
     expect(store().activeTabId).toBe(before[0]?.id);
   });
 });
+
+describe("tabsForDeletion", () => {
+  it("路径相同的标签，以及该文件所属新会话的标签", async () => {
+    const { tabsForDeletion } = await import("./sessions-store");
+    const tab = (id: string, sessionPath: string | null, sessionId: string | null) =>
+      ({ id, sessionPath, sessionId }) as Parameters<typeof tabsForDeletion>[0][number];
+    const file = "/s/2026-11-05T00-00-00-000Z_1.jsonl";
+    const tabs = [
+      tab("a", file, "1"),
+      // 通过路径打开的副本：会话 ID 相同，但是另一个会话
+      tab("copy", "/s/copy.jsonl", "1"),
+      tab("c", "/s/c.jsonl", "2"),
+      // 新会话标签（没有路径）
+      tab("new", null, "1"),
+      tab("other", null, "2"),
+    ];
+    expect(tabsForDeletion(tabs, { path: file, id: "1" }).map((t) => t.id)).toEqual(["a", "new"]);
+    // 删除副本：只关副本自己的标签，不关同 ID 的新会话
+    expect(tabsForDeletion(tabs, { path: "/s/copy.jsonl", id: "1" }).map((t) => t.id)).toEqual([
+      "copy",
+    ]);
+  });
+});

@@ -806,39 +806,6 @@ mod windows_impl {
             info.dwVolumeSerialNumber
         ))
     }
-
-    /// 把文件移到回收站（会话删除，ADR 0006）。`path` 须为不带 `\\?\` 前缀的绝对路径。
-    pub(crate) fn move_to_trash(path: &Path) -> io::Result<()> {
-        use windows_sys::Win32::UI::Shell::{
-            FO_DELETE, FOF_ALLOWUNDO, FOF_NOCONFIRMATION, FOF_NOERRORUI, FOF_SILENT,
-            FOF_WANTNUKEWARNING, SHFILEOPSTRUCTW, SHFileOperationW,
-        };
-
-        let mut from: Vec<u16> = path.as_os_str().encode_wide().collect();
-        if from.contains(&0) {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "路径含 NUL"));
-        }
-        // pFrom 是以两个 NUL 结尾的路径列表
-        from.extend([0, 0]);
-        // SAFETY: SHFILEOPSTRUCTW 是纯数据结构，全零（空指针、0 标志）是合法初值
-        let mut op: SHFILEOPSTRUCTW = unsafe { std::mem::zeroed() };
-        op.wFunc = FO_DELETE as _;
-        op.pFrom = from.as_ptr();
-        // FOF_WANTNUKEWARNING：卷上没有回收站、只能永久删除时先警告用户；用户取消则 fAnyOperationsAborted 置位、
-        // 返回错误，索引保持不变（不会在没有回收站副本的情况下静默删除）
-        op.fFlags =
-            (FOF_ALLOWUNDO | FOF_WANTNUKEWARNING | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT)
-                as _;
-        // SAFETY: op 的指针字段指向本函数内存活的缓冲区（from），调用期间有效
-        let rc = unsafe { SHFileOperationW(&mut op) };
-        if rc != 0 {
-            return Err(io::Error::other(format!("移到回收站失败（错误码 {rc}）")));
-        }
-        if op.fAnyOperationsAborted != 0 {
-            return Err(io::Error::other("移到回收站被取消"));
-        }
-        Ok(())
-    }
 }
 
 #[cfg(not(windows))]
@@ -939,14 +906,6 @@ mod fallback_impl {
 
     pub(crate) fn open_reinstall_page() {
         eprintln!("请从 {REINSTALL_URL} 下载安装包重新安装。");
-    }
-
-    /// 移到回收站：macOS / Linux 在 P3 阶段实现，目前不支持。
-    pub(crate) fn move_to_trash(_path: &Path) -> io::Result<()> {
-        Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "当前平台暂不支持移到回收站",
-        ))
     }
 }
 

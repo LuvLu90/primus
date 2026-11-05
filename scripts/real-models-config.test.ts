@@ -2,9 +2,11 @@ import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 // @ts-expect-error 纯 JS 脚本，无类型声明
 import {
+  errorStatus,
   hasModelId,
   hasModelLevelApiKey,
   hasOnlyAllowedApis,
+  isQuotaExhausted,
   resolveApiKey,
   smokeEnv,
 } from "./real-models-config.mjs";
@@ -111,5 +113,32 @@ describe("真实模型配置", () => {
       env: { node_extra_ca_certs: "ca.pem", TEST_KEY: "secret" },
     });
     expect(result.node_extra_ca_certs).toBe(resolve("ca.pem"));
+  });
+
+  it("上游额度用尽的 429 记为跳过，其他错误不算", () => {
+    const cooldown =
+      'primus-responses--gemini-3-1-flash-image API error (429): {"code":"model_cooldown","last_upstream_error":"RESOURCE_EXHAUSTED: Your quota will reset after 4h6m30s."}';
+    expect(errorStatus(cooldown)).toBe(429);
+    expect(isQuotaExhausted(cooldown)).toBe(true);
+    expect(isQuotaExhausted("429: You have exhausted your capacity on this model.")).toBe(true);
+    // 普通限流
+    expect(isQuotaExhausted("x API error (429): Too Many Requests")).toBe(false);
+    // 正文里的 429 不是状态码
+    expect(
+      errorStatus('x API error (500): {"request_id":"req-429-84","error":"RESOURCE_EXHAUSTED"}'),
+    ).toBe(500);
+    expect(
+      isQuotaExhausted(
+        'x API error (500): {"request_id":"req-429-84","error":"RESOURCE_EXHAUSTED"}',
+      ),
+    ).toBe(false);
+    expect(isQuotaExhausted("upstream said 429 RESOURCE_EXHAUSTED")).toBe(false);
+    // 账户额度用尽不会自动恢复，不能跳过
+    expect(
+      isQuotaExhausted(
+        'x API error (429): {"error":{"code":"insufficient_quota","message":"RESOURCE_EXHAUSTED"}}',
+      ),
+    ).toBe(false);
+    expect(isQuotaExhausted(undefined)).toBe(false);
   });
 });

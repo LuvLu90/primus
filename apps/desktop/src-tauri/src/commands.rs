@@ -289,10 +289,11 @@ pub(crate) fn session_archive(
     }
 }
 
-/// 删除会话：移到回收站并删除索引。打开中的会话拒绝删除（`code` 为 `sessionOpen`）。
+/// 删除会话：永久删除会话文件（不进回收站，不可恢复）并删除索引。会话打开中也可以删除：先结束它的 Core。
 #[tauri::command(async)]
 pub(crate) fn session_delete(
     sessions: State<'_, AppSessions>,
+    supervisor: State<'_, Supervisor>,
     index: State<'_, Arc<SessionIndex>>,
     notifier: State<'_, Arc<IndexNotifier>>,
     session_path: String,
@@ -302,21 +303,46 @@ pub(crate) fn session_delete(
         &index,
         &notifier,
         &session_path,
-        crate::platform::move_to_trash,
+        |key| {
+            supervisor.stop(key);
+        },
+        remove_file_retrying,
     )?;
     notifier.notify();
     Ok(())
 }
 
-/// 删除会话的步骤（`trash` 可替换，便于测试）：只接受会话目录下的 `.jsonl` 普通文件，
-/// 拒绝相对路径、`..`、符号链接与目录外的文件；会话打开中时拒绝。占用检查与移到回收站之间登记“删除中”
-/// （`Sessions::delete_unless_using`），期间打开同一文件被拒绝。
+/// 永久删除文件。刚结束的 Core 进程可能还没完全释放文件句柄（Windows 上删除会得到共享冲突），短暂重试几次。
+fn remove_file_retrying(path: &Path) -> io::Result<()> {
+    let mut attempt = 0;
+    loop {
+        match std::fs::remove_file(path) {
+            Ok(()) => return Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+            // 5 = ERROR_ACCESS_DENIED（删除挂起等），32 = ERROR_SHARING_VIOLATION（句柄未带 FILE_SHARE_DELETE）
+            Err(e)
+                if attempt < 10
+                    && (e.kind() == io::ErrorKind::PermissionDenied
+                        || (cfg!(windows) && e.raw_os_error() == Some(32))) =>
+            {
+                attempt += 1;
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// 删除会话的步骤（`stop`、`remove` 可替换，便于测试）：只接受会话目录下的 `.jsonl` 普通文件，
+/// 拒绝相对路径、`..`、符号链接与目录外的文件。使用这个文件的打开中会话先关闭（`stop` 结束其 Core），
+/// 关闭与删除之间登记“删除中”（`Sessions::delete_closing`），期间打开同一文件被拒绝。
 fn delete_session<S: BatchSink + Clone>(
     sessions: &Sessions<S>,
     index: &SessionIndex,
     notifier: &IndexNotifier,
     session_path: &str,
-    trash: impl FnOnce(&Path) -> io::Result<()>,
+    stop: impl FnMut(&str),
+    remove: impl FnOnce(&Path) -> io::Result<()>,
 ) -> Result<(), CoreCommandError> {
     let invalid = || CoreCommandError::new(None, format!("不是会话文件：{session_path}"));
     let path = Path::new(session_path);
@@ -347,15 +373,13 @@ fn delete_session<S: BatchSink + Clone>(
         .map_err(|e| CoreCommandError::new(None, e.to_string()))?
         .or_else(|| crate::session_index::session_file_id(path));
     sessions
-        .delete_unless_using(path, id.as_deref(), || trash(path))
-        .ok_or_else(|| {
-            CoreCommandError::new(Some("sessionOpen"), "会话正在打开中，请先关闭再删除")
-        })?
+        .delete_closing(path, id.as_deref(), stop, || remove(path))
+        .map_err(|e| CoreCommandError::new(None, e.to_string()))?
         .map_err(|e| CoreCommandError::new(None, e.to_string()))?;
     index
         .remove(session_path)
         .map_err(|e| CoreCommandError::new(None, e.to_string()))?;
-    // 移到回收站与删除索引之间，同一路径可能已出现新的会话文件并被监听器写入索引（刚被上面一并删掉）：
+    // 删除文件与删除索引之间，同一路径可能已出现新的会话文件并被监听器写入索引（刚被上面一并删掉）：
     // 按路径的当前文件状态重新同步，文件不在则保持删除，有新文件则重新入索引。文件已移走，同步失败不算删除失败；
     // 失败时请监听线程做一次全量扫描（失败按退避重试），保证新文件最终回到索引
     if let Err(e) = index.update_file(path) {
@@ -432,6 +456,8 @@ mod tests {
             (tmp, dir, index, Sessions::new(BridgeConfig::default()))
         }
 
+        fn no_stop(_key: &str) {}
+
         fn write_session(dir: &Path, name: &str) -> String {
             let p = dir.join(name);
             std::fs::write(
@@ -443,7 +469,7 @@ mod tests {
         }
 
         #[test]
-        fn trashes_file_and_removes_index_entry() {
+        fn removes_file_and_index_entry() {
             let (_tmp, dir, index, sessions) = setup();
             let path = write_session(&dir, "a.jsonl");
             std::fs::write(
@@ -456,13 +482,21 @@ mod tests {
             )
             .unwrap();
             index.sync_all().unwrap();
-            let trashed = Cell::new(false);
-            delete_session(&sessions, &index, &IndexNotifier::default(), &path, |p| {
-                trashed.set(true);
-                std::fs::remove_file(p)
-            })
+            let removed = Cell::new(false);
+            delete_session(
+                &sessions,
+                &index,
+                &IndexNotifier::default(),
+                &path,
+                no_stop,
+                |p| {
+                    removed.set(true);
+                    std::fs::remove_file(p)
+                },
+            )
             .unwrap();
-            assert!(trashed.get());
+            assert!(removed.get());
+            assert!(!Path::new(&path).exists());
             assert!(index.list(None, None).unwrap().items.is_empty());
         }
 
@@ -472,9 +506,9 @@ mod tests {
             let path = write_session(&dir, "a.jsonl");
             index.sync_all().unwrap();
             index.set_archived(&path, true).unwrap();
-            delete_session(&sessions, &index, &IndexNotifier::default(), &path, |p| {
+            delete_session(&sessions, &index, &IndexNotifier::default(), &path, no_stop, |p| {
                 std::fs::remove_file(p)?;
-                // 移走后、删除索引前，同一路径出现新的会话文件，监听器已把它写入索引
+                // 删除后、删除索引前，同一路径出现新的会话文件，监听器已把它写入索引
                 std::fs::write(
                     p,
                     "{\"type\":\"session\",\"id\":\"y\",\"timestamp\":\"2026-11-03T00:00:00.000Z\",\"cwd\":\"/w\"}\n",
@@ -501,7 +535,7 @@ mod tests {
                 "CREATE TEMP TRIGGER fail_y BEFORE INSERT ON sessions WHEN NEW.id = 'y'
                  BEGIN SELECT RAISE(ABORT, 'boom'); END;",
             );
-            delete_session(&sessions, &index, &notifier, &path, |p| {
+            delete_session(&sessions, &index, &notifier, &path, no_stop, |p| {
                 std::fs::remove_file(p)?;
                 std::fs::write(
                     p,
@@ -518,7 +552,7 @@ mod tests {
             assert_eq!(index.list(None, None).unwrap().items[0].id, "y");
             // 重新同步成功时不请求
             let path_b = write_session(&dir, "b.jsonl");
-            delete_session(&sessions, &index, &notifier, &path_b, |p| {
+            delete_session(&sessions, &index, &notifier, &path_b, no_stop, |p| {
                 std::fs::remove_file(p)
             })
             .unwrap();
@@ -532,7 +566,7 @@ mod tests {
             let escaped = format!("{}/../outside.jsonl", dir.display());
             let txt = dir.join("a.txt");
             std::fs::write(&txt, "x").unwrap();
-            let never = |_: &Path| -> io::Result<()> { panic!("不应移到回收站") };
+            let never = |_: &Path| -> io::Result<()> { panic!("不应删除文件") };
             for bad in [
                 outside.as_str(),
                 escaped.as_str(),
@@ -541,8 +575,15 @@ mod tests {
                 dir.to_str().unwrap(),
             ] {
                 assert!(
-                    delete_session(&sessions, &index, &IndexNotifier::default(), bad, never)
-                        .is_err(),
+                    delete_session(
+                        &sessions,
+                        &index,
+                        &IndexNotifier::default(),
+                        bad,
+                        no_stop,
+                        never
+                    )
+                    .is_err(),
                     "{bad}"
                 );
             }
@@ -556,13 +597,14 @@ mod tests {
             let target = write_session(&tmp.0, "target.jsonl");
             let link = dir.join("link.jsonl");
             std::os::unix::fs::symlink(&target, &link).unwrap();
-            let never = |_: &Path| -> io::Result<()> { panic!("不应移到回收站") };
+            let never = |_: &Path| -> io::Result<()> { panic!("不应删除文件") };
             assert!(
                 delete_session(
                     &sessions,
                     &index,
                     &IndexNotifier::default(),
                     link.to_str().unwrap(),
+                    no_stop,
                     never
                 )
                 .is_err()
@@ -570,36 +612,74 @@ mod tests {
         }
 
         #[test]
-        fn open_session_is_not_deleted() {
-            let (_tmp, dir, index, sessions) = setup();
-            let path = write_session(&dir, "a.jsonl");
-            index.sync_all().unwrap();
-            let never = |_: &Path| -> io::Result<()> { panic!("不应移到回收站") };
-            // 恢复的会话按文件登记
-            sessions.insert_idle_for_test("s1", Some(&path), None, NoSink);
-            let err = delete_session(&sessions, &index, &IndexNotifier::default(), &path, never)
-                .unwrap_err();
-            assert_eq!(err.code, Some("sessionOpen"));
-            // 新会话只按会话 ID（文件头的 `x`）登记
-            sessions.close_for_test("s1");
-            sessions.insert_idle_for_test("s2", None, Some("x"), NoSink);
-            let err = delete_session(&sessions, &index, &IndexNotifier::default(), &path, never)
-                .unwrap_err();
-            assert_eq!(err.code, Some("sessionOpen"));
-            assert!(Path::new(&path).exists());
-            assert_eq!(index.list(None, None).unwrap().items.len(), 1);
+        fn open_session_is_closed_then_deleted() {
+            // 恢复的会话按文件登记、新会话只按会话 ID（文件头的 `x`）登记：两种都先结束 Core 再删除
+            for (file, id) in [(true, None), (false, Some("x"))] {
+                let (_tmp, dir, index, sessions) = setup();
+                // Core 为新会话建的文件名为 `<时间戳>_<会话 ID>.jsonl`
+                let path = write_session(&dir, "2026-11-03T00-00-00-000Z_x.jsonl");
+                index.sync_all().unwrap();
+                sessions.insert_idle_for_test("s1", file.then_some(path.as_str()), id, NoSink);
+                sessions.insert_idle_for_test("other", None, Some("unrelated"), NoSink);
+                let stopped = std::cell::RefCell::new(Vec::new());
+                delete_session(
+                    &sessions,
+                    &index,
+                    &IndexNotifier::default(),
+                    &path,
+                    |k| stopped.borrow_mut().push(k.to_owned()),
+                    |p| {
+                        // 删除文件时会话已移出会话表
+                        assert!(!sessions.is_using(p, Some("x")));
+                        std::fs::remove_file(p)
+                    },
+                )
+                .unwrap();
+                assert_eq!(*stopped.borrow(), vec!["s1".to_owned()]);
+                assert!(!Path::new(&path).exists());
+                assert!(index.list(None, None).unwrap().items.is_empty());
+                // 无关的会话不受影响
+                assert!(sessions.session_id("other").is_some());
+            }
         }
 
         #[test]
-        fn trash_failure_keeps_index_entry() {
+        fn deleting_a_copy_keeps_the_new_session_open() {
+            // 副本保留原文件头的会话 ID `x`，但不是 Core 为新会话 `x` 建的文件：删除副本不关闭那个新会话
+            let (_tmp, dir, index, sessions) = setup();
+            let copy = write_session(&dir, "copy.jsonl");
+            index.sync_all().unwrap();
+            sessions.insert_idle_for_test("s1", None, Some("x"), NoSink);
+            let stopped = std::cell::RefCell::new(Vec::new());
+            delete_session(
+                &sessions,
+                &index,
+                &IndexNotifier::default(),
+                &copy,
+                |k| stopped.borrow_mut().push(k.to_owned()),
+                |p| std::fs::remove_file(p),
+            )
+            .unwrap();
+            assert!(stopped.borrow().is_empty());
+            assert!(!Path::new(&copy).exists());
+            assert!(sessions.session_id("s1").is_some());
+        }
+
+        #[test]
+        fn remove_failure_keeps_index_entry() {
             let (_tmp, dir, index, sessions) = setup();
             let path = write_session(&dir, "a.jsonl");
             std::fs::write(&path, format!("{}{}\n", std::fs::read_to_string(&path).unwrap(),
                 "{\"type\":\"message\",\"id\":\"m\",\"parentId\":null,\"timestamp\":\"2026-11-03T00:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"hi\",\"timestamp\":1}}")).unwrap();
             index.sync_all().unwrap();
-            let err = delete_session(&sessions, &index, &IndexNotifier::default(), &path, |_| {
-                Err(io::Error::other("busy"))
-            })
+            let err = delete_session(
+                &sessions,
+                &index,
+                &IndexNotifier::default(),
+                &path,
+                no_stop,
+                |_| Err(io::Error::other("busy")),
+            )
             .unwrap_err();
             assert_eq!(err.code, None);
             assert_eq!(index.list(None, None).unwrap().items.len(), 1);

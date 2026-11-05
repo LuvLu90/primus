@@ -1,7 +1,7 @@
 "use client";
 
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Archive, ArchiveRestore, Ellipsis, Search, Trash2, X } from "lucide-react";
+import { Archive, ArchiveRestore, Ellipsis, Search, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   GlassDialog,
@@ -21,11 +21,12 @@ import { getPlatform } from "@/lib/platform";
 import type { SessionSummary } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
-import { findTab, useSessionsStore } from "./sessions-store";
+import { findTab, tabsForDeletion, useSessionsStore } from "./sessions-store";
 import { useSessionIndex, useSessionSearch } from "./use-session-index";
 
 // 左栏会话列表（第 10.2、16.2 节，ADR 0006）：搜索框 + 虚拟滚动的会话列表，滚到底加载下一页；
-// 点击打开（已在某个标签中则切过去），菜单里可关闭、归档、删除（删除前确认，移到回收站）。
+// 点击打开（已在某个标签中则切过去），菜单里可归档、删除（删除前确认，永久删除、不可恢复）。
+// 打开中的会话也可以直接删除：先关掉它的标签，薄壳删除时一并结束它的 Core。
 
 const t = strings.sessions;
 /** 行高（px），与样式一致，供虚拟列表估算 */
@@ -56,6 +57,8 @@ export function SessionList() {
   const search = useSessionSearch(query, index.version);
   const [actionError, setActionError] = useState<string>();
   const [pendingDelete, setPendingDelete] = useState<SessionSummary | null>(null);
+  // 正在删除的会话路径：删除完成前不允许再打开（否则会留下指向已删除文件的标签）
+  const [deleting, setDeleting] = useState<ReadonlySet<string>>(() => new Set());
   const tabs = useSessionsStore((s) => s.tabs);
   const activeTabId = useSessionsStore((s) => s.activeTabId);
   const openSession = useSessionsStore((s) => s.openSession);
@@ -107,9 +110,18 @@ export function SessionList() {
     setPendingDelete(null);
     if (!s) return;
     setActionError(undefined);
+    setDeleting((prev) => new Set(prev).add(s.path));
+    for (const tab of tabsForDeletion(useSessionsStore.getState().tabs, s)) closeTab(tab.id);
     getPlatform()
       .then((p) => p.sessionDelete(s.path))
-      .catch((e) => setActionError(errorText(e)));
+      .catch((e) => setActionError(errorText(e)))
+      .finally(() =>
+        setDeleting((prev) => {
+          const next = new Set(prev);
+          next.delete(s.path);
+          return next;
+        }),
+      );
   };
 
   // 没有会话时列表区留空，不显示提示文字
@@ -185,9 +197,10 @@ export function SessionList() {
                   now={now}
                   active={tab !== undefined && tab.id === activeTabId}
                   running={tab?.running ?? false}
-                  open={tab !== undefined}
-                  onOpen={() => openSession(s)}
-                  onClose={tab ? () => closeTab(tab.id) : undefined}
+                  deleting={deleting.has(s.path)}
+                  onOpen={() => {
+                    if (!deleting.has(s.path)) openSession(s);
+                  }}
                   onArchive={() => archive(s)}
                   onDelete={() => setPendingDelete(s)}
                 />
@@ -232,10 +245,9 @@ interface SessionRowProps {
   now: number;
   active: boolean;
   running: boolean;
-  /** 已在某个标签中打开：菜单提供“关闭会话”，不能删除 */
-  open: boolean;
+  /** 正在删除：行不可打开 */
+  deleting: boolean;
   onOpen: () => void;
-  onClose?: () => void;
   onArchive: () => void;
   onDelete: () => void;
 }
@@ -246,9 +258,8 @@ function SessionRow({
   now,
   active,
   running,
-  open,
+  deleting,
   onOpen,
-  onClose,
   onArchive,
   onDelete,
 }: SessionRowProps) {
@@ -258,11 +269,14 @@ function SessionRow({
       <button
         type="button"
         onClick={onOpen}
+        disabled={deleting}
+        aria-busy={deleting ? "true" : undefined}
         aria-current={active ? "true" : undefined}
         title={title}
         className={cn(
           "flex h-[46px] min-w-0 flex-1 flex-col justify-center rounded-[12px] py-1 pr-8 pl-3 text-left outline-none hover:bg-hover focus-visible:bg-hover",
           active && "bg-hover",
+          deleting && "pointer-events-none opacity-50",
         )}
       >
         <span className="flex w-full items-center gap-1.5">
@@ -291,20 +305,13 @@ function SessionRow({
           </button>
         </GlassPopoverTrigger>
         <GlassPopoverContent side="right" align="start" sideOffset={6} tint={0.75} minWidth={160}>
-          {onClose && <GlassPopoverItem icon={<X />} label={t.closeTab} onSelect={onClose} />}
           <GlassPopoverItem
             icon={session.archived ? <ArchiveRestore /> : <Archive />}
             label={session.archived ? t.unarchive : t.archive}
             onSelect={onArchive}
           />
           <GlassPopoverSeparator />
-          <GlassPopoverItem
-            icon={<Trash2 />}
-            label={t.delete}
-            destructive
-            disabled={open}
-            onSelect={onDelete}
-          />
+          <GlassPopoverItem icon={<Trash2 />} label={t.delete} destructive onSelect={onDelete} />
         </GlassPopoverContent>
       </GlassPopover>
     </li>

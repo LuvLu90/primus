@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import auth from "./auth/index.ts";
 import checkpoint from "./checkpoint/index.ts";
 import guard from "./guard/index.ts";
 import primus, { modules } from "./index.ts";
@@ -11,11 +12,13 @@ describe("primus-bundle 扩展入口", () => {
     expect(typeof primus).toBe("function");
   });
 
-  it("注册全部 5 个第一方扩展且不重复", () => {
-    expect(modules).toHaveLength(5);
-    expect(new Set(modules).size).toBe(5);
+  it("注册全部 6 个第一方扩展且不重复", () => {
+    expect(modules).toHaveLength(6);
+    expect(new Set(modules).size).toBe(6);
     for (const ext of modules) expect(typeof ext).toBe("function");
-    expect(modules).toEqual(expect.arrayContaining([guard, checkpoint, subagent, plan, shell]));
+    expect(modules).toEqual(
+      expect.arrayContaining([guard, auth, checkpoint, subagent, plan, shell]),
+    );
   });
 
   it("guard 最先注册，保证其他扩展的工具调用都经过审批（附录 A）", () => {

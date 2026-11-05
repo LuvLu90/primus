@@ -97,6 +97,26 @@ describe("build-nsis", () => {
       type: "embedBootstrapper",
       silent: true,
     });
+    // 品牌信息：版权写进安装程序与 Primus.exe 的文件属性
+    expect(conf.bundle.copyright).toMatch(/乾元 Primus/);
+    // 自定义安装脚本模板（Tauri 模板 + 少量改动）：默认安装目录不含中文与空格，品牌文字与界面字体
+    const template = readFileSync(tauriFile(nsis.template));
+    // Tauri 渲染模板后自己加 BOM，模板本身不能再带（否则输出里有两个 BOM）
+    expect([...template.subarray(0, 3)]).not.toEqual([0xef, 0xbb, 0xbf]);
+    const nsi = template.toString("utf8");
+    // 字符串里的 ${…} 是 NSIS 的宏引用，不是模板字符串：拼出来，避免误用模板语法
+    const ref = (name: string) => `$${"{"}${name}}`;
+    expect(nsi).toContain('!define INSTALLDIRNAME "Primus"');
+    expect(nsi).toContain(`StrCpy $INSTDIR "$PROGRAMFILES64\\${ref("INSTALLDIRNAME")}"`);
+    expect(nsi).not.toContain(`StrCpy $INSTDIR "$PROGRAMFILES64\\${ref("PRODUCTNAME")}"`);
+    expect(nsi).not.toContain(`StrCpy $INSTDIR "$PROGRAMFILES\\${ref("PRODUCTNAME")}"`);
+    expect(nsi).toContain(
+      `!define PLACEHOLDER_INSTALL_DIR "placeholder\\${ref("INSTALLDIRNAME")}"`,
+    );
+    expect(nsi).toContain(`BrandingText "${ref("PRODUCTNAME")} ${ref("VERSION")}"`);
+    expect(nsi).toContain('SetFont /LANG=2052 "Microsoft YaHei UI" 9');
+    // 模板仍须包含钩子与各占位符，由 Tauri 渲染
+    expect(nsi).toContain('!include "{{installer_hooks}}"');
     const hooks = readFileSync(tauriFile(nsis.installerHooks));
     // UTF-8 BOM：makensis 才会按 UTF-8 读取中文
     expect([...hooks.subarray(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);

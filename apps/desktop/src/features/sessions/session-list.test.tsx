@@ -232,30 +232,54 @@ describe("会话列表", () => {
     await waitFor(() => expect(screen.queryByRole("status")).toBeNull());
   });
 
-  it("删除前确认，确认后移到回收站；打开中的会话不能删除", async () => {
+  it("删除前确认，确认后永久删除；打开中的会话直接删除并关掉标签，菜单里没有“关闭会话”", async () => {
     const sessionDelete = vi.fn(async () => {});
     withIndex({ sessionList: async () => ({ items: [summary(1), summary(2)] }), sessionDelete });
     useSessionsStore.getState().openSession(summary(2));
     render(<SessionList />);
     await screen.findByRole("button", { name: /^第 1 个会话/ });
 
-    // 打开中的会话：删除项禁用，提供关闭
     fireEvent.keyDown(screen.getByRole("button", { name: `${t.moreActions}：第 2 个会话` }), {
       key: "Enter",
     });
-    expect(
-      (await screen.findByRole("menuitem", { name: t.delete })).getAttribute("data-disabled"),
-    ).not.toBeNull();
-    fireEvent.click(screen.getByRole("menuitem", { name: t.closeTab }));
-    expect(useSessionsStore.getState().tabs.some((x) => x.sessionPath)).toBe(false);
-
-    fireEvent.keyDown(screen.getByRole("button", { name: `${t.moreActions}：第 1 个会话` }), {
-      key: "Enter",
-    });
-    fireEvent.click(await screen.findByRole("menuitem", { name: t.delete }));
+    const item = await screen.findByRole("menuitem", { name: t.delete });
+    expect(item.getAttribute("data-disabled")).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "关闭会话" })).toBeNull();
+    fireEvent.click(item);
     expect(await screen.findByRole("dialog", { name: t.deleteTitle })).toBeTruthy();
+    expect(screen.getByText(/无法恢复/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: t.deleteConfirm }));
-    await waitFor(() => expect(sessionDelete).toHaveBeenCalledWith("/data/sessions/1.jsonl"));
+    await waitFor(() => expect(sessionDelete).toHaveBeenCalledWith("/data/sessions/2.jsonl"));
+    expect(useSessionsStore.getState().tabs.some((x) => x.sessionPath)).toBe(false);
+  });
+
+  it("删除完成前该会话不能再打开，完成后恢复", async () => {
+    let finish: () => void = () => {};
+    const sessionDelete = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    withIndex({ sessionList: async () => ({ items: [summary(1)] }), sessionDelete });
+    render(<SessionList />);
+    fireEvent.keyDown(
+      await screen.findByRole("button", { name: `${t.moreActions}：第 1 个会话` }),
+      { key: "Enter" },
+    );
+    fireEvent.click(await screen.findByRole("menuitem", { name: t.delete }));
+    fireEvent.click(await screen.findByRole("button", { name: t.deleteConfirm }));
+    await waitFor(() => expect(sessionDelete).toHaveBeenCalled());
+    const row = screen.getByRole("button", { name: /^第 1 个会话/ });
+    expect((row as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(row);
+    expect(useSessionsStore.getState().tabs.some((x) => x.sessionPath)).toBe(false);
+    await act(async () => finish());
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("button", { name: /^第 1 个会话/ }) as HTMLButtonElement).disabled,
+      ).toBe(false),
+    );
   });
 
   it("归档与删除失败时显示原因", async () => {

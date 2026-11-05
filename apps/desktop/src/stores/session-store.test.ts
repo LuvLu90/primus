@@ -1,7 +1,12 @@
 import type { AgentMessage, CoreRecord } from "@primus/protocol";
 import { describe, expect, it } from "vitest";
 import { promptScenario, usage } from "@/lib/platform/mock/scenario";
-import { applyChunks, initialSessionState, type RecordChunk } from "./session-store";
+import {
+  applyChunks,
+  dismissUiRequest,
+  initialSessionState,
+  type RecordChunk,
+} from "./session-store";
 
 const chunk = (records: CoreRecord[], gap = false): RecordChunk => ({ records, gap });
 const u = usage(1, 1);
@@ -252,5 +257,65 @@ describe("会话 store：流式消息重建（第 7.4 节）", () => {
       ]),
     ]);
     expect(s4.messages[1]).toMatchObject({ content: [{ type: "text", text: "新" }] });
+  });
+
+  it("扩展对话框进入待回答列表（去重），即发即弃的方法忽略；回答或一轮结束后移除", () => {
+    const ask = {
+      type: "extension_ui_request",
+      id: "a1",
+      method: "select",
+      title: "运行命令：ls",
+      options: ["允许", "拒绝"],
+    } as CoreRecord;
+    const widget = {
+      type: "extension_ui_request",
+      id: "w1",
+      method: "setWidget",
+      widgetKey: "primus:mode",
+      widgetLines: ["{}"],
+    } as CoreRecord;
+    const s1 = applyChunks(initialSessionState, [{ records: [ask, ask, widget], gap: false }]);
+    expect(s1.uiRequests.map((r) => r.id)).toEqual(["a1"]);
+    expect(dismissUiRequest(s1, "a1").uiRequests).toEqual([]);
+    const s2 = applyChunks(s1, [
+      { records: [{ type: "agent_settled" } as CoreRecord], gap: false },
+    ]);
+    expect(s2.uiRequests).toEqual([]);
+  });
+
+  it("记录当前模型、思考强度与可选档位", () => {
+    const model = { provider: "p", id: "m", name: "M" };
+    const s = applyChunks(initialSessionState, [
+      {
+        records: [
+          {
+            type: "response",
+            id: "1",
+            command: "get_state",
+            success: true,
+            data: { model, thinkingLevel: "high", isStreaming: false, isCompacting: false },
+          } as CoreRecord,
+          {
+            type: "response",
+            id: "2",
+            command: "get_available_thinking_levels",
+            success: true,
+            data: { levels: ["off", "high"] },
+          } as CoreRecord,
+          {
+            type: "response",
+            id: "3",
+            command: "set_model",
+            success: true,
+            data: { ...model, id: "m2" },
+          } as CoreRecord,
+        ],
+        gap: false,
+      },
+    ]);
+    expect(s.model).toEqual({ provider: "p", id: "m2" });
+    expect(s.thinkingLevel).toBe("high");
+    // 换模型后旧模型的档位作废，等新的 get_available_thinking_levels
+    expect(s.thinkingLevels).toBeUndefined();
   });
 });

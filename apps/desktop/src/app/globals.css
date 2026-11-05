@@ -15,9 +15,9 @@
   --color-muted: #6e6e73;
   --color-border: rgb(0 0 0 / 0.08);
   --color-hover: rgb(0 0 0 / 0.05);
-  /* 强调色与用户消息气泡都用黑白灰：不用彩色 */
+  /* 强调色与用户消息气泡都用黑白灰：不用彩色。气泡是白色纸面上的浅灰块（与助手的无底色正文区分） */
   --color-accent: #3a3a3c;
-  --color-bubble: #ececee;
+  --color-bubble: #ededf0;
   --color-danger: #d70015;
   --color-warning: #c93400;
   --color-success: #248a3d;
@@ -37,8 +37,8 @@
   --wallpaper: #e6e6ee;
   /* Tauri 窗口内：半透明着色叠在系统亚克力磨砂效果上 */
   --window-tint: rgb(222 222 232 / 0.42);
-  /* 时间线所在的"纸面"：几乎不透明，只透出一点壁纸色 */
-  --paper: rgb(255 255 255 / 0.82);
+  /* 时间线所在的"纸面"：几乎不透明的白色，只透出一点壁纸色 */
+  --paper: rgb(255 255 255 / 0.94);
   color-scheme: light;
 }
 
@@ -49,14 +49,14 @@
   --color-border: rgb(255 255 255 / 0.1);
   --color-hover: rgb(255 255 255 / 0.08);
   --color-accent: #8e8e93;
-  --color-bubble: #3a3a3c;
+  --color-bubble: #2f2f32;
   --color-danger: #ff453a;
   --color-warning: #ff9f0a;
   --color-success: #30d158;
   /* 浏览器预览用的纯色底（不用渐变） */
   --wallpaper: #0b0b0e;
   --window-tint: rgb(8 8 10 / 0.45);
-  --paper: rgb(28 28 30 / 0.84);
+  --paper: rgb(22 22 24 / 0.92);
   color-scheme: dark;
 }
 

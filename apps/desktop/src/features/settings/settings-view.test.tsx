@@ -3,7 +3,7 @@ import { useRouter } from "next/navigation";
 import { afterEach, describe, expect, it } from "vitest";
 import { strings } from "@/lib/strings";
 import { initialAppearance, useAppearanceStore } from "@/stores/appearance-store";
-import { SettingsView } from "./settings-view";
+import { groupFromSearch, SettingsView } from "./settings-view";
 
 const t = strings.settings;
 
@@ -18,6 +18,18 @@ describe("设置页", () => {
     expect(
       screen.getByRole("button", { name: t.groups.general }).getAttribute("aria-current"),
     ).toBe("page");
+  });
+
+  it("用量是设置中的一个分组，可由 ?group=usage 直接打开", () => {
+    expect(groupFromSearch("?group=usage")).toBe("usage");
+    expect(groupFromSearch("?group=nope")).toBeNull();
+    expect(groupFromSearch("")).toBeNull();
+    window.history.replaceState(null, "", "/settings/?group=usage");
+    render(<SettingsView />);
+    expect(screen.getByRole("main", { name: t.groups.usage }).textContent).toContain(
+      t.groupItems.usage,
+    );
+    window.history.replaceState(null, "", "/");
   });
 
   it("切换分组显示对应内容", () => {

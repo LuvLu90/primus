@@ -15,6 +15,7 @@ import {
   hasModelId,
   hasModelLevelApiKey,
   hasOnlyAllowedApis,
+  isQuotaExhausted,
   resolveApiKey,
   smokeEnv,
 } from "./real-models-config.mjs";
@@ -49,6 +50,8 @@ const devDataDir = resolve(repoRoot, ".dev-data");
 mkdirSync(devDataDir, { recursive: true });
 const sandbox = mkdtempSync(join(devDataDir, "real-models-"));
 let failed = 0;
+let passed = 0;
+let quotaSkipped = 0;
 try {
   const target = prepareCoreTarget({ sandbox: join(sandbox, "target") });
   for (const [id, provider] of providers) {
@@ -138,6 +141,13 @@ try {
       const finalMessage = records
         .filter((x) => x.type === "message_end" && x.message?.role === "assistant")
         .at(-1)?.message;
+      if (finalMessage?.errorMessage && isQuotaExhausted(finalMessage.errorMessage)) {
+        quotaSkipped++;
+        console.warn(
+          `⚠ ${label} ${model}：上游额度暂时用尽，跳过（${finalMessage.errorMessage.slice(0, 200)}）`,
+        );
+        continue;
+      }
       if (finalMessage?.errorMessage)
         throw new Error(`模型报错：${finalMessage.errorMessage.slice(0, 300)}`);
       if (
@@ -150,6 +160,7 @@ try {
       const answer = textOf(finalMessage);
       if (!answer?.includes(secret))
         throw new Error(`回复未包含口令 ${secret}：${JSON.stringify(answer)}`);
+      passed++;
       console.log(`✓ ${label} ${model}：调用 read 并复述口令（${Date.now() - started} ms）`);
     } catch (err) {
       failed++;
@@ -161,4 +172,7 @@ try {
 } finally {
   rmSync(sandbox, { recursive: true, force: true });
 }
-process.exit(failed ? 1 : 0);
+// 额度用尽只算跳过；但至少要有一个模型真正跑通，全部跳过视为失败
+if (quotaSkipped) console.warn(`⚠ ${quotaSkipped} 个模型因上游额度用尽跳过`);
+if (!failed && !passed) console.error("✗ 没有任何模型完成冒烟");
+process.exit(failed || !passed ? 1 : 0);

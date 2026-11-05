@@ -37,6 +37,7 @@ import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
 import type { TimelineContent, ToolRun } from "@/stores/session-store";
+import { ApprovalCard } from "./approval-card";
 import {
   AttachmentChips,
   failure,
@@ -47,6 +48,7 @@ import {
   WorkspacePicker,
   withAttachments,
 } from "./composer-menus";
+import { ModelPicker } from "./model-picker";
 import { useChatSession } from "./use-chat-session";
 
 // 中央对话区：实色"纸面"上的时间线 + 悬浮在其上的玻璃输入框（滚动内容从玻璃下方折射穿过）。
@@ -356,7 +358,7 @@ function useModelConfigGate() {
       .catch(() => {})
       .finally(() => setRetrying(false));
   };
-  return { unavailable, reason: info?.error ?? null, retrying, retry };
+  return { info, unavailable, reason: info?.error ?? null, retrying, retry };
 }
 
 /** 路径最后一段（工作区显示名） */
@@ -370,13 +372,24 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
   const markOpened = useSessionsStore((s) => s.markOpened);
   const setTabOpening = useSessionsStore((s) => s.setOpening);
   const setTabRunning = useSessionsStore((s) => s.setRunning);
-  const { state, error, unresponsive, coreStopped, send, abort, restarting, restart } =
-    useChatSession({
-      sessionPath: tab?.sessionPath,
-      workspace: tab?.workspace,
-      onOpening: tabId ? (opening) => setTabOpening(tabId, opening) : undefined,
-      onOpened: tabId ? (opened) => markOpened(tabId, opened) : undefined,
-    });
+  const {
+    state,
+    error,
+    unresponsive,
+    coreStopped,
+    send,
+    abort,
+    restarting,
+    restart,
+    respondUi,
+    selectModel,
+    pendingModel,
+  } = useChatSession({
+    sessionPath: tab?.sessionPath,
+    workspace: tab?.workspace,
+    onOpening: tabId ? (opening) => setTabOpening(tabId, opening) : undefined,
+    onOpened: tabId ? (opened) => markOpened(tabId, opened) : undefined,
+  });
   // 运行中的标签不会因标签上限被关闭
   useEffect(() => {
     if (tabId) setTabRunning(tabId, state.running);
@@ -517,6 +530,11 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
   };
 
   const shownError = error ?? state.lastError;
+  // 当前模型：Core 报告的 > 打开前选的 > 账号配置的默认模型
+  const currentModel = state.model
+    ? `${state.model.provider}/${state.model.id}`
+    : (pendingModel.model ?? modelConfig.info?.defaultModel ?? null);
+  const pendingUi = state.uiRequests[0];
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
@@ -599,6 +617,9 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                 {t.retryModelConfig}
               </button>
             </div>
+          )}
+          {pendingUi && (
+            <ApprovalCard key={pendingUi.id} request={pendingUi} onRespond={respondUi} />
           )}
           {/* 中央已是玻璃，输入框保持实色白底（深色为实色面），保证输入区清晰 */}
           <div className="relative rounded-[24px] bg-surface shadow-[0_12px_40px_-12px_rgb(0_0_0/0.35)] ring-1 ring-border transition-shadow focus-within:shadow-[0_14px_44px_-12px_rgb(0_0_0/0.4)]">
@@ -721,6 +742,15 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                     </WorkspacePicker>
                   ))}
                 <span className="flex-1" />
+                <ModelPicker
+                  models={modelConfig.info?.models ?? []}
+                  current={currentModel}
+                  thinkingLevel={state.thinkingLevel ?? pendingModel.thinkingLevel}
+                  thinkingLevels={state.model ? state.thinkingLevels : undefined}
+                  disabled={state.running || submitting}
+                  onSelectModel={(model) => void selectModel({ model })}
+                  onSelectThinking={(thinkingLevel) => void selectModel({ thinkingLevel })}
+                />
                 <ContextRing percent={0} />
                 {state.running ? (
                   <button

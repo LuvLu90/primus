@@ -56,8 +56,11 @@
         "installerIcon": "icons/icon.ico",
         "headerImage": "windows/art/nsis-header.bmp",
         "sidebarImage": "windows/art/nsis-sidebar.bmp",
-        "installerHooks": "windows/nsis/hooks.nsh"
+        "installerHooks": "windows/nsis/hooks.nsh",
+        "template": "windows/nsis/installer.nsi"
       }
-    }
+    },
+    "copyright": "© 2026 乾元 Primus",
+    "shortDescription": "乾元 Primus 桌面 Agent"
   }
 }

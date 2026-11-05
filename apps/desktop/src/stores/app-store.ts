@@ -40,7 +40,8 @@ export interface AppState {
 export const initialAppState = {
   sessionsPanelOpen: true,
   sessionsPanelWidth: LEFT_PANEL.initial,
-  inspectorPanelOpen: true,
+  // 右栏默认收起：打开应用时只显示会话列表与对话区，需要时再展开
+  inspectorPanelOpen: false,
   inspectorPanelWidth: RIGHT_PANEL.initial,
   bottomDrawerOpen: false,
   bottomDrawerHeight: BOTTOM_DRAWER.initial,
