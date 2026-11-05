@@ -185,7 +185,7 @@ export const strings = {
     trustCancel: "取消",
     pickFilesFailed: "选择文件失败",
     contextDetail: "当前会话占用的上下文窗口比例。",
-    contextUnknown: "刚压缩过上下文，下一条回复后更新。",
+    contextUnknown: "暂无上下文占用数据，下一条回复后更新。",
     welcomeSubtitle: "乾元可以阅读和修改你的项目、运行命令，并在需要时先征求你的确认。",
     suggestions: ["解释这个项目的结构", "找出并修复失败的测试", "为 README 补充安装说明"],
   },

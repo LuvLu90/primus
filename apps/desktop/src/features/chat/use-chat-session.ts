@@ -231,7 +231,9 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
         sessionKey,
         send: (record) => platform.coreSend(sessionKey, record),
         onRecords: (records, { gap }) => enqueue({ records, gap }),
-        onUnresponsive: () => {
+        onUnresponsive: ({ command }) => {
+          // 上下文统计是可选的展示数据：它超时不代表内核卡住，不锁定发送
+          if (command === "get_session_stats") return;
           lock.current.timeout = true;
           syncUnresponsive();
         },

@@ -33,7 +33,10 @@ const MIN_STEP_MS = 32;
  * 流式结束后仍把剩余部分播完，不会在最后一下跳出。
  */
 export function useSmoothText(text: string, animate: boolean): string {
-  const canAnimate = animate && typeof requestAnimationFrame === "function";
+  const canAnimate =
+    animate &&
+    typeof requestAnimationFrame === "function" &&
+    !(typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches);
   const [shown, setShown] = useState(() => (canAnimate ? 0 : text.length));
   const shownRef = useRef(shown);
   const playing = useRef(canAnimate);

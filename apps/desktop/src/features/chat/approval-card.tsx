@@ -37,14 +37,19 @@ export function ApprovalCard({
         <div className="min-w-0 flex-1">
           <p className="font-medium text-fg">{t.title}</p>
           {/* 长命令（多行脚本、heredoc）限高滚动，卡片不撑高遮住对话 */}
-          <div className="mt-0.5 max-h-[min(9rem,22vh)] overflow-y-auto overscroll-contain pr-1">
+          <section
+            aria-label={t.title}
+            // biome-ignore lint/a11y/noNoninteractiveTabindex: 限高后可滚动，键盘用户需要能聚焦滚动查看完整命令
+            tabIndex={0}
+            className="mt-0.5 max-h-[min(9rem,22vh)] overflow-y-auto overscroll-contain rounded-md pr-1 outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
+          >
             <p className="whitespace-pre-wrap break-words font-mono text-[12px] text-muted">
               {request.title}
             </p>
             {request.method === "confirm" && request.message && (
               <p className="mt-1 whitespace-pre-wrap break-words text-muted">{request.message}</p>
             )}
-          </div>
+          </section>
         </div>
         <button
           type="button"

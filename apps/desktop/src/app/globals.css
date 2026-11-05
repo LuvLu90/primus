@@ -625,3 +625,9 @@ html.window-effects.glass-clear body {
 .thought-live::-webkit-scrollbar {
   display: none;
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .step-in {
+    animation: none;
+  }
+}

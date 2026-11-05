@@ -20,8 +20,8 @@ interface NarrateApi {
 }
 
 export default function narrate(pi: unknown): void {
-  const api = pi as NarrateApi;
-  if (typeof api.on !== "function") return;
+  const api = pi as NarrateApi | null | undefined;
+  if (typeof api?.on !== "function") return;
   api.on("before_agent_start", (event) => {
     if (typeof event?.systemPrompt !== "string" || event.systemPrompt.includes(NARRATE_PROMPT))
       return undefined;

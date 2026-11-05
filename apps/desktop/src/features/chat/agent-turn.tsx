@@ -429,7 +429,10 @@ function CopyButton({ text }: { text: string }) {
       aria-label={copied ? strings.chat.copied : strings.chat.copy}
       title={copied ? strings.chat.copied : strings.chat.copy}
       onClick={() => {
-        void navigator.clipboard?.writeText(text).then(() => setCopied(true));
+        void navigator.clipboard?.writeText(text).then(
+          () => setCopied(true),
+          () => {},
+        );
       }}
       className="grid size-7 place-items-center rounded-lg text-muted outline-none transition-colors hover:bg-hover hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40"
     >
