@@ -129,8 +129,10 @@ export function isQuotaExhausted(errorMessage) {
 }
 
 // 智谱（GLM）网关把账户限流报成 HTTP 400：{"detail":"您的账户已达到速率限制，请您控制请求频率"}
-// 只认明确“已触发限流”的说法；只提到“请求频率”的参数错误不算
-const PROVIDER_RATE_LIMIT_400 = /已达到速率限制|已触发限流|请求频率(?:过高|过快|超限)/;
+// 内置模型网关的账号池暂时全部不可用时也报 400：{"detail":"all accounts are temporarily unavailable, please retry later"}
+// 只认明确“已触发限流 / 暂时不可用”的说法；只提到“请求频率”的参数错误不算
+const PROVIDER_RATE_LIMIT_400 =
+  /已达到速率限制|已触发限流|请求频率(?:过高|过快|超限)|all accounts are temporarily unavailable/i;
 
 /** 正文常是嵌套的 JSON 字符串，中文被转义成 \\uXXXX；匹配前先还原 */
 function decodeUnicodeEscapes(text) {

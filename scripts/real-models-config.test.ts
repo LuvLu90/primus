@@ -168,4 +168,13 @@ describe("真实模型配置", () => {
       '400 {"error":{"message":"{\\"detail\\":\\"\\u60a8\\u7684\\u8d26\\u6237\\u5df2\\u8fbe\\u5230\\u901f\\u7387\\u9650\\u5236\\"}"}}';
     expect(isProviderRateLimited(nested)).toBe(true);
   });
+
+  it("内置模型网关账号池暂时不可用（400）记为限流跳过", () => {
+    const pool = '400 {"detail":"all accounts are temporarily unavailable, please retry later"}';
+    expect(isProviderRateLimited(pool)).toBe(true);
+    expect(isProviderRateLimited('400 {"detail":"account disabled"}')).toBe(false);
+    expect(isProviderRateLimited('503 {"detail":"all accounts are temporarily unavailable"}')).toBe(
+      false,
+    );
+  });
 });
