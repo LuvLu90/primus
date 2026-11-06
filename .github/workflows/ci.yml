@@ -67,8 +67,10 @@ jobs:
       - name: Agent Core RPC 契约测试（dist/agent-core · 当前 node）
         run: pnpm contract:core:dist
       # 内置模型配置真实冒烟（技术方案第 9.8 节，临时方案）：读取薄壳内置的端点、模型与令牌，
-      # 两种协议的每个内置模型各完成一次含 read 工具调用的对话；脚本先输出 ::add-mask:: 遮蔽令牌
+      # 两种协议的每个内置模型各完成一次含 read 工具调用的对话；脚本先输出 ::add-mask:: 遮蔽令牌。
+      # 依赖外部模型网关的可用性，只作提示、不阻断后续作业（网关不可达或限流时仍继续构建与安装矩阵）
       - name: 内置模型真实冒烟（openai-responses · anthropic-messages · 含工具调用）
+        continue-on-error: true
         run: pnpm smoke:builtin
 
       # 被禁 SDK 检查（技术方案第 6.2 节第 2 条、第 22.1 节第 3 步）：构建后再查一遍，此时导入图从前端页面、
