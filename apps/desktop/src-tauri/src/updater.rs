@@ -886,11 +886,15 @@ impl Updater {
         };
         let (lock_file, bytes) = open_locked(&path)
             .map_err(|e| invalid(format!("读取安装包 {} 失败：{e}", path.display())))?;
+        // 校验失败时先关闭锁句柄再删除：Windows 上句柄未共享删除，不关闭就删不掉安装包
         if sha256_hex(&bytes) != pending.sha256 {
+            drop(lock_file);
             return Err(invalid("安装包的 SHA-256 与下载时不一致".to_owned()));
         }
-        verify_signature(&bytes, &pending.signature, pubkey, &pending.version)
-            .map_err(|e| invalid(format!("安装包签名校验失败：{e}")))?;
+        if let Err(e) = verify_signature(&bytes, &pending.signature, pubkey, &pending.version) {
+            drop(lock_file);
+            return Err(invalid(format!("安装包签名校验失败：{e}")));
+        }
         Ok(VerifiedPackage {
             path,
             kind: pending.kind,

@@ -118,11 +118,21 @@ fn path_key_for(path: &str, windows: bool) -> String {
 
 /// 自动更新（ADR 0007）：安装器结束后以当前身份重新打开 Primus 的 PowerShell 脚本。
 /// `handle` 是继承给 PowerShell 的安装器进程句柄（只有 SYNCHRONIZE 权限）：按句柄等待，不按 PID
-/// （非提权进程不一定能按 PID 打开提权的安装器进程，PID 也可能被复用）。路径中的单引号按 PowerShell 规则加倍。
+/// （非提权进程不一定能按 PID 打开提权的安装器进程，PID 也可能被复用）。路径中的单引号（含弯单引号）按 PowerShell 规则加倍。
 /// `data_dir` 为 `--data-dir` 指定的数据目录（已解析为绝对路径）：重新打开时原样带上，否则新进程会改用默认目录。
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn relaunch_script(handle: usize, exe: &Path, data_dir: Option<&Path>) -> String {
-    let quote = |s: &str| s.replace('\'', "''");
+    // PowerShell 把 ASCII 单引号和四种弯单引号（U+2018–U+201B）都当作单引号，单引号字符串里各自加倍即可
+    let quote = |s: &str| {
+        let mut out = String::with_capacity(s.len());
+        for c in s.chars() {
+            if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}') {
+                out.push(c);
+            }
+            out.push(c);
+        }
+        out
+    };
     let exe = quote(&exe.to_string_lossy());
     // `--data-dir="<路径>"`：双引号用 [char]34 拼出（脚本本身不含双引号，整体作为一个参数传给 PowerShell）；
     // Windows 路径不含双引号，只需把结尾的反斜杠加倍，避免它转义收尾的引号（CommandLineToArgvW 规则）
@@ -1333,6 +1343,21 @@ mod tests {
         assert!(
             !script.contains('"'),
             "脚本不含双引号，整体作为一个命令行参数传给 PowerShell"
+        );
+    }
+
+    #[test]
+    fn relaunch_script_doubles_curly_single_quotes() {
+        let script = relaunch_script(
+            1,
+            Path::new("C:\\Users\\O\u{2019}Brien\\\u{2018}a\u{201A}b\u{201B}\\Primus.exe"),
+            None,
+        );
+        assert!(
+            script.ends_with(
+                "Start-Process -FilePath 'C:\\Users\\O\u{2019}\u{2019}Brien\\\u{2018}\u{2018}a\u{201A}\u{201A}b\u{201B}\u{201B}\\Primus.exe'"
+            ),
+            "{script}"
         );
     }
 
