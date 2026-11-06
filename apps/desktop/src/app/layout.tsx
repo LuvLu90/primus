@@ -3,6 +3,7 @@ import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { KeepAliveShell } from "@/components/layout/keep-alive-shell";
 import { AppearanceController } from "@/components/theme/appearance-controller";
+import { UpdatePrompt } from "@/features/update/update-prompt";
 import { strings } from "@/lib/strings";
 
 // 主界面去掉顶栏后，产品名只出现在文档标题里（任务栏与 CI 冒烟检查都读它）
@@ -21,6 +22,8 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         {/* 主界面常驻在布局里，切换页面时不卸载（见 KeepAliveShell）；主页本身不再渲染内容 */}
         <KeepAliveShell />
         {children}
+        {/* 更新下载完成后的重启提示（第 3.6 节），任何页面都显示 */}
+        <UpdatePrompt />
       </body>
     </html>
   );

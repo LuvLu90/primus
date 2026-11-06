@@ -41,7 +41,8 @@
 //                              updater 签名私钥（前者为私钥内容，后者为私钥文件路径；tauri signer sign 读取）
 //   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  updater 私钥口令
 //   TAURI_SIGNING_PUBLIC_KEY   updater 公钥（与 tauri.conf.json plugins.updater.pubkey 同格式），校验 .sig 用
-//   PRIMUS_REQUIRE_SIGNING=1   证书与 updater 密钥必须都配置齐，否则拒绝构建（发布与 CI 签名演练用）
+//   PRIMUS_REQUIRE_SIGNING=1   证书与 updater 密钥必须都配置齐，否则拒绝构建（CI 签名演练与正式证书发布用）
+//   PRIMUS_REQUIRE_UPDATER_SIGNING=1  updater 密钥必须配置齐（每次发布都要 .sig 供自动更新，ADR 0007；release.yml 设置）
 // 证书指纹与时间戳服务器须成对配置、updater 私钥须配公钥，配一半拒绝构建；都不配时跳过签名并提示（开发与 PR 构建）。
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -298,7 +299,7 @@ export function signtoolVerifyArgs(file) {
 /**
  * 签名配置（第 3.3.4 节）：证书指纹与时间戳服务器成对配置才签 Authenticode；updater 私钥（内容或路径二选一）
  * 须同时给公钥，生成 .sig 后立即校验。配一半一律视为配置错误（problems 非空），免得发布出半签名的安装包；
- * PRIMUS_REQUIRE_SIGNING=1 时两类签名都必须配置。
+ * PRIMUS_REQUIRE_SIGNING=1 时两类签名都必须配置，PRIMUS_REQUIRE_UPDATER_SIGNING=1 时 updater 签名必须配置。
  */
 export function signingConfig(env = process.env) {
   const problems = [];
@@ -319,6 +320,10 @@ export function signingConfig(env = process.env) {
   const updater = Boolean((keyValue || keyPath) && pubkey);
   if (env.PRIMUS_REQUIRE_SIGNING === "1" && !(authenticode && updater))
     problems.push("PRIMUS_REQUIRE_SIGNING=1 要求同时配置代码签名证书与 updater 签名密钥");
+  if (env.PRIMUS_REQUIRE_UPDATER_SIGNING === "1" && !updater)
+    problems.push(
+      "PRIMUS_REQUIRE_UPDATER_SIGNING=1 要求配置 updater 签名密钥（TAURI_SIGNING_PRIVATE_KEY 与 TAURI_SIGNING_PUBLIC_KEY）：自动更新需要每个安装包的 .sig",
+    );
   return { authenticode, updater, problems };
 }
 

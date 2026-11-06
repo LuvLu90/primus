@@ -351,6 +351,18 @@ describe("build-msi", () => {
     );
   });
 
+  it("签名配置：PRIMUS_REQUIRE_UPDATER_SIGNING=1 时必须配置 updater 密钥（证书可以没有）", () => {
+    const keys = { TAURI_SIGNING_PRIVATE_KEY: "k", TAURI_SIGNING_PUBLIC_KEY: "p" };
+    expect(signingConfig({ PRIMUS_REQUIRE_UPDATER_SIGNING: "1", ...keys })).toEqual({
+      authenticode: false,
+      updater: true,
+      problems: [],
+    });
+    const { problems } = signingConfig({ PRIMUS_REQUIRE_UPDATER_SIGNING: "1" });
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("PRIMUS_REQUIRE_UPDATER_SIGNING=1");
+  });
+
   it("签名配置：成对配置才签名，配一半或 PRIMUS_REQUIRE_SIGNING=1 而缺配置时报错", () => {
     expect(signingConfig({})).toEqual({ authenticode: false, updater: false, problems: [] });
     const full = {

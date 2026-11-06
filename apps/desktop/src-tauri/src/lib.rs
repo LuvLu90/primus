@@ -1,7 +1,8 @@
 //! 乾元（Primus）薄壳。目标代码量约 4000 行 Rust 以内（第 5.1 节）。
 //!
 //! 启动顺序：取令牌模式（`--secret`，无窗口）→ 提权修复模式（`--repair-data-dir`）→ 准备数据目录
-//! （第 4 章，不可写时弹修复引导）→ 写入模型配置与令牌（第 9.2、9.4 节）→ 单实例 → 主窗口。
+//! （第 4 章，不可写时弹修复引导）→ 单实例 → 安装待装的更新（有则拉起安装器并退出，第 3.6 节）→
+//! 写入模型配置与令牌（第 9.2、9.4 节）→ 主窗口 → 约 10 秒后自动检查更新。
 //! 各模块随开发计划逐步实现。
 
 mod account;
@@ -73,6 +74,25 @@ pub fn run() {
     // 最近工作区与信任状态：users/<SID>/app/workspaces.json（第 15.1 节）
     let workspaces_dir = data_paths.app_dir();
 
+    // 自动更新（第 3.6 节、ADR 0007）：设置在 users/<SID>/app/update.json，待装包在 users/<SID>/updates/；
+    // 公钥在构建时编译进来，没有公钥的构建整体禁用
+    let current_version = semver::Version::parse(env!("CARGO_PKG_VERSION"))
+        .expect("Cargo.toml 的 version 是合法的 SemVer");
+    let updater = Arc::new(
+        updater::Updater::new(
+            current_version,
+            &paths::exe_dir().unwrap_or_default(),
+            data_paths.updates_dir(),
+            &data_paths.app_dir(),
+            updater::compiled_pubkey(),
+        )
+        // --data-dir 指定的数据目录：安装后重新打开时带上，否则新版本会改用默认目录
+        .with_relaunch_data_dir(
+            (data_paths.source() == paths::DataRootSource::CommandLine)
+                .then(|| data_paths.root().to_path_buf()),
+        ),
+    );
+
     tauri::Builder::default()
         // 单实例必须最先注册：第二个实例启动时把已有主窗口带到前台（第 2.2 节）
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
@@ -84,6 +104,8 @@ pub fn run() {
         }))
         // 系统文件/文件夹对话框（dialog_pick_folder / dialog_pick_files）
         .plugin(tauri_plugin_dialog::init())
+        // 自动更新：只在 Rust 侧使用（updater.rs），capabilities 不授予 WebView 任何 updater 权限
+        .plugin(tauri_plugin_updater::Builder::new().build())
         // WebView2 用户数据放进 data\users\<SID>\webview（约束 C2，第 4.2 节），不落到 %LOCALAPPDATA%：
         // tauri.conf.json 中主窗口设 create: false，在这里按同一份配置创建并指定数据目录
         .setup({
@@ -91,6 +113,13 @@ pub fn run() {
             let sessions_dir = data_paths.sessions_dir();
             let index_db = data_paths.app_dir().join("index.db");
             move |app| {
+                // 待装的更新（第 3.6 节）：插件（含单实例）已初始化，到这里已确认是主实例；在创建窗口、写入模型配置
+                // 与拉起 Core 之前处理。版本更高时校验后经 UAC 拉起安装器并立即退出（安装器结束后以普通权限重新打开）；
+                // 已装过或无效的待装包清理掉；用户取消 UAC 时照常启动，前端再次提示
+                let updater = app.state::<Arc<updater::Updater>>().inner().clone();
+                if updater::install_on_startup(&updater) {
+                    std::process::exit(0);
+                }
                 // 模型配置：校验内置配置（将来为账号服务下发），令牌写入保险库，生成 Core 的 models.json 与默认模型。
                 // 插件（含单实例）在 setup 之前初始化，到这里已确认是主实例。
                 // 失败不阻止启动：设置页与输入框据 models_get 的 error 提示，并可用 models_refresh 重试
@@ -121,6 +150,8 @@ pub fn run() {
                 tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?
                     .data_directory(webview_dir)
                     .build()?;
+                // 主窗口起来后约 10 秒自动检查更新，之后每 24 小时一次（自动更新关闭时跳过，失败只记日志）
+                updater::start_auto_check(app.handle().clone(), updater);
                 Ok(())
             }
         })
@@ -129,6 +160,7 @@ pub fn run() {
         .manage(sessions::AppSessions::default())
         .manage(workspaces::Workspaces::new(&workspaces_dir))
         .manage(model_config)
+        .manage(updater)
         .invoke_handler(tauri::generate_handler![
             commands::window_set_bounds,
             commands::open_external,
@@ -153,6 +185,11 @@ pub fn run() {
             commands::models_get,
             commands::models_refresh,
             commands::models_set_default,
+            commands::update_status,
+            commands::update_watch,
+            commands::update_check,
+            commands::update_settings_set,
+            commands::update_install,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build Primus")

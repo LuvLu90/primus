@@ -118,6 +118,35 @@ export interface FsEntry {
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 
+/** 更新通道（第 18 章“更新”分组） */
+export type UpdateChannel = "stable" | "beta";
+
+/** 更新设置（`users/<SID>/app/update.json`）：自动更新默认开、稳定版 */
+export interface UpdateSettings {
+  autoUpdate: boolean;
+  channel: UpdateChannel;
+}
+
+export type UpdatePhase = "idle" | "checking" | "downloading" | "installing";
+
+/** `update_status` 的返回值，也是 `update_watch` 推送的内容（第 3.6 节、ADR 0007） */
+export interface UpdateStatus {
+  currentVersion: string;
+  /** 是否可以自动更新：发布构建编译进了更新公钥、Windows、架构受支持 */
+  available: boolean;
+  installKind: "msi" | "nsis";
+  settings: UpdateSettings;
+  phase: UpdatePhase;
+  /** 下载进度（字节）；不在下载时为 null */
+  progress: { downloaded: number; total: number | null } | null;
+  /** 已下载并校验、等待安装的版本 */
+  pending: { version: string; notes: string | null } | null;
+  /** 上次检查完成的时间（毫秒） */
+  lastCheck: number | null;
+  /** 上次检查或下载失败的原因；自动检查失败不弹提示，只在设置页显示 */
+  lastError: string | null;
+}
+
 export interface Platform {
   appInfo(): Promise<AppInfo>;
 
@@ -191,13 +220,29 @@ export interface Platform {
   storageUsage(): Promise<Record<string, number>>;
   storageClean(category: string): Promise<void>;
   diagnosticsExport(options?: Record<string, unknown>): Promise<string>;
-  updateCheck(channel?: string): Promise<unknown>;
-  updateInstall(): Promise<void>;
+  /** 自动更新状态 */
+  updateStatus(): Promise<UpdateStatus>;
+  /** 订阅更新状态（注册后立即推送一次）；再次调用替换旧的订阅 */
+  updateWatch(onChange: (status: UpdateStatus) => void): Promise<void>;
+  /** 立即检查；有更高版本时下载并校验，返回检查后的状态。`channel` 只用于本次检查 */
+  updateCheck(channel?: UpdateChannel): Promise<UpdateStatus>;
+  /** 修改更新设置（自动更新开关、通道） */
+  updateSettingsSet(patch: Partial<UpdateSettings>): Promise<UpdateStatus>;
+  /**
+   * 立即重启并安装已下载的更新（成功时 App 退出）。有运行中的 Agent 时以 code `busy` 拒绝，
+   * 用户确认后带 `force` 再调；用户取消管理员授权时以 code `cancelled` 拒绝（更新包保留）
+   */
+  updateInstall(force?: boolean): Promise<void>;
   logWrite(level: LogLevel, message: string): Promise<void>;
 }
 
 /** 账号命令错误码：功能尚未开放（内置账号阶段的登录 / 登出） */
 export const AUTH_NOT_AVAILABLE = "notAvailable";
+
+/** 更新命令错误码：有正在运行的 Agent，需要用户确认后带 force 重试 */
+export const UPDATE_BUSY = "busy";
+/** 更新命令错误码：用户取消了管理员授权（更新包保留，下次启动再装） */
+export const UPDATE_CANCELLED = "cancelled";
 
 /** 会话命令错误码：会话的内核未运行（重启失败、因进程上限被淘汰或已自行退出），需重启内核 */
 export const CORE_NOT_RUNNING = "coreNotRunning";
@@ -260,7 +305,10 @@ export const COMMANDS = {
   storageUsage: "storage_usage",
   storageClean: "storage_clean",
   diagnosticsExport: "diagnostics_export",
+  updateStatus: "update_status",
+  updateWatch: "update_watch",
   updateCheck: "update_check",
+  updateSettingsSet: "update_settings_set",
   updateInstall: "update_install",
   logWrite: "log_write",
 } as const satisfies Record<keyof Platform, string>;
