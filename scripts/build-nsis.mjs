@@ -164,6 +164,7 @@ async function main() {
     const problem = checkExeStamp(stamp, version, statSync(exe), {
       arch,
       remedy: `请先运行 pnpm build:msi --arch ${arch}`,
+      pubkey: process.env.TAURI_SIGNING_PUBLIC_KEY,
     });
     if (problem) fail(problem);
     const manifestPath = join(coreDir, "manifest.json");

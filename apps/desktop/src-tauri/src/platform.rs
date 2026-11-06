@@ -169,8 +169,9 @@ mod windows_impl {
     use std::ptr::{null, null_mut};
 
     use windows_sys::Win32::Foundation::{
-        CloseHandle, DuplicateHandle, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, ERROR_CANCELLED,
-        ERROR_SUCCESS, GetLastError, HANDLE, INVALID_HANDLE_VALUE, LocalFree, WIN32_ERROR,
+        CloseHandle, DUPLICATE_SAME_ACCESS, DuplicateHandle, ERROR_ACCESS_DENIED,
+        ERROR_ALREADY_EXISTS, ERROR_CANCELLED, ERROR_SUCCESS, GetLastError, HANDLE,
+        INVALID_HANDLE_VALUE, LocalFree, WIN32_ERROR,
     };
     use windows_sys::Win32::Security::Authorization::{
         ConvertSidToStringSidW, EXPLICIT_ACCESS_W, GRANT_ACCESS, GetSecurityInfo, SE_FILE_OBJECT,
@@ -750,11 +751,15 @@ mod windows_impl {
     /// PowerShell，等安装器结束后重新打开 `relaunch`，保证新版本以普通权限运行（不让提权的安装器直接启动 App）。
     /// 返回 `Ok(Some(relaunch_scheduled))` 表示安装器已运行（调用方应退出），用户取消 UAC 返回 `Ok(None)`。
     /// 无法安排安装后自动重新打开时 `relaunch_scheduled` 为 false，调用方据此提示用户安装完成后手动打开。
+    ///
+    /// `hold` 是已验签安装包的只共享读句柄：复制一份可继承句柄交给等待安装器的 PowerShell，让它一直持有到安装器
+    /// 结束，Primus 退出后同一用户的非提权进程也无法在 msiexec 读取期间替换、改名或删除安装包。
     pub(crate) fn launch_installer(
         program: &Path,
         params: &str,
         relaunch: &Path,
         data_dir: Option<&Path>,
+        hold: &std::fs::File,
     ) -> io::Result<Option<bool>> {
         let file = wide(program);
         let verb = wide("runas");
@@ -783,7 +788,7 @@ mod windows_impl {
             return Ok(Some(false));
         }
         let process = OwnedHandle(info.hProcess);
-        match spawn_relauncher(&process, relaunch, data_dir) {
+        match spawn_relauncher(&process, relaunch, data_dir, hold) {
             Ok(()) => Ok(Some(true)),
             Err(e) => {
                 eprintln!("无法安排安装后重新打开 Primus：{e}");
@@ -803,8 +808,28 @@ mod windows_impl {
         process: &OwnedHandle,
         relaunch: &Path,
         data_dir: Option<&Path>,
+        hold: &std::fs::File,
     ) -> io::Result<()> {
+        use std::os::windows::io::AsRawHandle;
         use std::os::windows::process::CommandExt;
+        // 安装包句柄的可继承副本：PowerShell 继承后持有到它退出（即安装器结束之后），本进程的副本在函数返回时关闭
+        let mut held: HANDLE = null_mut();
+        // SAFETY: 源句柄由 hold 持有、有效；当前进程伪句柄无需关闭
+        let ok = unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                hold.as_raw_handle() as HANDLE,
+                GetCurrentProcess(),
+                &mut held,
+                0,
+                1,
+                DUPLICATE_SAME_ACCESS,
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let _held = OwnedHandle(held);
         let mut dup: HANDLE = null_mut();
         // SAFETY: 源句柄有效；当前进程伪句柄无需关闭
         let ok = unsafe {
@@ -1106,6 +1131,7 @@ mod fallback_impl {
         _params: &str,
         _relaunch: &Path,
         _data_dir: Option<&Path>,
+        _hold: &std::fs::File,
     ) -> io::Result<Option<bool>> {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,

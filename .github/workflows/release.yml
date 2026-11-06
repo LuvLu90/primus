@@ -394,6 +394,25 @@ jobs:
 
           if gh release view "$RELEASE_TAG" --json id >/dev/null 2>&1; then
             echo "Release ${RELEASE_TAG} 已存在：更新附件（prerelease=${PRERELEASE}）"
+            # 自动更新清单（update-feed）已指向本标签的安装包时不能原地重建：--clobber 换掉安装包后、清单更新前，
+            # 客户端会拿旧清单里的签名校验新安装包而拒绝更新（中途失败则一直如此）。请升版本号重新发布
+            if gh release view update-feed --json id >/dev/null 2>&1; then
+              feed_assets="$(gh release view update-feed --json assets --jq '.assets[].name')"
+              mkdir -p feed-check
+              for ch in stable.json beta.json; do
+                grep -Fxq -- "$ch" <<<"$feed_assets" || continue
+                gh release download update-feed --pattern "$ch" --dir feed-check --clobber
+                # jq -e：0 = 引用了本标签，1 = 没有引用，其他 = 清单读不出（无法确认，按引用处理）
+                rc=0
+                jq -e --arg tag "$RELEASE_TAG" \
+                  '[.platforms[]?.url // empty | select(contains("/releases/download/" + ($tag | @uri) + "/"))] | length > 0' \
+                  "feed-check/$ch" >/dev/null || rc=$?
+                if [[ $rc -ne 1 ]]; then
+                  echo "::error::update-feed/${ch} 正在引用 ${RELEASE_TAG} 的安装包（或清单无法解析），不能原地重建（客户端会因签名不符拒绝更新），请升版本号后发布新标签"
+                  exit 1
+                fi
+              done
+            fi
             existing="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')"
             # --clobber 先删旧附件再上传：先备份同名旧附件，上传失败时整组回滚，避免 Release 缺安装包
             mkdir -p backup

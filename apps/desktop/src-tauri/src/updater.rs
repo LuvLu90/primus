@@ -412,13 +412,13 @@ pub(crate) struct UpdateStatus {
     pub(crate) last_error: Option<String>,
 }
 
-/// 校验通过、等待交给安装器的安装包。Windows 上持有一个拒绝写入与删除的句柄，直到安装器拉起之后才释放，
-/// 缩小“校验之后、安装器读取之前被替换”的窗口。
+/// 校验通过、等待交给安装器的安装包。Windows 上持有一个只共享读的句柄（拒绝写入、改名与删除）；
+/// 拉起安装器时把它的可继承副本交给等待安装器结束的 PowerShell，保证从验签到安装器读取结束，安装包都不能被替换。
 pub(crate) struct VerifiedPackage {
     pub(crate) path: PathBuf,
     pub(crate) kind: InstallKind,
     pub(crate) version: String,
-    _lock: File,
+    lock: File,
 }
 
 struct Runtime {
@@ -902,7 +902,7 @@ impl Updater {
             path,
             kind: pending.kind,
             version: pending.version,
-            _lock: lock_file,
+            lock: lock_file,
         })
     }
 
@@ -983,12 +983,13 @@ pub(crate) fn launch(
         &command.params,
         &relaunch,
         updater.relaunch_data_dir.as_deref(),
+        &package.lock,
     ) {
         Ok(Some(relaunch_scheduled)) => {
             updater.record_attempt();
             let version = package.version.clone();
-            drop(package);
             if !relaunch_scheduled {
+                // 没有等待安装器的 PowerShell 接手安装包句柄：至少在模态提示框关闭前仍由本进程持有
                 updater.log("无法安排安装后自动重新打开 Primus，已提示用户手动打开");
                 crate::platform::show_info(&format!(
                     "Primus {} 正在安装。安装完成后请手动打开 Primus。",
