@@ -126,7 +126,8 @@ export function isProtectedPath(
   const norm = (p: string) => (platform === "win32" ? p.toLowerCase() : p);
   const parts = norm(abs).split(/[\\/]+/);
   if (parts.includes(".git")) return true;
-  if ((parts.at(-1) ?? "").startsWith(".env")) return true;
+  // `.env*` 文件，以及 `.env*` 目录里的任何文件（例如 `.env/secret.txt`）
+  if (parts.some((part) => part.startsWith(".env"))) return true;
   const within = (root: string) => {
     const rel = relative(norm(resolve(root)), norm(abs));
     return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));

@@ -141,6 +141,20 @@ describe("primus-guard 权限判断", () => {
     expect(isProtectedPath(chat, env, "linux", "/home/u")).toBe(false);
     expect(isProtectedPath(`${chat}/.env`, env, "linux", "/home/u")).toBe(true);
     expect(isProtectedPath(`${chat}/.git/config`, env, "linux", "/home/u")).toBe(true);
+    expect(isProtectedPath(`${chat}/.env/secret.txt`, env, "linux", "/home/u")).toBe(true);
+    expect(isProtectedPath("/work/proj/.env.d/a/b.txt", env, "linux", "/home/u")).toBe(true);
+    expect(
+      decide("ask", { toolName: "read", input: { path: ".env/secret.txt" } }, chat, undefined, ge),
+    ).toBe("ask");
+    expect(
+      decide(
+        "edit",
+        { toolName: "write", input: { path: ".env/secret.txt" } },
+        chat,
+        undefined,
+        ge,
+      ),
+    ).toBe("deny");
     expect(
       isProtectedPath("/opt/Primus/data/users/S-1/core/models.json", env, "linux", "/home/u"),
     ).toBe(true);

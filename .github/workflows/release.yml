@@ -549,7 +549,12 @@ jobs:
             echo "::error::上传 update-feed 清单失败，尝试恢复旧清单"
             restore=()
             for name in "${written[@]}"; do
-              [[ -f "feed-old/${name}" ]] && restore+=("feed-old/${name}")
+              if [[ -f "feed-old/${name}" ]]; then
+                restore+=("feed-old/${name}")
+              elif gh release view "$feed" --json assets --jq '.assets[].name' | grep -Fxq -- "$name"; then
+                # 上传前没有旧清单：删掉这次传上去的新清单，不让 stable.json 与 beta.json 只更新一半
+                gh release delete-asset "$feed" "$name" --yes || echo "::error::删除新清单 ${name} 失败"
+              fi
             done
             if [[ ${#restore[@]} -gt 0 ]] && ! gh release upload "$feed" "${restore[@]}" --clobber; then
               echo "::error::恢复旧清单也失败了，请手动检查 update-feed：${restore[*]}"
