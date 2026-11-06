@@ -262,12 +262,16 @@ impl DataPaths {
     pub(crate) fn tmp_dir(&self) -> PathBuf {
         self.user_dir().join("tmp")
     }
+    /// `users/<SID>/updates`：自动更新的待装包与 pending.json（ADR 0007）
+    pub(crate) fn updates_dir(&self) -> PathBuf {
+        self.user_dir().join("updates")
+    }
 
     /// 启动时需要存在的全部目录（`users/<SID>` 本身除外，它单独创建并设置 ACL）。
     fn shared_dirs(&self) -> [PathBuf; 2] {
         [self.logs_dir(), self.crash_dir()]
     }
-    fn user_subdirs(&self) -> [PathBuf; 8] {
+    fn user_subdirs(&self) -> [PathBuf; 9] {
         [
             self.app_dir(),
             self.core_dir(),
@@ -277,6 +281,7 @@ impl DataPaths {
             self.artifacts_dir(),
             self.webview_dir(),
             self.tmp_dir(),
+            self.updates_dir(),
         ]
     }
 }
@@ -586,6 +591,7 @@ mod tests {
         assert_eq!(p.artifacts_dir(), user.join("artifacts"));
         assert_eq!(p.webview_dir(), user.join("webview"));
         assert_eq!(p.tmp_dir(), user.join("tmp"));
+        assert_eq!(p.updates_dir(), user.join("updates"));
     }
 
     #[test]

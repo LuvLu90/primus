@@ -16,6 +16,8 @@ import {
   PlatformError,
   type SessionIndexEvent,
   type SessionSummary,
+  UPDATE_BUSY,
+  type UpdateStatus,
   type WorkspaceInfo,
 } from "../types";
 import { promptScenario } from "./scenario";
@@ -34,6 +36,11 @@ export interface MockOptions {
   dropBatch?: (seq: number, records: readonly CoreRecord[]) => boolean;
   /** 模拟内核卡死：返回 true 的命令不回 response（测试超时） */
   stallCommand?: (cmd: RpcCommand) => boolean;
+  /**
+   * 模拟更新源上的最新版本：比当前版本（0.0.0-mock）新时，“立即检查”会经过下载进度后得到待装版本。
+   * 默认没有新版本（检查结果为已是最新）
+   */
+  latestVersion?: string;
 }
 
 /** 浏览器预览的内置账号与模型（与薄壳内置配置同形，模型只是示意，不连接任何端点） */
@@ -193,6 +200,23 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
     error: null,
   });
   let settings: Record<string, unknown> = {};
+  // 自动更新（浏览器预览）：可用、默认自动更新开；有 latestVersion 时检查后模拟下载完成
+  let update: UpdateStatus = {
+    currentVersion: "0.0.0-mock",
+    available: true,
+    installKind: "msi",
+    settings: { autoUpdate: true, channel: "stable" },
+    phase: "idle",
+    progress: null,
+    pending: null,
+    lastCheck: null,
+    lastError: null,
+  };
+  let updateListener: ((status: UpdateStatus) => void) | undefined;
+  const setUpdate = (patch: Partial<UpdateStatus>) => {
+    update = { ...update, ...patch };
+    updateListener?.(structuredClone(update));
+  };
   let nextSession = 1;
   let nextTerminal = 1;
 
@@ -567,8 +591,37 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
     storageUsage: async () => ({ sessions: 0, logs: 0, cache: 0 }),
     storageClean: async () => {},
     diagnosticsExport: () => notAvailable("导出诊断包"),
-    updateCheck: async () => ({ available: false }),
-    updateInstall: () => notAvailable("自动更新"),
+    updateStatus: async () => structuredClone(update),
+    updateWatch: async (onChange) => {
+      updateListener = onChange;
+      onChange(structuredClone(update));
+    },
+    updateCheck: async () => {
+      const latest = options.latestVersion;
+      // 与薄壳一致：只有按 SemVer 严格高于当前版本才算更新
+      if (
+        latest &&
+        compareSemver(latest, update.currentVersion) > 0 &&
+        update.pending?.version !== latest
+      ) {
+        setUpdate({ phase: "downloading", progress: { downloaded: 0, total: 100 } });
+        setUpdate({ progress: { downloaded: 100, total: 100 } });
+        setUpdate({ pending: { version: latest, notes: null } });
+      }
+      setUpdate({ phase: "idle", progress: null, lastCheck: now(), lastError: null });
+      return structuredClone(update);
+    },
+    updateSettingsSet: async (patch) => {
+      setUpdate({ settings: { ...update.settings, ...patch } });
+      return structuredClone(update);
+    },
+    updateInstall: async (force) => {
+      if (!update.pending) throw new PlatformError("没有已下载的更新", "noPending");
+      const running = [...sessions.values()].some((s) => s.streaming);
+      if (running && !force)
+        throw new PlatformError("有正在运行的 Agent，更新会停止它们", UPDATE_BUSY);
+      return notAvailable("重启安装更新");
+    },
     logWrite: async (level, message) => {
       console[level === "debug" ? "log" : level](`[mock] ${message}`);
     },
@@ -590,6 +643,38 @@ function keptOnAbort(queue: readonly Queued[]): Queued[] {
     prefix &&= opening;
     return prefix;
   });
+}
+
+/**
+ * 按 SemVer 2.0 比较两个版本（可带前缀 v）：大于返回正数、等于 0、小于负数。解析不了的版本视为最低。
+ * 与薄壳 `updater::is_newer`（semver crate）的排序一致：预发布低于正式版，预发布标识逐段比较，数字段按数值比较。
+ */
+export function compareSemver(a: string, b: string): number {
+  const parse = (v: string) => {
+    const m = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(v.trim());
+    return m
+      ? { core: [Number(m[1]), Number(m[2]), Number(m[3])], pre: m[4] ? m[4].split(".") : [] }
+      : undefined;
+  };
+  const x = parse(a);
+  const y = parse(b);
+  if (!x || !y) return x ? 1 : y ? -1 : 0;
+  for (let i = 0; i < 3; i++) {
+    const d = (x.core[i] ?? 0) - (y.core[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  if (x.pre.length === 0 || y.pre.length === 0) return y.pre.length - x.pre.length;
+  for (let i = 0; i < Math.min(x.pre.length, y.pre.length); i++) {
+    const p = x.pre[i] ?? "";
+    const q = y.pre[i] ?? "";
+    if (p === q) continue;
+    const pn = /^\d+$/.test(p);
+    const qn = /^\d+$/.test(q);
+    if (pn && qn) return Number(p) - Number(q);
+    if (pn !== qn) return pn ? -1 : 1;
+    return p < q ? -1 : 1;
+  }
+  return x.pre.length - y.pre.length;
 }
 
 /**

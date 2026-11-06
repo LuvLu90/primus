@@ -229,7 +229,7 @@ describe("build-nsis", () => {
         if (
           k.startsWith("PRIMUS_SIGN") ||
           k.startsWith("TAURI_SIGNING") ||
-          k === "PRIMUS_REQUIRE_SIGNING"
+          k.startsWith("PRIMUS_REQUIRE_")
         )
           delete clean[k];
       const half = spawnSync(process.execPath, [SCRIPT, "--dry-run", "--arch", HOST_ARCH], {
@@ -256,6 +256,25 @@ describe("build-nsis", () => {
       expect(full.status).toBe(0);
       expect(full.stdout).toMatch(/signtool-test verify \/pa \/all \S*-setup\.exe/);
       expect(full.stdout).toMatch(/signtool-test verify \/pa \/all \S*Primus\.exe/);
+      expect(full.stdout).not.toContain("tauri signer sign");
+      // updater 密钥：对 setup.exe 生成 .sig（自动更新，ADR 0007）；要求 updater 签名而未配置时拒绝
+      const updater = spawnSync(process.execPath, [SCRIPT, "--dry-run", "--arch", HOST_ARCH], {
+        encoding: "utf8",
+        env: {
+          ...clean,
+          TAURI_SIGNING_PRIVATE_KEY: "k",
+          TAURI_SIGNING_PUBLIC_KEY: "p",
+          PRIMUS_REQUIRE_UPDATER_SIGNING: "1",
+        },
+      });
+      expect(updater.status).toBe(0);
+      expect(updater.stdout).toMatch(/tauri signer sign --app-version \S+ \S*-setup\.exe/);
+      const missing = spawnSync(process.execPath, [SCRIPT, "--dry-run", "--arch", HOST_ARCH], {
+        encoding: "utf8",
+        env: { ...clean, PRIMUS_REQUIRE_UPDATER_SIGNING: "1" },
+      });
+      expect(missing.status).toBe(1);
+      expect(missing.stderr).toContain("PRIMUS_REQUIRE_UPDATER_SIGNING=1");
     },
   );
 });

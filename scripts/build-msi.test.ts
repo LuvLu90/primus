@@ -19,6 +19,7 @@ import {
   isTrustedOpenJsSignature,
   msiFileName,
   msiProductVersion,
+  pubkeyFingerprint,
   resolveSigntool,
   signingConfig,
   signtoolArgs,
@@ -351,6 +352,18 @@ describe("build-msi", () => {
     );
   });
 
+  it("签名配置：PRIMUS_REQUIRE_UPDATER_SIGNING=1 时必须配置 updater 密钥（证书可以没有）", () => {
+    const keys = { TAURI_SIGNING_PRIVATE_KEY: "k", TAURI_SIGNING_PUBLIC_KEY: "p" };
+    expect(signingConfig({ PRIMUS_REQUIRE_UPDATER_SIGNING: "1", ...keys })).toEqual({
+      authenticode: false,
+      updater: true,
+      problems: [],
+    });
+    const { problems } = signingConfig({ PRIMUS_REQUIRE_UPDATER_SIGNING: "1" });
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toContain("PRIMUS_REQUIRE_UPDATER_SIGNING=1");
+  });
+
   it("签名配置：成对配置才签名，配一半或 PRIMUS_REQUIRE_SIGNING=1 而缺配置时报错", () => {
     expect(signingConfig({})).toEqual({ authenticode: false, updater: false, problems: [] });
     const full = {
@@ -674,7 +687,13 @@ describe("build-msi", () => {
   it("--skip-tauri 校验已有 Primus.exe 的构建记录", () => {
     const stat = { size: 1234, mtimeMs: 1700000000123.7 };
     const stamp = exeStamp("1.2.3", stat);
-    expect(stamp).toEqual({ version: "1.2.3", arch: "x64", size: 1234, mtimeMs: 1700000000123 });
+    expect(stamp).toEqual({
+      version: "1.2.3",
+      arch: "x64",
+      size: 1234,
+      mtimeMs: 1700000000123,
+      updaterPubkey: null,
+    });
     expect(checkExeStamp(stamp, "1.2.3", stat)).toBeNull();
     // 记录缺失
     expect(checkExeStamp(null, "1.2.3", stat)).toContain("未找到构建记录");
@@ -696,5 +715,29 @@ describe("build-msi", () => {
     expect(
       checkExeStamp(null, "1.2.3", stat, { arch: "arm64", remedy: "请先运行 pnpm build:msi" }),
     ).toContain("请先运行 pnpm build:msi");
+  });
+
+  it("复用 Primus.exe 时校验内置的自动更新公钥与签名公钥一致", () => {
+    const stat = { size: 1234, mtimeMs: 1700000000123 };
+    const keyA = "dW50cnVzdGVkIGNvbW1lbnQ6IGtleSBB";
+    const keyB = "dW50cnVzdGVkIGNvbW1lbnQ6IGtleSBC";
+    expect(pubkeyFingerprint(keyA)).toMatch(/^[0-9a-f]{16}$/);
+    expect(pubkeyFingerprint(` ${keyA}\n`)).toBe(pubkeyFingerprint(keyA));
+    expect(pubkeyFingerprint("  ")).toBeNull();
+    expect(pubkeyFingerprint(undefined)).toBeNull();
+    const withA = exeStamp("1.2.3", stat, "x64", keyA);
+    const withoutKey = exeStamp("1.2.3", stat, "x64", "");
+    // 同一公钥：可以复用
+    expect(checkExeStamp(withA, "1.2.3", stat, { pubkey: keyA })).toBeNull();
+    // 编译时没配公钥、打包时配了：拒绝（装上后无法自动更新）
+    expect(checkExeStamp(withoutKey, "1.2.3", stat, { pubkey: keyA })).toContain("没有配置");
+    // 公钥换了：拒绝
+    expect(checkExeStamp(withA, "1.2.3", stat, { pubkey: keyB })).toContain("不一致");
+    // 早期记录没有该字段：配置了公钥时无法确认，拒绝；没配公钥时不要求
+    const { updaterPubkey: _old, ...legacy } = withA;
+    expect(checkExeStamp(legacy, "1.2.3", stat, { pubkey: keyA })).toContain("没有记录");
+    expect(checkExeStamp(legacy, "1.2.3", stat)).toBeNull();
+    // 这次不签 .sig：不论 exe 是否内置公钥都可复用
+    expect(checkExeStamp(withA, "1.2.3", stat)).toBeNull();
   });
 });

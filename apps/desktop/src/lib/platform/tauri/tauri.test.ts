@@ -60,6 +60,32 @@ describe("Tauri 平台实现", () => {
     expect(error).toMatchObject({ code: CORE_NOT_RUNNING, message: "会话的内核未运行" });
   });
 
+  it("更新命令的参数：缺省值传 null / false，状态经 Channel 推送", async () => {
+    const p = createTauriPlatform();
+    await p.updateCheck();
+    expect(invoke).toHaveBeenLastCalledWith("update_check", { channel: null });
+    await p.updateCheck("beta");
+    expect(invoke).toHaveBeenLastCalledWith("update_check", { channel: "beta" });
+    await p.updateSettingsSet({ autoUpdate: false });
+    expect(invoke).toHaveBeenLastCalledWith("update_settings_set", {
+      autoUpdate: false,
+      channel: null,
+    });
+    await p.updateInstall();
+    expect(invoke).toHaveBeenLastCalledWith("update_install", { force: false });
+    await p.updateInstall(true);
+    expect(invoke).toHaveBeenLastCalledWith("update_install", { force: true });
+    const onChange = vi.fn();
+    await p.updateWatch(onChange);
+    const [name, args] = invoke.mock.calls.at(-1) as [
+      string,
+      { onEvent: InstanceType<typeof FakeChannel<unknown>> },
+    ];
+    expect(name).toBe("update_watch");
+    args.onEvent.onmessage({ phase: "idle" });
+    expect(onChange).toHaveBeenCalledWith({ phase: "idle" });
+  });
+
   it("app_info 标记运行环境为 tauri", async () => {
     invoke.mockResolvedValueOnce({ appVersion: "0.1.0" });
     await expect(createTauriPlatform().appInfo()).resolves.toMatchObject({

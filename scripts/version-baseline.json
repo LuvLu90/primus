@@ -38,7 +38,7 @@
   "cargo": {
     "tauri": "2.12.5",
     "tauri-build": "2.7.4",
-    "tauri-plugin-updater": "2.14.0",
+    "tauri-plugin-updater": "2.14.1",
     "tauri-plugin-single-instance": "2.5.4",
     "tauri-plugin-notification": "2.7.0",
     "tauri-plugin-dialog": "2.8.3",
@@ -52,6 +52,9 @@
     "notify": "8.2.0",
     "windows": "0.62.2",
     "windows-sys": "0.61.2",
-    "gix": "0.90.0"
+    "gix": "0.90.0",
+    "minisign-verify": "0.3.0",
+    "base64": "0.23.1",
+    "semver": "1.0.28"
   }
 }

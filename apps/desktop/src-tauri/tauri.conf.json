@@ -32,6 +32,13 @@
       "devCsp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": [],
+      "requireSignedVersion": true
+    }
+  },
   "bundle": {
     "active": false,
     "targets": ["nsis"],

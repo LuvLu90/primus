@@ -41,7 +41,8 @@
 //                              updater 签名私钥（前者为私钥内容，后者为私钥文件路径；tauri signer sign 读取）
 //   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  updater 私钥口令
 //   TAURI_SIGNING_PUBLIC_KEY   updater 公钥（与 tauri.conf.json plugins.updater.pubkey 同格式），校验 .sig 用
-//   PRIMUS_REQUIRE_SIGNING=1   证书与 updater 密钥必须都配置齐，否则拒绝构建（发布与 CI 签名演练用）
+//   PRIMUS_REQUIRE_SIGNING=1   证书与 updater 密钥必须都配置齐，否则拒绝构建（CI 签名演练与正式证书发布用）
+//   PRIMUS_REQUIRE_UPDATER_SIGNING=1  updater 密钥必须配置齐（每次发布都要 .sig 供自动更新，ADR 0007；release.yml 设置）
 // 证书指纹与时间戳服务器须成对配置、updater 私钥须配公钥，配一半拒绝构建；都不配时跳过签名并提示（开发与 PR 构建）。
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -254,9 +255,24 @@ export function checkRuntimePlatform(manifest, arch) {
 /** 构建记录文件名（写在 Primus.exe 旁边，供 --skip-tauri 与 build-nsis.mjs 校验 exe 的版本与架构） */
 export const EXE_STAMP = "Primus.exe.build.json";
 
-/** 由 exe 的文件信息生成构建记录 */
-export function exeStamp(version, stat, arch = "x64") {
-  return { version, arch, size: stat.size, mtimeMs: Math.trunc(stat.mtimeMs) };
+/**
+ * 编译进 Primus.exe 的自动更新公钥的指纹（SHA-256 前 16 位十六进制）；没有配置公钥为 null。
+ * build.rs 在编译时从 TAURI_SIGNING_PUBLIC_KEY 注入公钥，空串视为没有（与 updater.rs 的 compiled_pubkey 一致）。
+ */
+export function pubkeyFingerprint(pubkey) {
+  const key = typeof pubkey === "string" ? pubkey.trim() : "";
+  return key ? createHash("sha256").update(key).digest("hex").slice(0, 16) : null;
+}
+
+/** 由 exe 的文件信息生成构建记录；pubkey 为编译这个 exe 时的 TAURI_SIGNING_PUBLIC_KEY */
+export function exeStamp(version, stat, arch = "x64", pubkey = undefined) {
+  return {
+    version,
+    arch,
+    size: stat.size,
+    mtimeMs: Math.trunc(stat.mtimeMs),
+    updaterPubkey: pubkeyFingerprint(pubkey),
+  };
 }
 
 /**
@@ -268,7 +284,7 @@ export function checkExeStamp(
   stamp,
   version,
   stat,
-  { arch = "x64", remedy = "请去掉 --skip-tauri 重新编译" } = {},
+  { arch = "x64", remedy = "请去掉 --skip-tauri 重新编译", pubkey = undefined } = {},
 ) {
   if (!stamp) return `未找到构建记录 ${EXE_STAMP}，无法确认 Primus.exe 的版本，${remedy}`;
   if (stamp.version !== version)
@@ -279,6 +295,17 @@ export function checkExeStamp(
   const now = exeStamp(version, stat, arch);
   if (stamp.size !== now.size || stamp.mtimeMs !== now.mtimeMs)
     return `Primus.exe 在上次构建后被其他方式重新生成（大小或修改时间与 ${EXE_STAMP} 不符），版本无法确认，${remedy}`;
+  // 自动更新公钥：exe 内置的公钥必须与这次给安装包签 .sig 的公钥一致，否则装上后无法检查或安装更新。
+  // 这次没有配置公钥（不生成 .sig）时不要求；早期记录没有该字段，无法确认，配置了公钥时拒绝复用
+  const want = pubkeyFingerprint(pubkey);
+  if (want !== null) {
+    if (!("updaterPubkey" in stamp))
+      return `${EXE_STAMP} 没有记录 Primus.exe 内置的自动更新公钥，无法确认与 TAURI_SIGNING_PUBLIC_KEY 一致，${remedy}`;
+    if (stamp.updaterPubkey !== want)
+      return stamp.updaterPubkey === null
+        ? `已有 Primus.exe 编译时没有配置 TAURI_SIGNING_PUBLIC_KEY（未内置自动更新公钥），装上后无法自动更新，${remedy}`
+        : `已有 Primus.exe 内置的自动更新公钥与当前 TAURI_SIGNING_PUBLIC_KEY 不一致，${remedy}`;
+  }
   return null;
 }
 
@@ -298,7 +325,7 @@ export function signtoolVerifyArgs(file) {
 /**
  * 签名配置（第 3.3.4 节）：证书指纹与时间戳服务器成对配置才签 Authenticode；updater 私钥（内容或路径二选一）
  * 须同时给公钥，生成 .sig 后立即校验。配一半一律视为配置错误（problems 非空），免得发布出半签名的安装包；
- * PRIMUS_REQUIRE_SIGNING=1 时两类签名都必须配置。
+ * PRIMUS_REQUIRE_SIGNING=1 时两类签名都必须配置，PRIMUS_REQUIRE_UPDATER_SIGNING=1 时 updater 签名必须配置。
  */
 export function signingConfig(env = process.env) {
   const problems = [];
@@ -319,6 +346,10 @@ export function signingConfig(env = process.env) {
   const updater = Boolean((keyValue || keyPath) && pubkey);
   if (env.PRIMUS_REQUIRE_SIGNING === "1" && !(authenticode && updater))
     problems.push("PRIMUS_REQUIRE_SIGNING=1 要求同时配置代码签名证书与 updater 签名密钥");
+  if (env.PRIMUS_REQUIRE_UPDATER_SIGNING === "1" && !updater)
+    problems.push(
+      "PRIMUS_REQUIRE_UPDATER_SIGNING=1 要求配置 updater 签名密钥（TAURI_SIGNING_PRIVATE_KEY 与 TAURI_SIGNING_PUBLIC_KEY）：自动更新需要每个安装包的 .sig",
+    );
   return { authenticode, updater, problems };
 }
 
@@ -559,9 +590,15 @@ async function main() {
   const exe = join(appDir, "Primus.exe");
   const stampFile = join(appDir, EXE_STAMP);
   if (!dryRun && !existsSync(exe)) fail(`未找到 ${exe}`);
+  // 复用已编译的 exe 时沿用记录里的公钥指纹（exe 内置的是编译那次的公钥，与这次的环境变量无关）
+  let reusedStamp = null;
   if (args["skip-tauri"] && !dryRun) {
     const stamp = existsSync(stampFile) ? JSON.parse(readFileSync(stampFile, "utf8")) : null;
-    const problem = checkExeStamp(stamp, version, statSync(exe), { arch });
+    reusedStamp = stamp;
+    const problem = checkExeStamp(stamp, version, statSync(exe), {
+      arch,
+      pubkey: process.env.TAURI_SIGNING_PUBLIC_KEY,
+    });
     if (problem) fail(problem);
   }
 
@@ -573,8 +610,15 @@ async function main() {
       "\n· 未配置 PRIMUS_SIGN_CERT_SHA1 / PRIMUS_SIGN_TIMESTAMP_URL，跳过 Primus.exe 签名",
     );
   // 签名会改写 exe，签名之后再记录（供下次 --skip-tauri 校验）
-  if (!dryRun)
-    writeFileSync(stampFile, `${JSON.stringify(exeStamp(version, statSync(exe), arch))}\n`);
+  if (!dryRun) {
+    const record = exeStamp(version, statSync(exe), arch, process.env.TAURI_SIGNING_PUBLIC_KEY);
+    if (reusedStamp) {
+      // 早期记录没有公钥字段：继续留空，不把这次的环境变量当成 exe 内置的公钥
+      if ("updaterPubkey" in reusedStamp) record.updaterPubkey = reusedStamp.updaterPubkey;
+      else delete record.updaterPubkey;
+    }
+    writeFileSync(stampFile, `${JSON.stringify(record)}\n`);
+  }
 
   // 3. WiX 7 构建 MSI；先删掉上次构建留下的 .sig，免得新 MSI 旁边留着旧签名
   if (!dryRun) {

@@ -6,6 +6,7 @@ import {
   hasModelId,
   hasModelLevelApiKey,
   hasOnlyAllowedApis,
+  isProviderRateLimited,
   isQuotaExhausted,
   resolveApiKey,
   smokeEnv,
@@ -140,5 +141,40 @@ describe("真实模型配置", () => {
       ),
     ).toBe(false);
     expect(isQuotaExhausted(undefined)).toBe(false);
+  });
+
+  it("智谱把限流报成 400 时识别为上游限流，其他 400 不算", () => {
+    const glm = '400 {"detail":"您的账户已达到速率限制，请您控制请求频率"}';
+    expect(errorStatus(glm)).toBe(400);
+    expect(isProviderRateLimited(glm)).toBe(true);
+    expect(isProviderRateLimited(`x API error (400): ${glm.slice(4)}`)).toBe(true);
+    expect(isProviderRateLimited('400 {"detail":"model not found"}')).toBe(false);
+    // 不是 400 的不归这里管
+    expect(isProviderRateLimited('429 {"detail":"您的账户已达到速率限制"}')).toBe(false);
+    expect(isProviderRateLimited('500 {"detail":"速率限制"}')).toBe(false);
+    expect(isProviderRateLimited(undefined)).toBe(false);
+  });
+
+  it("只提到请求频率的参数错误不算限流；异常类名前缀与转义的嵌套 JSON 也能识别", () => {
+    expect(isProviderRateLimited('400 {"detail":"参数 max_tokens 无效，与请求频率无关"}')).toBe(
+      false,
+    );
+    const prefixed = 'BadRequestError: 400 {"detail":"您的账户已达到速率限制，请您控制请求频率"}';
+    expect(errorStatus(prefixed)).toBe(400);
+    expect(isProviderRateLimited(prefixed)).toBe(true);
+    // 正文里的状态码不算
+    expect(errorStatus("BadRequestError: something 400")).toBeUndefined();
+    const nested =
+      '400 {"error":{"message":"{\\"detail\\":\\"\\u60a8\\u7684\\u8d26\\u6237\\u5df2\\u8fbe\\u5230\\u901f\\u7387\\u9650\\u5236\\"}"}}';
+    expect(isProviderRateLimited(nested)).toBe(true);
+  });
+
+  it("内置模型网关账号池暂时不可用（400）记为限流跳过", () => {
+    const pool = '400 {"detail":"all accounts are temporarily unavailable, please retry later"}';
+    expect(isProviderRateLimited(pool)).toBe(true);
+    expect(isProviderRateLimited('400 {"detail":"account disabled"}')).toBe(false);
+    expect(isProviderRateLimited('503 {"detail":"all accounts are temporarily unavailable"}')).toBe(
+      false,
+    );
   });
 });

@@ -22,7 +22,10 @@
 // 本身（临时配置的 bundle.windows.certificateThumbprint / timestampUrl）：它在改写后签 Primus.exe，再签
 // 卸载程序与 setup.exe。打包后用 signtool verify /pa /all 校验 setup.exe 与改写后的 Primus.exe。
 //
-// 输出 out/Primus_<ver>_<arch>-setup.exe 与 .sha256（.sha256 供 CI 校验，不作为 Release 附件）。
+// updater 签名（配置了 TAURI_SIGNING_PRIVATE_KEY 与 TAURI_SIGNING_PUBLIC_KEY 时，与 build-msi.mjs 同一套规则）：
+// 对交付物 setup.exe 执行 tauri signer sign --app-version <版本> 生成 .sig，随即按 updater 规则校验（自动更新，ADR 0007）。
+//
+// 输出 out/Primus_<ver>_<arch>-setup.exe、.sha256（供 CI 校验，不作为 Release 附件）与 .sig（配置了 updater 密钥时）。
 // NSIS 只能在 Windows 上构建；其他平台只能用 --dry-run 查看将要执行的命令。
 //
 // 用法：node scripts/build-nsis.mjs [--arch x64|arm64] [--out-dir <目录>] [--dry-run]
@@ -54,7 +57,9 @@ import {
   rustHostTriple,
   signingConfig,
   signtoolVerifyArgs,
+  updaterKeyFile,
 } from "./build-msi.mjs";
+import { verifyUpdaterSignature } from "./updater-signature.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const tauriDir = join(root, "apps/desktop/src-tauri");
@@ -143,8 +148,13 @@ async function main() {
   // 签名配置与 build-msi.mjs 同一套规则：配一半、或 PRIMUS_REQUIRE_SIGNING=1 而未配齐时在打包前拒绝
   const signing = signingConfig();
   if (signing.problems.length) fail(`签名配置有误：\n  ${signing.problems.join("\n  ")}`);
+  const keyFile = updaterKeyFile();
+  if (!dryRun && keyFile && !existsSync(keyFile))
+    fail(`TAURI_SIGNING_PRIVATE_KEY_PATH 指向的文件不存在：${keyFile}`);
   const signtool = signing.authenticode ? resolveSigntool() : null;
-  console.log(`签名：代码签名${signing.authenticode ? `已配置（${signtool}）` : "未配置"}`);
+  console.log(
+    `签名：代码签名${signing.authenticode ? `已配置（${signtool}）` : "未配置"}，updater 签名${signing.updater ? "已配置" : "未配置"}`,
+  );
 
   // 0. 前提：build-msi.mjs 以同一版本、同一架构编译的 Primus.exe；Core 产物、第一方扩展与同架构的内置运行时
   if (!dryRun) {
@@ -154,6 +164,7 @@ async function main() {
     const problem = checkExeStamp(stamp, version, statSync(exe), {
       arch,
       remedy: `请先运行 pnpm build:msi --arch ${arch}`,
+      pubkey: process.env.TAURI_SIGNING_PUBLIC_KEY,
     });
     if (problem) fail(problem);
     const manifestPath = join(coreDir, "manifest.json");
@@ -214,6 +225,8 @@ async function main() {
       fail(e.message);
     }
     mkdirSync(outDir, { recursive: true });
+    // 先删掉上次留下的 .sig，免得新安装程序旁边留着旧签名
+    rmSync(`${out}.sig`, { force: true });
     copyFileSync(join(bundleDir, produced), out);
     const digest = createHash("sha256").update(readFileSync(out)).digest("hex");
     writeFileSync(`${out}.sha256`, `${digest}  ${basename(out)}\n`);
@@ -221,7 +234,39 @@ async function main() {
     console.log(`  SHA-256：${digest}`);
   }
 
-  // 3. signtool verify /pa：setup.exe 与改写后重签的 Primus.exe（配置了证书时）
+  // 3. updater 签名（.sig 写在 setup.exe 旁边），绑定应用版本后立即按 updater 规则校验
+  if (signing.updater) {
+    const signArgs = [
+      ...pnpmPrefix,
+      "--filter",
+      "@primus/desktop",
+      "tauri",
+      "signer",
+      "sign",
+      "--app-version",
+      version,
+      quoted(out),
+    ];
+    console.log(`\n> ${[pnpm, ...signArgs].join(" ")}`);
+    if (!dryRun) {
+      const r = spawnSync(pnpm, signArgs, { cwd: root, stdio: "inherit", shell: isWindows });
+      if (r.error) fail(`无法启动 ${pnpm}：${r.error.message}`);
+      if (r.status !== 0) fail(`tauri signer sign 失败（退出码 ${r.status}）`);
+      try {
+        verifyUpdaterSignature(
+          readFileSync(out),
+          readFileSync(`${out}.sig`, "utf8"),
+          process.env.TAURI_SIGNING_PUBLIC_KEY,
+          { version },
+        );
+      } catch (e) {
+        fail(`${basename(out)}.sig 校验失败：${e.message}`);
+      }
+      console.log(`✓ updater 签名有效（${basename(out)}.sig，version ${version}）`);
+    }
+  } else console.log("\n· 未配置 updater 签名密钥，跳过 updater 签名（.sig）");
+
+  // 4. signtool verify /pa：setup.exe 与改写后重签的 Primus.exe（配置了证书时）
   if (signing.authenticode) {
     for (const file of [out, exe]) {
       console.log(`\n> ${signtool} ${signtoolVerifyArgs(file).join(" ")}`);

@@ -113,7 +113,8 @@ export function insideWorkspace(
 }
 
 /**
- * 受保护路径（技术方案第 17.4 节）：`.env*`、`.git/` 内部、`~/.ssh`、App 的数据目录 `<安装目录>\data`。
+ * 受保护路径（技术方案第 17.4 节）：`.env*`、`.git/` 内部、`~/.ssh`、App 的数据目录 `<安装目录>\data`
+ * （默认对话工作区 `data\users\<SID>\chat` 除外）。
  * 写入一律拒绝（不论权限模式），读取需要确认。
  */
 export function isProtectedPath(
@@ -125,7 +126,8 @@ export function isProtectedPath(
   const norm = (p: string) => (platform === "win32" ? p.toLowerCase() : p);
   const parts = norm(abs).split(/[\\/]+/);
   if (parts.includes(".git")) return true;
-  if ((parts.at(-1) ?? "").startsWith(".env")) return true;
+  // `.env*` 文件，以及 `.env*` 目录里的任何文件（例如 `.env/secret.txt`）
+  if (parts.some((part) => part.startsWith(".env"))) return true;
   const within = (root: string) => {
     const rel = relative(norm(resolve(root)), norm(abs));
     return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
@@ -135,7 +137,10 @@ export function isProtectedPath(
   const coreDir = env.PRIMUS_CODING_AGENT_DIR;
   if (coreDir) {
     const data = resolve(coreDir, "..", "..", "..");
-    if (basename(data).toLowerCase() === "data" && within(data)) return true;
+    // 例外：users\<SID>\chat 是未选工作区时对话的默认工作区（薄壳 sessions.rs 的 DEFAULT_WORKSPACE_DIR），
+    // 属于用户自己的文件，不算 App 数据；其中的 .env*、.git 仍按上面的规则保护
+    const chat = resolve(coreDir, "..", "chat");
+    if (basename(data).toLowerCase() === "data" && within(data) && !within(chat)) return true;
   }
   return false;
 }

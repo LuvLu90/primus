@@ -4,8 +4,14 @@
 #   否则为正式版并设为 Latest
 # - workflow_dispatch 输入已有标签（例如 v0.0.1），重新构建该标签并更新对应 Release：同名附件覆盖上传
 #   （失败时回滚到旧附件），不在本次清单中的旧附件（例如早期的 SBOM、.sha256）删除，prerelease / Latest 按上一条规则更正
-# - Release 附件只有安装包：Primus_<ver>_<x64|arm64>_zh-CN.msi 与 Primus_<ver>_<x64|arm64>-setup.exe 共 4 个（自签名时另加两个架构的公钥证书 .cer）；
-#   SBOM 与被禁 SDK 检查、安装包检查、静默安装 / 卸载冒烟照常在构建作业中运行，但不作为附件，SHA-256 写在 Release 正文
+# - Release 附件：Primus_<ver>_<x64|arm64>_zh-CN.msi 与 Primus_<ver>_<x64|arm64>-setup.exe 共 4 个安装包，及各自的
+#   updater 签名 .sig 共 4 个（自签名时另加两个架构的公钥证书 .cer）；SBOM 与被禁 SDK 检查、安装包检查、静默安装 / 卸载冒烟
+#   照常在构建作业中运行，但不作为附件，SHA-256 写在 Release 正文
+# - 自动更新（技术方案第 3.6 节、ADR 0007）：每次发布都必须配置仓库 Secret TAURI_SIGNING_PRIVATE_KEY /
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD / TAURI_SIGNING_PUBLIC_KEY（`pnpm tauri signer generate` 生成），缺一即失败；
+#   公钥在编译时注入 Primus.exe，私钥给 4 个安装包生成 .sig。发布作业随后用 scripts/gen-update-manifest.mjs 生成
+#   Tauri 静态清单，上传到固定的 Release `update-feed`（prerelease、不设 Latest）：正式版更新 stable.json 与 beta.json
+#   （beta 只在本版本更高时覆盖），预发布只更新 beta.json；现有清单版本更高时不覆盖（重建旧标签不会让通道回退）
 # - 两个架构都构建并冒烟成功后才发布（发布作业 needs 整个矩阵）
 # - 工作流本身来自触发它的提交（手动触发时为 main），构建的源码一律 checkout 该标签；
 #   共用的 composite action 从工作流自身的提交另行取出。标签中须已有多架构打包脚本（scripts/build-nsis.mjs 等），
@@ -13,9 +19,9 @@
 #   但跳过契约测试一步（RPC 冒烟照常运行）
 # - 代码签名（scripts/import-release-signing.ps1）：默认在构建运行器上临时生成本次发布专用的自签名证书（私钥不可导出、
 #   不保存，不写进仓库也不用 Secret），签 Primus.exe、MSI、setup.exe。两个架构的作业各自生成证书，各自导出公钥证书
-#   Primus-signing-cert-<x64|arm64>.cer 作为附件（共 6 个），正文写明按安装包架构导入对应证书
-#   （临时生成时每个版本、每个架构的证书都不同）。以后有正式证书时配置仓库 Secret PRIMUS_SIGN_PFX_BASE64 / PASSWORD，
-#   此时同时要求 updater 密钥（TAURI_SIGNING_*），生成并校验 .sig；CA 签发的证书不附 .cer；
+#   Primus-signing-cert-<x64|arm64>.cer 作为附件，正文写明按安装包架构导入对应证书
+#   （临时生成时每个版本、每个架构的证书都不同）。以后有正式证书时配置仓库 Secret PRIMUS_SIGN_PFX_BASE64 / PASSWORD；
+#   updater 密钥（TAURI_SIGNING_*）与代码签名证书无关，任何情况下都必须配置；CA 签发的证书不附 .cer；
 #   PFX 中若是自签名证书，两个架构共用这一张，仍附两个（内容相同的）.cer，正文按证书来源说明
 name: Release
 
@@ -100,13 +106,32 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
 
-      - name: 检查标签中含多架构打包脚本
+      - name: 检查标签中含多架构打包与自动更新脚本
         shell: pwsh
         run: |
           $required = 'scripts/build-nsis.mjs', 'scripts/check-installers.ps1', 'scripts/nsis-smoke.ps1'
           $missing = @($required | Where-Object { -not (Test-Path -LiteralPath $_) })
           if ($missing.Count -gt 0) {
             throw "标签 $env:RELEASE_TAG 中缺少 $($missing -join '、')：该标签早于多架构 MSI + NSIS 打包，不能用本工作流构建"
+          }
+          # setup.exe 的 .sig 由 build-nsis.mjs 生成；更早的标签只能给 MSI 签名，发布不出完整的自动更新附件
+          if (-not (Test-Path -LiteralPath 'scripts/gen-update-manifest.mjs')) {
+            throw "标签 $env:RELEASE_TAG 中缺少 scripts/gen-update-manifest.mjs：该标签早于自动更新，不能用本工作流构建"
+          }
+
+      # 自动更新（ADR 0007）：每次发布都必须有 updater 密钥。公钥编译进 Primus.exe（没有公钥的构建禁用自动更新），
+      # 私钥给安装包生成 .sig；缺一即失败，不发布无法自动更新的版本
+      - name: 检查 updater 签名密钥（自动更新）
+        shell: pwsh
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
+        run: |
+          $missing = @('TAURI_SIGNING_PRIVATE_KEY', 'TAURI_SIGNING_PRIVATE_KEY_PASSWORD', 'TAURI_SIGNING_PUBLIC_KEY' |
+            Where-Object { -not [Environment]::GetEnvironmentVariable($_) })
+          if ($missing.Count -gt 0) {
+            throw "缺少仓库 Secret：$($missing -join '、')。自动更新要求每次发布都配置 updater 密钥（pnpm tauri signer generate 生成）"
           }
 
       # 发布构建不启用 pnpm / Rust 缓存，产物只取决于标签内容与锁文件
@@ -170,19 +195,23 @@ jobs:
       - name: 被禁 SDK 检查（导入图 + SBOM，严格模式）
         run: node scripts/check-forbidden-sdk.mjs --strict
 
-      # updater 私钥（可选 Secret）只给这两步；配置了 PFX Secret 时 PRIMUS_REQUIRE_SIGNING=1，私钥缺失即失败
+      # updater 密钥只给这两步：TAURI_SIGNING_PUBLIC_KEY 在 tauri build 编译 Primus.exe 时注入（build.rs 的
+      # rerun-if-env-changed + option_env!），私钥给 MSI 与 setup.exe 生成 .sig；PRIMUS_REQUIRE_UPDATER_SIGNING=1
+      # 让构建脚本在密钥缺失时拒绝构建（配置了 PFX Secret 时另有 PRIMUS_REQUIRE_SIGNING=1）
       - name: 构建 MSI（tauri build --no-bundle → wix build -arch ${{ matrix.arch }}）
         run: node scripts/build-msi.mjs --arch ${{ matrix.arch }}
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
+          PRIMUS_REQUIRE_UPDATER_SIGNING: "1"
       - name: 构建 NSIS 安装程序（tauri bundle --bundles nsis）
         run: node scripts/build-nsis.mjs --arch ${{ matrix.arch }}
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
+          PRIMUS_REQUIRE_UPDATER_SIGNING: "1"
 
       - name: 检查安装包（文件名、大小、校验、MSI 平台、Primus.exe 架构）
         shell: pwsh
@@ -203,7 +232,11 @@ jobs:
         run: |
           $dir = Join-Path $env:RUNNER_TEMP "release-assets-$env:ARCH"
           New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          $files = @($env:PRIMUS_MSI, $env:PRIMUS_NSIS)
+          # 安装包及其 updater 签名（自动更新的清单引用 .sig 内容）
+          $files = @($env:PRIMUS_MSI, "$env:PRIMUS_MSI.sig", $env:PRIMUS_NSIS, "$env:PRIMUS_NSIS.sig")
+          foreach ($sig in "$env:PRIMUS_MSI.sig", "$env:PRIMUS_NSIS.sig") {
+            if (-not (Test-Path -LiteralPath $sig)) { throw "缺少 updater 签名 $sig" }
+          }
           # 自签名证书由各架构作业各自生成：每个作业附上自己导出的公钥证书 Primus-signing-cert-<arch>.cer
           if ($env:PRIMUS_RELEASE_SELF_SIGNED -eq 'true') {
             if ((Split-Path -Leaf $env:PRIMUS_SIGN_CER) -cne "Primus-signing-cert-$env:ARCH.cer") {
@@ -234,10 +267,26 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # 共享的 update-feed 清单“读取 → 比较 → 上传”必须串行：不同标签的发布作业若并发，较旧版本可能读到旧清单后
+    # 覆盖较新版本刚上传的清单。所有标签的发布作业共用一个并发组，同一时刻只有一个在运行，后来的排队等待。
+    # queue: max 让排队中的作业都保留（默认 single 每组只留一个，连发多个标签时中间排队的会被取代）；不能与 cancel-in-progress: true 同用
+    concurrency:
+      group: release-publish-update-feed
+      cancel-in-progress: false
+      queue: max
     # 仅发布作业持有写权限；构建作业只读
     permissions:
       contents: write
     steps:
+      # 生成自动更新清单的脚本取自工作流自身的提交（与构建作业的共用 action 同一做法），不依赖标签内容
+      - name: 取出工作流提交中的清单脚本
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: .release-ci
+          sparse-checkout: scripts
+          persist-credentials: false
+
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: release-assets-*
@@ -253,9 +302,13 @@ jobs:
           cd assets
           want=(
             "Primus_${VERSION}_arm64-setup.exe"
+            "Primus_${VERSION}_arm64-setup.exe.sig"
             "Primus_${VERSION}_arm64_zh-CN.msi"
+            "Primus_${VERSION}_arm64_zh-CN.msi.sig"
             "Primus_${VERSION}_x64-setup.exe"
+            "Primus_${VERSION}_x64-setup.exe.sig"
             "Primus_${VERSION}_x64_zh-CN.msi"
+            "Primus_${VERSION}_x64_zh-CN.msi.sig"
           )
           [[ "$SELF_SIGNED" == "true" ]] && want+=("Primus-signing-cert-arm64.cer" "Primus-signing-cert-x64.cer")
           expected="$(printf '%s\n' "${want[@]}" | LC_ALL=C sort)"
@@ -283,6 +336,10 @@ jobs:
             "Primus_${VERSION}_arm64_zh-CN.msi"
             "Primus_${VERSION}_x64-setup.exe"
             "Primus_${VERSION}_arm64-setup.exe"
+            "Primus_${VERSION}_x64_zh-CN.msi.sig"
+            "Primus_${VERSION}_arm64_zh-CN.msi.sig"
+            "Primus_${VERSION}_x64-setup.exe.sig"
+            "Primus_${VERSION}_arm64-setup.exe.sig"
           )
           [[ "$SELF_SIGNED" == "true" ]] && names+=("Primus-signing-cert-x64.cer" "Primus-signing-cert-arm64.cer")
           files=()
@@ -322,8 +379,9 @@ jobs:
             printf '## 安装包\n\n'
             printf -- '- `%s`、`%s`：MSI 安装包（简体中文，x64 / ARM64）\n' "${names[0]}" "${names[1]}"
             printf -- '- `%s`、`%s`：NSIS 安装程序（简体中文，x64 / ARM64）\n' "${names[2]}" "${names[3]}"
+            printf -- '- `*.sig`：上面 4 个安装包的自动更新签名（应用内自动更新下载后据此校验，手动安装用不到）\n'
             if [[ "$SELF_SIGNED" == "true" ]]; then
-              printf -- '- `%s`、`%s`：自签名代码签名证书（仅公钥，x64 / ARM64 安装包各用其一），见「已知限制」\n' "${names[4]}" "${names[5]}"
+              printf -- '- `%s`、`%s`：自签名代码签名证书（仅公钥，x64 / ARM64 安装包各用其一），见「已知限制」\n' "${names[8]}" "${names[9]}"
             fi
           } > packages.md
 
@@ -336,6 +394,25 @@ jobs:
 
           if gh release view "$RELEASE_TAG" --json id >/dev/null 2>&1; then
             echo "Release ${RELEASE_TAG} 已存在：更新附件（prerelease=${PRERELEASE}）"
+            # 自动更新清单（update-feed）已指向本标签的安装包时不能原地重建：--clobber 换掉安装包后、清单更新前，
+            # 客户端会拿旧清单里的签名校验新安装包而拒绝更新（中途失败则一直如此）。请升版本号重新发布
+            if gh release view update-feed --json id >/dev/null 2>&1; then
+              feed_assets="$(gh release view update-feed --json assets --jq '.assets[].name')"
+              mkdir -p feed-check
+              for ch in stable.json beta.json; do
+                grep -Fxq -- "$ch" <<<"$feed_assets" || continue
+                gh release download update-feed --pattern "$ch" --dir feed-check --clobber
+                # jq -e：0 = 引用了本标签，1 = 没有引用，其他 = 清单读不出（无法确认，按引用处理）
+                rc=0
+                jq -e --arg tag "$RELEASE_TAG" \
+                  '[.platforms[]?.url // empty | select(contains("/releases/download/" + ($tag | @uri) + "/"))] | length > 0' \
+                  "feed-check/$ch" >/dev/null || rc=$?
+                if [[ $rc -ne 1 ]]; then
+                  echo "::error::update-feed/${ch} 正在引用 ${RELEASE_TAG} 的安装包（或清单无法解析），不能原地重建（客户端会因签名不符拒绝更新），请升版本号后发布新标签"
+                  exit 1
+                fi
+              done
+            fi
             existing="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')"
             # --clobber 先删旧附件再上传：先备份同名旧附件，上传失败时整组回滚，避免 Release 缺安装包
             mkdir -p backup
@@ -428,9 +505,13 @@ jobs:
           actual="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' | LC_ALL=C sort)"
           want=(
             "Primus_${VERSION}_arm64-setup.exe"
+            "Primus_${VERSION}_arm64-setup.exe.sig"
             "Primus_${VERSION}_arm64_zh-CN.msi"
+            "Primus_${VERSION}_arm64_zh-CN.msi.sig"
             "Primus_${VERSION}_x64-setup.exe"
+            "Primus_${VERSION}_x64-setup.exe.sig"
             "Primus_${VERSION}_x64_zh-CN.msi"
+            "Primus_${VERSION}_x64_zh-CN.msi.sig"
           )
           [[ "$SELF_SIGNED" == "true" ]] && want+=("Primus-signing-cert-arm64.cer" "Primus-signing-cert-x64.cer")
           expected="$(printf '%s\n' "${want[@]}" | LC_ALL=C sort)"
@@ -439,3 +520,68 @@ jobs:
             latest="$(gh api "repos/${GH_REPO}/releases/latest" --jq .tag_name)"
             [[ "$latest" == "$RELEASE_TAG" ]] || { echo "::error::Latest 为 ${latest}，不是 ${RELEASE_TAG}"; exit 1; }
           fi
+
+      # 自动更新清单（技术方案第 3.6 节、ADR 0007）：固定的 Release `update-feed`（prerelease、不设 Latest）存放
+      # stable.json / beta.json，桌面端按通道读取。先下载现有清单做版本比较：正式版写 stable 与 beta（beta 只在
+      # 本版本更高时覆盖），预发布只写 beta，现有版本更高的通道不覆盖；同名附件用 --clobber 覆盖上传
+      - name: 更新自动更新清单（update-feed）
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.build.outputs.version }}
+          TAURI_SIGNING_PUBLIC_KEY: ${{ secrets.TAURI_SIGNING_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          feed=update-feed
+          if gh release view "$feed" --json id >/dev/null 2>&1; then
+            gh release edit "$feed" --prerelease --latest=false
+          else
+            gh release create "$feed" \
+              --target "$GITHUB_SHA" \
+              --title "乾元 Primus 自动更新清单" \
+              --notes "供应用内自动更新读取的清单（stable.json / beta.json），由发布工作流自动维护，请勿手动修改或删除。" \
+              --prerelease --latest=false
+          fi
+          mkdir -p feed-old feed
+          # 先单独查询附件列表：查询失败就停止发布，不能当成“没有旧清单”而覆盖
+          existing="$(gh release view "$feed" --json assets --jq '.assets[].name')"
+          for name in stable.json beta.json; do
+            if grep -Fxq -- "$name" <<<"$existing"; then
+              gh release download "$feed" --pattern "$name" --dir feed-old
+            fi
+          done
+          gh release view "$RELEASE_TAG" --json body --jq .body > release-notes.md
+          node .release-ci/scripts/gen-update-manifest.mjs \
+            --version "$VERSION" --tag "$RELEASE_TAG" --repo "$GH_REPO" \
+            --assets assets --out-dir feed --notes-file release-notes.md \
+            --existing-stable feed-old/stable.json --existing-beta feed-old/beta.json \
+            --verify > feed-files.txt
+          mapfile -t written < feed-files.txt
+          if [[ ${#written[@]} -eq 0 ]]; then
+            echo "::notice::现有清单的版本都高于 ${VERSION}，不更新 update-feed"
+            exit 0
+          fi
+          uploads=()
+          for name in "${written[@]}"; do uploads+=("feed/${name}"); done
+          if ! gh release upload "$feed" "${uploads[@]}" --clobber; then
+            # --clobber 会先删同名附件；上传失败时用 feed-old 里的旧清单恢复，避免客户端读不到清单
+            echo "::error::上传 update-feed 清单失败，尝试恢复旧清单"
+            restore=()
+            for name in "${written[@]}"; do
+              if [[ -f "feed-old/${name}" ]]; then
+                restore+=("feed-old/${name}")
+              elif gh release view "$feed" --json assets --jq '.assets[].name' | grep -Fxq -- "$name"; then
+                # 上传前没有旧清单：删掉这次传上去的新清单，不让 stable.json 与 beta.json 只更新一半
+                gh release delete-asset "$feed" "$name" --yes || echo "::error::删除新清单 ${name} 失败"
+              fi
+            done
+            if [[ ${#restore[@]} -gt 0 ]] && ! gh release upload "$feed" "${restore[@]}" --clobber; then
+              echo "::error::恢复旧清单也失败了，请手动检查 update-feed：${restore[*]}"
+            fi
+            exit 1
+          fi
+          for name in "${written[@]}"; do
+            got="$(gh release download "$feed" --pattern "$name" --output - | jq -r .version)"
+            [[ "$got" == "$VERSION" ]] || { echo "::error::update-feed 中的 ${name} 版本为 ${got}，应为 ${VERSION}"; exit 1; }
+            echo "✓ update-feed/${name} → ${VERSION}"
+          done

@@ -1,7 +1,7 @@
 import type { CoreBatch, CoreRecord } from "@primus/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { COMMANDS } from "../types";
-import { createMockPlatform } from "./index";
+import { compareSemver, createMockPlatform } from "./index";
 import { chunk, promptScenario } from "./scenario";
 
 const types = (records: CoreRecord[]) => records.map((r) => r.type);
@@ -13,6 +13,43 @@ describe("mock 平台", () => {
   it("实现了附录 B 的全部命令", () => {
     const platform = createMockPlatform();
     expect(Object.keys(platform).sort()).toEqual(Object.keys(COMMANDS).sort());
+  });
+
+  it("自动更新：默认开、稳定版；有新版本时检查后得到待装版本并推送", async () => {
+    const platform = createMockPlatform({ latestVersion: "9.9.9", now: () => 5 });
+    const seen: string[] = [];
+    await platform.updateWatch((s) => seen.push(s.phase));
+    const initial = await platform.updateStatus();
+    expect(initial.settings).toEqual({ autoUpdate: true, channel: "stable" });
+    expect(initial.pending).toBeNull();
+    const status = await platform.updateCheck();
+    expect(status.pending).toEqual({ version: "9.9.9", notes: null });
+    expect(status.lastCheck).toBe(5);
+    expect(seen).toContain("downloading");
+    await expect(platform.updateSettingsSet({ channel: "beta" })).resolves.toMatchObject({
+      settings: { autoUpdate: true, channel: "beta" },
+    });
+  });
+
+  it("自动更新：低于当前版本的预发布不算更新", async () => {
+    const platform = createMockPlatform({ latestVersion: "0.0.0-alpha" });
+    await expect(platform.updateCheck()).resolves.toMatchObject({ pending: null });
+  });
+
+  it("SemVer 比较与薄壳一致", () => {
+    expect(compareSemver("0.0.0-alpha", "0.0.0-mock")).toBeLessThan(0);
+    expect(compareSemver("1.3.0", "1.3.0-beta.2")).toBeGreaterThan(0);
+    expect(compareSemver("1.3.0-beta.10", "1.3.0-beta.2")).toBeGreaterThan(0);
+    expect(compareSemver("1.3.0-beta", "1.3.0-beta.1")).toBeLessThan(0);
+    expect(compareSemver("v1.2.3", "1.2.3")).toBe(0);
+    expect(compareSemver("1.10.0", "1.9.9")).toBeGreaterThan(0);
+    expect(compareSemver("garbage", "0.0.1")).toBeLessThan(0);
+  });
+
+  it("自动更新：没有新版本时检查结果无待装版本，安装被拒绝", async () => {
+    const platform = createMockPlatform();
+    await expect(platform.updateCheck()).resolves.toMatchObject({ pending: null });
+    await expect(platform.updateInstall()).rejects.toMatchObject({ code: "noPending" });
   });
 
   it("prompt 先回 response，再按 16ms 一批推送完整事件流，seq 连续", async () => {
