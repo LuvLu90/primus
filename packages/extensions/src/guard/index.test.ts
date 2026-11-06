@@ -135,6 +135,24 @@ describe("primus-guard 权限判断", () => {
     expect(isProtectedPath("/home/u/.ssh/id_rsa", env, "linux", "/home/u")).toBe(true);
     expect(isProtectedPath("/opt/Primus/data/x.json", env, "linux", "/home/u")).toBe(true);
     expect(isProtectedPath("/work/proj/src/env.ts", env, "linux", "/home/u")).toBe(false);
+    // 默认对话工作区 users/<SID>/chat 不算 App 数据；其中的 .env、.git 仍受保护，其他用户的 chat 仍受保护
+    const chat = "/opt/Primus/data/users/S-1/chat";
+    expect(isProtectedPath(`${chat}/notes.txt`, env, "linux", "/home/u")).toBe(false);
+    expect(isProtectedPath(chat, env, "linux", "/home/u")).toBe(false);
+    expect(isProtectedPath(`${chat}/.env`, env, "linux", "/home/u")).toBe(true);
+    expect(isProtectedPath(`${chat}/.git/config`, env, "linux", "/home/u")).toBe(true);
+    expect(
+      isProtectedPath("/opt/Primus/data/users/S-1/core/models.json", env, "linux", "/home/u"),
+    ).toBe(true);
+    expect(isProtectedPath("/opt/Primus/data/users/S-2/chat/a.txt", env, "linux", "/home/u")).toBe(
+      true,
+    );
+    expect(
+      isProtectedPath("/opt/Primus/data/users/S-1/chat-x/a.txt", env, "linux", "/home/u"),
+    ).toBe(true);
+    expect(decide("ask", { toolName: "read", input: { path: "a.txt" } }, chat, undefined, ge)).toBe(
+      "allow",
+    );
     for (const mode of ["ask", "edit", "full"] as const) {
       expect(decide(mode, { toolName: "write", input: { path: ".env" } }, cwd, undefined, ge)).toBe(
         "deny",
