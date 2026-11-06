@@ -28,8 +28,9 @@ export function updateStateText(status: UpdateStatus, checked: boolean): string 
     }
     return tu.downloading;
   }
-  if (status.pending) return tu.pendingReady.replace("{version}", status.pending.version);
+  // 最近一次检查失败的原因优先：已有待装版本时它仍显示在下方的“重启更新”行
   if (status.lastError) return tu.lastError.replace("{message}", status.lastError);
+  if (status.pending) return tu.pendingReady.replace("{version}", status.pending.version);
   return checked ? tu.upToDate : null;
 }
 

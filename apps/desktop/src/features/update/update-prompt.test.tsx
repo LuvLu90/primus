@@ -75,7 +75,7 @@ describe("更新下载完成提示", () => {
     usePlatform(ready, { updateInstall });
     render(<UpdatePrompt />);
     fireEvent.click(await screen.findByRole("button", { name: t.restartNow }));
-    await waitFor(() => expect(updateInstall).toHaveBeenCalledWith(undefined));
+    await waitFor(() => expect(updateInstall).toHaveBeenCalledWith(false));
     expect(screen.queryByText(t.busyTitle)).toBeNull();
   });
 

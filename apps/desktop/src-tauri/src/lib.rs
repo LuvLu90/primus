@@ -78,13 +78,20 @@ pub fn run() {
     // 公钥在构建时编译进来，没有公钥的构建整体禁用
     let current_version = semver::Version::parse(env!("CARGO_PKG_VERSION"))
         .expect("Cargo.toml 的 version 是合法的 SemVer");
-    let updater = Arc::new(updater::Updater::new(
-        current_version,
-        &paths::exe_dir().unwrap_or_default(),
-        data_paths.updates_dir(),
-        &data_paths.app_dir(),
-        updater::compiled_pubkey(),
-    ));
+    let updater = Arc::new(
+        updater::Updater::new(
+            current_version,
+            &paths::exe_dir().unwrap_or_default(),
+            data_paths.updates_dir(),
+            &data_paths.app_dir(),
+            updater::compiled_pubkey(),
+        )
+        // --data-dir 指定的数据目录：安装后重新打开时带上，否则新版本会改用默认目录
+        .with_relaunch_data_dir(
+            (data_paths.source() == paths::DataRootSource::CommandLine)
+                .then(|| data_paths.root().to_path_buf()),
+        ),
+    );
 
     tauri::Builder::default()
         // 单实例必须最先注册：第二个实例启动时把已有主窗口带到前台（第 2.2 节）

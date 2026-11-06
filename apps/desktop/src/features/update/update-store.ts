@@ -31,21 +31,37 @@ export interface UpdateState {
 }
 
 let started: Promise<void> | undefined;
+let retryTimer: ReturnType<typeof setTimeout> | undefined;
+let retryDelay = 0;
+/** 订阅失败后的重试间隔：从 2 秒起翻倍，最长 60 秒 */
+const RETRY_MIN_MS = 2_000;
+const RETRY_MAX_MS = 60_000;
 
 function message(e: unknown, fallback: string): string {
   return e instanceof Error && e.message ? e.message : typeof e === "string" ? e : fallback;
 }
 
-export const useUpdateStore = create<UpdateState>()((set) => ({
+export const useUpdateStore = create<UpdateState>()((set, get) => ({
   status: null,
   loadError: null,
   dismissedVersion: null,
   start: () => {
     started ??= getPlatform()
       .then((p) => p.updateWatch((status) => set({ status, loadError: null })))
+      .then(() => {
+        retryDelay = 0;
+      })
       .catch((e: unknown) => {
         started = undefined;
         set({ loadError: message(e, "") });
+        // 订阅失败（如薄壳尚未就绪）时自动重试，否则之后下载完成也收不到状态、不会弹出重启提示
+        if (retryTimer === undefined) {
+          retryDelay = Math.min(RETRY_MAX_MS, retryDelay ? retryDelay * 2 : RETRY_MIN_MS);
+          retryTimer = setTimeout(() => {
+            retryTimer = undefined;
+            void get().start();
+          }, retryDelay);
+        }
       });
     return started;
   },
@@ -73,5 +89,8 @@ export const useUpdateStore = create<UpdateState>()((set) => ({
 /** 仅测试用：重置 store 与订阅 */
 export function resetUpdateStoreForTesting(): void {
   started = undefined;
+  if (retryTimer !== undefined) clearTimeout(retryTimer);
+  retryTimer = undefined;
+  retryDelay = 0;
   useUpdateStore.setState({ status: null, loadError: null, dismissedVersion: null });
 }

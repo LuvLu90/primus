@@ -598,7 +598,12 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
     },
     updateCheck: async () => {
       const latest = options.latestVersion;
-      if (latest && latest !== update.currentVersion && update.pending?.version !== latest) {
+      // 与薄壳一致：只有按 SemVer 严格高于当前版本才算更新
+      if (
+        latest &&
+        compareSemver(latest, update.currentVersion) > 0 &&
+        update.pending?.version !== latest
+      ) {
         setUpdate({ phase: "downloading", progress: { downloaded: 0, total: 100 } });
         setUpdate({ progress: { downloaded: 100, total: 100 } });
         setUpdate({ pending: { version: latest, notes: null } });
@@ -638,6 +643,38 @@ function keptOnAbort(queue: readonly Queued[]): Queued[] {
     prefix &&= opening;
     return prefix;
   });
+}
+
+/**
+ * 按 SemVer 2.0 比较两个版本（可带前缀 v）：大于返回正数、等于 0、小于负数。解析不了的版本视为最低。
+ * 与薄壳 `updater::is_newer`（semver crate）的排序一致：预发布低于正式版，预发布标识逐段比较，数字段按数值比较。
+ */
+export function compareSemver(a: string, b: string): number {
+  const parse = (v: string) => {
+    const m = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(v.trim());
+    return m
+      ? { core: [Number(m[1]), Number(m[2]), Number(m[3])], pre: m[4] ? m[4].split(".") : [] }
+      : undefined;
+  };
+  const x = parse(a);
+  const y = parse(b);
+  if (!x || !y) return x ? 1 : y ? -1 : 0;
+  for (let i = 0; i < 3; i++) {
+    const d = (x.core[i] ?? 0) - (y.core[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  if (x.pre.length === 0 || y.pre.length === 0) return y.pre.length - x.pre.length;
+  for (let i = 0; i < Math.min(x.pre.length, y.pre.length); i++) {
+    const p = x.pre[i] ?? "";
+    const q = y.pre[i] ?? "";
+    if (p === q) continue;
+    const pn = /^\d+$/.test(p);
+    const qn = /^\d+$/.test(q);
+    if (pn && qn) return Number(p) - Number(q);
+    if (pn !== qn) return pn ? -1 : 1;
+    return p < q ? -1 : 1;
+  }
+  return x.pre.length - y.pre.length;
 }
 
 /**

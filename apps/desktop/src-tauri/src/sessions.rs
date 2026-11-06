@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -53,6 +53,8 @@ pub(crate) enum SessionError {
     InUse(PathBuf),
     /// 会话文件正在删除（移到回收站）
     Deleting(PathBuf),
+    /// 正在安装更新：不开始新的一轮、不拉起新的内核
+    Updating,
     Supervisor(SupervisorError),
     Bridge(BridgeError),
     Io(io::Error),
@@ -67,6 +69,7 @@ impl fmt::Display for SessionError {
             Self::Restarting(key) => write!(f, "会话的内核正在重启：{key}"),
             Self::InUse(path) => write!(f, "会话已在其他标签中打开：{}", path.display()),
             Self::Deleting(path) => write!(f, "会话正在删除：{}", path.display()),
+            Self::Updating => write!(f, "正在安装更新，暂时不能发送或启动会话"),
             Self::Supervisor(e) => write!(f, "{e}"),
             Self::Bridge(e) => write!(f, "{e}"),
             Self::Io(e) => write!(f, "{e}"),
@@ -130,6 +133,9 @@ pub(crate) struct Sessions<S> {
     /// 锁顺序：launching → held_deletes；之后才单独加 deleting 锁
     held_deletes: Mutex<Vec<HeldDelete>>,
     next: AtomicU64,
+    /// 正在安装更新（[`Sessions::hold_for_update`]）：只在持有 `entries` 锁时读写，
+    /// 与忙碌检查、prompt 写入、会话拉起的登记互斥
+    updating: AtomicBool,
     config: BridgeConfig,
 }
 
@@ -152,6 +158,7 @@ impl<S: BatchSink + Clone> Sessions<S> {
             launch_wait: LAUNCH_WAIT,
             held_deletes: Mutex::new(Vec::new()),
             next: AtomicU64::new(0),
+            updating: AtomicBool::new(false),
             config,
         }
     }
@@ -258,6 +265,9 @@ impl<S: BatchSink + Clone> Sessions<S> {
         // 占用检查与登记在同一次加锁内完成，并发打开同一会话文件时只有一个能通过；正在删除的文件拒绝打开
         let _launch = {
             let mut entries = self.entries();
+            if self.updating.load(Ordering::Acquire) {
+                return Err(SessionError::Updating);
+            }
             if let Some(file) = &opts.session_file {
                 if using(&entries, &file_keys, file_id.as_deref()) {
                     return Err(SessionError::InUse(file.clone()));
@@ -305,6 +315,12 @@ impl<S: BatchSink + Clone> Sessions<S> {
         if entry.evicted || entry.bridge.is_none() {
             return Err(SessionError::NotRunning(key.to_owned()));
         }
+        // 安装更新期间不开始新的一轮（其他命令如 abort、get_state 照常）
+        if self.updating.load(Ordering::Acquire)
+            && record.get("type").and_then(serde_json::Value::as_str) == Some("prompt")
+        {
+            return Err(SessionError::Updating);
+        }
         // 进程已自行退出（尚未被清理）：标为未运行并立即报错，不写进旧桥再等前端超时。
         // 锁顺序与拉起一致：会话表 → 监管器
         let alive = supervisor
@@ -334,10 +350,23 @@ impl<S: BatchSink + Clone> Sessions<S> {
         Ok(())
     }
 
-    /// 是否有会话正在运行一轮（或正在打开 / 重启）：自动更新据此决定是否需要用户确认后再停掉 Core（第 3.6 节）。
+    /// 测试用：是否有会话正在运行一轮（或正在打开 / 重启）。自动更新用 [`Sessions::hold_for_update`] 在同一把锁内检查并置位。
+    #[cfg(test)]
     pub(crate) fn any_busy(&self) -> bool {
         let entries = self.entries();
         entries.keys().any(|key| is_busy(&entries, key))
+    }
+
+    /// 进入“安装更新”状态：在同一次加锁内检查忙碌并置位，之后的 prompt 写入与会话拉起被拒绝（[`SessionError::Updating`]），
+    /// 不会有新的一轮夹在检查与停掉 Core 之间。`force` 为假且有会话忙碌时返回 None（前端确认后带 force 再来）。
+    /// 返回的守卫释放时（取消 UAC、拉起失败）恢复正常。
+    pub(crate) fn hold_for_update(&self, force: bool) -> Option<UpdateHold<'_, S>> {
+        let entries = self.entries();
+        if !force && entries.keys().any(|key| is_busy(&entries, key)) {
+            return None;
+        }
+        self.updating.store(true, Ordering::Release);
+        Some(UpdateHold { sessions: self })
     }
 
     /// 薄壳为新会话定好的会话 ID（`--session-id`）；恢复已有会话文件时为 None。
@@ -454,6 +483,9 @@ impl<S: BatchSink + Clone> Sessions<S> {
                 .ok_or_else(|| SessionError::NotFound(key.to_owned()))?;
             if entry.restarting {
                 return Err(SessionError::Restarting(key.to_owned()));
+            }
+            if self.updating.load(Ordering::Acquire) {
+                return Err(SessionError::Updating);
             }
             // 重启期间桥为空，发送照样得到 NotRunning；淘汰标记在这里清除。重启中 mark_gone 不再标记它
             // （被清理的可能是旧进程），新进程是否还在由 finish_launch 按监管器的实际状态判定
@@ -636,6 +668,18 @@ impl fmt::Display for DeleteRefused {
             Self::AlreadyDeleting => write!(f, "会话正在删除中"),
             Self::LaunchPending => write!(f, "会话的内核仍在启动，请稍后再删除"),
         }
+    }
+}
+
+/// 安装更新期间的守卫：释放时（在会话表的锁内）恢复发送与拉起。
+pub(crate) struct UpdateHold<'a, S> {
+    sessions: &'a Sessions<S>,
+}
+
+impl<S> Drop for UpdateHold<'_, S> {
+    fn drop(&mut self) {
+        let _entries = lock(&self.sessions.entries);
+        self.sessions.updating.store(false, Ordering::Release);
     }
 }
 
@@ -1495,6 +1539,36 @@ process.stdin.on("data", (chunk) => {
     }
 
     #[test]
+    fn update_hold_blocks_prompts_and_launches_until_released() {
+        let tmp = TempDir::new();
+        let (supervisor, paths, sessions) = setup(&tmp);
+        let a = sessions
+            .open(&supervisor, &paths, "", None, Collect::default())
+            .unwrap();
+        let hold = sessions.hold_for_update(false).expect("空闲时可以进入安装");
+        let prompt = serde_json::json!({ "type": "prompt", "message": "hi" });
+        assert!(matches!(
+            sessions.send(&supervisor, &a, &prompt),
+            Err(SessionError::Updating)
+        ));
+        sessions
+            .send(&supervisor, &a, &serde_json::json!({ "type": "get_state" }))
+            .expect("安装期间非 prompt 命令照常");
+        assert!(matches!(
+            sessions.open(&supervisor, &paths, "", None, Collect::default()),
+            Err(SessionError::Updating)
+        ));
+        assert!(matches!(
+            sessions.restart(&supervisor, &a),
+            Err(SessionError::Updating)
+        ));
+        drop(hold);
+        sessions
+            .send(&supervisor, &a, &prompt)
+            .expect("取消安装后恢复发送");
+    }
+
+    #[test]
     fn busy_session_is_not_evicted() {
         let tmp = TempDir::new();
         let (supervisor, paths, sessions) = setup(&tmp);
@@ -1513,6 +1587,10 @@ process.stdin.on("data", (chunk) => {
             .unwrap();
         sink.wait_for(1, |r| r["type"] == "agent_start");
         assert!(sessions.any_busy(), "运行中的会话让自动更新先确认");
+        assert!(
+            sessions.hold_for_update(false).is_none(),
+            "忙碌时不经确认不能进入安装"
+        );
         let result = sessions.open(&supervisor, &paths, "", None, Collect::default());
         assert!(
             matches!(

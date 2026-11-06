@@ -15,10 +15,12 @@
 //!   经 UAC 启动安装器（`platform::launch_installer`），安装器结束后以当前（非提权）身份重新打开 Primus。
 
 use std::fs::{self, File, OpenOptions};
+use std::future::Future;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::task::Poll;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use semver::Version;
@@ -36,14 +38,22 @@ const ENDPOINT_OVERRIDE_ENV: &str = "PRIMUS_UPDATE_ENDPOINT";
 const NSIS_UNINSTALLER: &str = "uninstall.exe";
 /// 待装包描述文件与设置文件。
 const PENDING_FILE: &str = "pending.json";
+/// 多次安装仍未生效而放弃的版本（自动检查不再下载它，更高的版本照常更新）。
+const ABANDONED_FILE: &str = "abandoned.json";
 const SETTINGS_FILE: &str = "update.json";
 const LOG_FILE: &str = "updater.log";
 const LOG_MAX_BYTES: u64 = 1024 * 1024;
 /// 主窗口起来后第一次自动检查的延迟，与之后的检查间隔。
 pub(crate) const FIRST_CHECK_DELAY: Duration = Duration::from_secs(10);
 pub(crate) const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
-/// 检查清单的超时（只作用于清单请求；下载不设总时限，慢网络下也能下完）。
+/// 检查清单的超时（插件只把它用于清单请求）。
 const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+/// 下载安装包：连接超时、两次收到数据之间的最长间隔（停滞即失败）、总时长上限（慢网络也足够下完）。
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const READ_TIMEOUT: Duration = Duration::from_secs(60);
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(2 * 60 * 60);
+/// 安装包大小上限：插件在验签前把整个响应放在内存里，超过即中止下载。
+const MAX_PACKAGE_BYTES: u64 = 512 * 1024 * 1024;
 /// 同一待装包成功拉起安装器、但版本始终没有变化（安装失败）的次数上限：超过后删除待装包，不再每次启动都弹 UAC。
 const MAX_INSTALL_ATTEMPTS: u32 = 3;
 /// 下载进度推送的最小间隔。
@@ -116,7 +126,10 @@ impl UpdateSettings {
     }
 
     pub(crate) fn save(&self, path: &Path) -> io::Result<()> {
-        write_atomic(path, &serde_json::to_vec_pretty(self).map_err(io::Error::other)?)
+        write_atomic(
+            path,
+            &serde_json::to_vec_pretty(self).map_err(io::Error::other)?,
+        )
     }
 }
 
@@ -250,7 +263,9 @@ pub(crate) fn verify_signature(
         .ok_or("签名没有绑定版本")?;
     match (parse_version(signed), parse_version(version)) {
         (Some(a), Some(b)) if a == b => Ok(()),
-        _ => Err(format!("签名绑定的版本 {signed} 与待装版本 {version} 不一致")),
+        _ => Err(format!(
+            "签名绑定的版本 {signed} 与待装版本 {version} 不一致"
+        )),
     }
 }
 
@@ -285,6 +300,8 @@ pub(crate) enum StartupAction {
     Install,
     /// 删除待装包（原因写日志）
     Discard(String),
+    /// 多次拉起安装器仍未生效：记下放弃的版本（自动检查不再下载它），再删除待装包
+    Abandon(String),
 }
 
 pub(crate) fn startup_action(
@@ -306,7 +323,7 @@ pub(crate) fn startup_action(
         ));
     }
     if p.attempts >= MAX_INSTALL_ATTEMPTS {
-        return StartupAction::Discard(format!(
+        return StartupAction::Abandon(format!(
             "已 {} 次拉起安装器但版本仍未更新，放弃待装版本 {}",
             p.attempts, p.version
         ));
@@ -418,6 +435,8 @@ pub(crate) struct Updater {
     target: Option<String>,
     pubkey: Option<&'static str>,
     updates_dir: PathBuf,
+    /// `--data-dir` 指定的数据目录：安装后重新打开 Primus 时原样带上
+    relaunch_data_dir: Option<PathBuf>,
     settings_file: PathBuf,
     settings: Mutex<UpdateSettings>,
     runtime: Mutex<Runtime>,
@@ -446,6 +465,7 @@ impl Updater {
             target: target_for(current_arch(), kind),
             pubkey,
             updates_dir,
+            relaunch_data_dir: None,
             settings: Mutex::new(UpdateSettings::load(&settings_file)),
             settings_file,
             runtime: Mutex::new(Runtime {
@@ -457,6 +477,12 @@ impl Updater {
             listener: Mutex::new(None),
             busy: AtomicBool::new(false),
         }
+    }
+
+    /// 数据目录来自 `--data-dir` 时设置：安装器结束后重新打开 Primus 带上同一个数据目录。
+    pub(crate) fn with_relaunch_data_dir(mut self, data_dir: Option<PathBuf>) -> Self {
+        self.relaunch_data_dir = data_dir;
+        self
     }
 
     /// 是否可以自动更新：有公钥、Windows、架构受支持。
@@ -503,11 +529,71 @@ impl Updater {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if name == LOG_FILE || name == PENDING_FILE || keep == Some(name.as_ref()) {
+            if name == LOG_FILE
+                || name == PENDING_FILE
+                || name == ABANDONED_FILE
+                || keep == Some(name.as_ref())
+            {
                 continue;
             }
             let _ = fs::remove_file(entry.path());
         }
+    }
+
+    /// 多次安装未生效而放弃的版本。
+    fn abandoned_version(&self) -> Option<String> {
+        #[derive(Deserialize)]
+        struct Abandoned {
+            version: String,
+        }
+        let bytes = fs::read(self.updates_dir.join(ABANDONED_FILE)).ok()?;
+        serde_json::from_slice::<Abandoned>(&bytes)
+            .ok()
+            .map(|a| a.version)
+    }
+
+    /// 放弃待装版本：记下版本（自动检查不再下载它），再删除待装包。
+    fn abandon_pending(&self, version: &str, reason: &str) {
+        let record = serde_json::json!({ "version": version });
+        if let Err(e) = write_atomic(
+            &self.updates_dir.join(ABANDONED_FILE),
+            record.to_string().as_bytes(),
+        ) {
+            self.log(&format!("无法记录放弃的版本 {version}：{e}"));
+        }
+        self.discard_pending(reason);
+    }
+
+    /// 按启动规则处理待装包：需要删除或放弃时执行并返回原因。
+    fn apply_discard(
+        &self,
+        action: &StartupAction,
+        pending: Option<&PendingUpdate>,
+    ) -> Option<String> {
+        match action {
+            StartupAction::Discard(reason) => {
+                self.discard_pending(reason);
+                Some(reason.clone())
+            }
+            StartupAction::Abandon(reason) => {
+                match pending {
+                    Some(p) => self.abandon_pending(&p.version, reason),
+                    None => self.discard_pending(reason),
+                }
+                Some(reason.clone())
+            }
+            StartupAction::Nothing | StartupAction::Install => None,
+        }
+    }
+
+    /// 校验磁盘上的待装包：SHA-256 与描述一致，签名（含绑定的版本）有效。
+    fn verify_stored(&self, pending: &PendingUpdate, pubkey: &str) -> Result<(), String> {
+        let bytes = fs::read(self.updates_dir.join(&pending.file))
+            .map_err(|e| format!("读取安装包失败：{e}"))?;
+        if sha256_hex(&bytes) != pending.sha256 {
+            return Err("安装包的 SHA-256 与下载时不一致".to_owned());
+        }
+        verify_signature(&bytes, &pending.signature, pubkey, &pending.version)
     }
 
     pub(crate) fn status(&self) -> UpdateStatus {
@@ -592,10 +678,12 @@ impl Updater {
 
     /// 检查更新；有更高版本且不是已下载的同一版本时下载、验签并存为待装包。
     /// 返回检查后的状态；`channel` 为本次检查使用的通道（不保存），缺省用设置中的通道。
+    /// `manual` 为用户在设置页手动检查：此时也会重新下载之前多次安装未生效而放弃的版本。
     pub(crate) async fn check_and_download<R: tauri::Runtime>(
         &self,
         app: &tauri::AppHandle<R>,
         channel: Option<UpdateChannel>,
+        manual: bool,
     ) -> Result<UpdateStatus, UpdateError> {
         if !self.available() {
             return Err(UpdateError::new(
@@ -607,7 +695,7 @@ impl Updater {
             // 已有检查或下载在进行：返回当前状态，进度经 update_watch 推送
             return Ok(self.status());
         }
-        let result = self.check_inner(app, channel).await;
+        let result = self.check_inner(app, channel, manual).await;
         self.busy.store(false, Ordering::Release);
         {
             let mut runtime = lock(&self.runtime);
@@ -627,6 +715,7 @@ impl Updater {
         &self,
         app: &tauri::AppHandle<R>,
         channel: Option<UpdateChannel>,
+        manual: bool,
     ) -> Result<(), UpdateError> {
         use tauri_plugin_updater::UpdaterExt;
         let failed = |e: &dyn std::fmt::Display| UpdateError::new("failed", e.to_string());
@@ -647,22 +736,50 @@ impl Updater {
             .endpoints(urls)
             .map_err(|e| failed(&e))?
             .timeout(CHECK_TIMEOUT)
+            // 插件不把 timeout 用于下载：连接与读取停滞的超时在客户端上设置（清单与下载都适用）
+            .configure_client(|client| {
+                client
+                    .connect_timeout(CONNECT_TIMEOUT)
+                    .read_timeout(READ_TIMEOUT)
+            })
             .build()
             .map_err(|e| failed(&e))?;
-        let Some(update) = updater.check().await.map_err(|e| failed(&e))? else {
-            self.log(&format!("{channel:?} 通道没有比 {} 更新的版本", self.current_version));
+        let Some(mut update) = updater.check().await.map_err(|e| failed(&e))? else {
+            self.log(&format!(
+                "{channel:?} 通道没有比 {} 更新的版本",
+                self.current_version
+            ));
             return Ok(());
         };
         if !is_newer(&update.version, &self.current_version) {
             return Ok(());
         }
+        if self.abandoned_version().as_deref() == Some(update.version.as_str()) {
+            if !manual {
+                self.log(&format!(
+                    "版本 {} 多次安装未生效，自动检查不再下载",
+                    update.version
+                ));
+                return Ok(());
+            }
+            // 用户手动检查：清掉放弃记录，重新下载再试
+            let _ = fs::remove_file(self.updates_dir.join(ABANDONED_FILE));
+        }
         if let Some(pending) = self.read_pending()
             && pending.version == update.version
             && pending.kind == self.kind
-            && self.updates_dir.join(&pending.file).is_file()
         {
-            self.log(&format!("版本 {} 已下载，等待安装", pending.version));
-            return Ok(());
+            // 复用前确认磁盘上的安装包完好；损坏或缺失时删除并重新下载
+            match self.verify_stored(&pending, pubkey) {
+                Ok(()) => {
+                    self.log(&format!("版本 {} 已下载，等待安装", pending.version));
+                    return Ok(());
+                }
+                Err(e) => self.discard_pending(&format!(
+                    "已下载的 {} 校验失败，重新下载：{e}",
+                    pending.version
+                )),
+            }
         }
         let file = package_file_name(update.download_url.as_str(), self.kind).ok_or_else(|| {
             UpdateError::new("failed", format!("下载地址不合法：{}", update.download_url))
@@ -676,25 +793,46 @@ impl Updater {
                 total: None,
             }),
         );
+        // 下载的总时长上限（插件把 Update::timeout 用作下载请求的超时）
+        update.timeout = Some(DOWNLOAD_TIMEOUT);
         let mut downloaded = 0u64;
         let mut last_push = Instant::now();
+        let too_large = Arc::new(AtomicBool::new(false));
+        let flag = too_large.clone();
         // download 内部按插件规则验签（含 requireSignedVersion），不通过返回错误
-        let bytes = update
-            .download(
-                |chunk, total| {
-                    downloaded += chunk as u64;
-                    if last_push.elapsed() >= PROGRESS_INTERVAL {
-                        last_push = Instant::now();
-                        self.set_phase(
-                            UpdatePhase::Downloading,
-                            Some(DownloadProgress { downloaded, total }),
-                        );
-                    }
-                },
-                || {},
-            )
-            .await
-            .map_err(|e| failed(&e))?;
+        let download = update.download(
+            |chunk, total| {
+                downloaded += chunk as u64;
+                if downloaded > MAX_PACKAGE_BYTES || total.is_some_and(|t| t > MAX_PACKAGE_BYTES) {
+                    flag.store(true, Ordering::Release);
+                    return;
+                }
+                if last_push.elapsed() >= PROGRESS_INTERVAL {
+                    last_push = Instant::now();
+                    self.set_phase(
+                        UpdatePhase::Downloading,
+                        Some(DownloadProgress { downloaded, total }),
+                    );
+                }
+            },
+            || {},
+        );
+        // 超过大小上限时丢弃下载的 future（中止请求、释放已缓存的内容），不等它读完
+        let mut download = std::pin::pin!(download);
+        let bytes = std::future::poll_fn(|cx| {
+            let polled = download.as_mut().poll(cx);
+            if too_large.load(Ordering::Acquire) {
+                return Poll::Ready(Err(UpdateError::new(
+                    "failed",
+                    format!(
+                        "安装包超过 {} MB，已中止下载",
+                        MAX_PACKAGE_BYTES / 1024 / 1024
+                    ),
+                )));
+            }
+            polled.map(|r| r.map_err(|e| failed(&e)))
+        })
+        .await?;
         let pending = PendingUpdate {
             version: update.version.clone(),
             notes: update.body.clone(),
@@ -710,18 +848,21 @@ impl Updater {
         Ok(())
     }
 
-    /// 写入安装包（先写临时文件再改名），再原子写 `pending.json`；清掉旧的安装包。
+    /// 写入安装包（先写临时文件再改名），再原子写 `pending.json`；两者都提交后才清掉旧的安装包，
+    /// 写入失败时旧的待装包仍然可用。
     pub(crate) fn store_package(&self, pending: &PendingUpdate, bytes: &[u8]) -> io::Result<()> {
         fs::create_dir_all(&self.updates_dir)?;
-        if let Err(e) = crate::platform::grant_admins_read(&self.updates_dir) {
-            // 只影响标准用户“过肩”提权的场景（安装器读不到安装包），不阻止下载
-            self.log(&format!("无法给 updates 目录追加 Administrators 只读权限：{e}"));
-        }
-        // 换新包之前先让旧描述失效，避免描述与文件不一致
-        let _ = fs::remove_file(self.pending_path());
-        self.remove_packages_except(None);
+        // 标准用户“过肩”提权时安装器以管理员账号运行，读不到安装包就会安装失败：授权失败不发布待装包
+        crate::platform::grant_admins_read(&self.updates_dir).map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("无法给 updates 目录追加 Administrators 只读权限：{e}"),
+            )
+        })?;
         write_atomic(&self.updates_dir.join(&pending.file), bytes)?;
-        self.write_pending(pending)
+        self.write_pending(pending)?;
+        self.remove_packages_except(Some(&pending.file));
+        Ok(())
     }
 
     /// 安装前的二次校验：从磁盘重读安装包，核对版本、安装方式、SHA-256，并用编译进的公钥重新校验签名。
@@ -734,13 +875,9 @@ impl Updater {
         let pending = self
             .read_pending()
             .ok_or_else(|| UpdateError::new("noPending", "没有已下载的更新"))?;
-        match startup_action(Some(&pending), &self.current_version, self.kind) {
-            StartupAction::Install => {}
-            StartupAction::Discard(reason) => {
-                self.discard_pending(&reason);
-                return Err(UpdateError::new("noPending", reason));
-            }
-            StartupAction::Nothing => unreachable!("已有待装包"),
+        let action = startup_action(Some(&pending), &self.current_version, self.kind);
+        if let Some(reason) = self.apply_discard(&action, Some(&pending)) {
+            return Err(UpdateError::new("noPending", reason));
         }
         let path = self.updates_dir.join(&pending.file);
         let invalid = |reason: String| {
@@ -820,7 +957,10 @@ pub(crate) enum LaunchOutcome {
 }
 
 /// 经 UAC 拉起安装器（安装包已校验）；成功后记一次尝试。失败或取消时待装包保留。
-pub(crate) fn launch(updater: &Updater, package: VerifiedPackage) -> Result<LaunchOutcome, UpdateError> {
+pub(crate) fn launch(
+    updater: &Updater,
+    package: VerifiedPackage,
+) -> Result<LaunchOutcome, UpdateError> {
     let system_dir = crate::platform::system_dir();
     let command = installer_command(package.kind, &package.path, &system_dir);
     let relaunch = std::env::current_exe()
@@ -831,13 +971,26 @@ pub(crate) fn launch(updater: &Updater, package: VerifiedPackage) -> Result<Laun
         command.params,
         package.version
     ));
-    match crate::platform::launch_installer(&command.program, &command.params, &relaunch) {
-        Ok(true) => {
+    match crate::platform::launch_installer(
+        &command.program,
+        &command.params,
+        &relaunch,
+        updater.relaunch_data_dir.as_deref(),
+    ) {
+        Ok(Some(relaunch_scheduled)) => {
             updater.record_attempt();
+            let version = package.version.clone();
             drop(package);
+            if !relaunch_scheduled {
+                updater.log("无法安排安装后自动重新打开 Primus，已提示用户手动打开");
+                crate::platform::show_info(&format!(
+                    "Primus {} 正在安装。安装完成后请手动打开 Primus。",
+                    version
+                ));
+            }
             Ok(LaunchOutcome::Started)
         }
-        Ok(false) => {
+        Ok(None) => {
             updater.log("用户取消了管理员授权，待装包保留");
             Ok(LaunchOutcome::Cancelled)
         }
@@ -852,7 +1005,11 @@ pub(crate) fn launch(updater: &Updater, package: VerifiedPackage) -> Result<Laun
 /// 版本更高 → 校验并拉起安装器，成功返回 true（调用方立即退出）；已装过或无效 → 清理。
 pub(crate) fn install_on_startup(updater: &Updater) -> bool {
     let pending = updater.read_pending();
-    match startup_action(pending.as_ref(), updater.current_version(), updater.install_kind()) {
+    match startup_action(
+        pending.as_ref(),
+        updater.current_version(),
+        updater.install_kind(),
+    ) {
         StartupAction::Nothing => {
             // 没有描述但目录里残留安装包（例如写描述前被中断）：清掉
             if pending.is_none() {
@@ -860,8 +1017,8 @@ pub(crate) fn install_on_startup(updater: &Updater) -> bool {
             }
             false
         }
-        StartupAction::Discard(reason) => {
-            updater.discard_pending(&reason);
+        action @ (StartupAction::Discard(_) | StartupAction::Abandon(_)) => {
+            updater.apply_discard(&action, pending.as_ref());
             false
         }
         StartupAction::Install => {
@@ -891,7 +1048,9 @@ pub(crate) fn start_auto_check<R: tauri::Runtime>(app: tauri::AppHandle<R>, upda
             std::thread::sleep(FIRST_CHECK_DELAY);
             loop {
                 if updater.settings().auto_update {
-                    let _ = tauri::async_runtime::block_on(updater.check_and_download(&app, None));
+                    let _ = tauri::async_runtime::block_on(
+                        updater.check_and_download(&app, None, false),
+                    );
                 }
                 std::thread::sleep(CHECK_INTERVAL);
             }
@@ -920,8 +1079,14 @@ mod tests {
 
     #[test]
     fn verifies_real_tauri_signature_and_binds_version() {
-        assert_eq!(verify_signature(HELLO, TAURI_SIG, TAURI_PUBKEY, "1.2.3"), Ok(()));
-        assert_eq!(verify_signature(HELLO, TAURI_SIG, TAURI_PUBKEY, "v1.2.3"), Ok(()));
+        assert_eq!(
+            verify_signature(HELLO, TAURI_SIG, TAURI_PUBKEY, "1.2.3"),
+            Ok(())
+        );
+        assert_eq!(
+            verify_signature(HELLO, TAURI_SIG, TAURI_PUBKEY, "v1.2.3"),
+            Ok(())
+        );
         assert!(verify_signature(b"hello!\n", TAURI_SIG, TAURI_PUBKEY, "1.2.3").is_err());
         let err = verify_signature(HELLO, TAURI_SIG, TAURI_PUBKEY, "1.2.4").unwrap_err();
         assert!(err.contains("1.2.3"), "{err}");
@@ -1022,8 +1187,11 @@ mod tests {
             Some("Primus_0.0.7_x64_zh-CN.msi")
         );
         assert_eq!(
-            package_file_name("https://x/Primus_0.0.7_arm64-setup.exe?x=1", InstallKind::Nsis)
-                .as_deref(),
+            package_file_name(
+                "https://x/Primus_0.0.7_arm64-setup.exe?x=1",
+                InstallKind::Nsis
+            )
+            .as_deref(),
             Some("Primus_0.0.7_arm64-setup.exe")
         );
         for bad in [
@@ -1069,7 +1237,10 @@ mod tests {
     #[test]
     fn startup_actions() {
         let cur = v("1.2.2");
-        assert_eq!(startup_action(None, &cur, InstallKind::Msi), StartupAction::Nothing);
+        assert_eq!(
+            startup_action(None, &cur, InstallKind::Msi),
+            StartupAction::Nothing
+        );
         let p = pending("1.2.3");
         assert_eq!(
             startup_action(Some(&p), &cur, InstallKind::Msi),
@@ -1089,7 +1260,7 @@ mod tests {
         };
         assert!(matches!(
             startup_action(Some(&tried), &cur, InstallKind::Msi),
-            StartupAction::Discard(_)
+            StartupAction::Abandon(_)
         ));
     }
 
@@ -1111,7 +1282,10 @@ mod tests {
         let p = pending("1.2.3");
         u.store_package(&p, HELLO).unwrap();
         assert_eq!(u.read_pending(), Some(p.clone()));
-        assert!(!tmp.0.join("updates/Primus_old.msi").exists(), "旧安装包被清掉");
+        assert!(
+            !tmp.0.join("updates/Primus_old.msi").exists(),
+            "旧安装包被清掉"
+        );
         let status = u.status();
         assert_eq!(status.current_version, "1.2.2");
         assert_eq!(
@@ -1151,10 +1325,16 @@ mod tests {
         let u = updater(&tmp, "1.2.2", Some(TAURI_PUBKEY));
         if !u.available() {
             // 非 Windows：整体禁用
-            assert_eq!(u.prepare_install().err().map(|e| e.code), Some("unavailable"));
+            assert_eq!(
+                u.prepare_install().err().map(|e| e.code),
+                Some("unavailable")
+            );
             // 签名与哈希校验本身是平台无关的
             let p = pending("1.2.3");
-            assert_eq!(verify_signature(HELLO, &p.signature, TAURI_PUBKEY, &p.version), Ok(()));
+            assert_eq!(
+                verify_signature(HELLO, &p.signature, TAURI_PUBKEY, &p.version),
+                Ok(())
+            );
             return;
         }
         let p = pending("1.2.3");
@@ -1192,7 +1372,10 @@ mod tests {
         assert!(!u.available());
         assert!(!u.status().available);
         u.store_package(&pending("1.2.3"), HELLO).unwrap();
-        assert_eq!(u.prepare_install().err().map(|e| e.code), Some("unavailable"));
+        assert_eq!(
+            u.prepare_install().err().map(|e| e.code),
+            Some("unavailable")
+        );
         // 没有公钥时不尝试安装，也不删除待装包
         assert!(!install_on_startup(&u));
         assert!(u.read_pending().is_some());
@@ -1206,7 +1389,10 @@ mod tests {
         let sink = seen.clone();
         u.set_listener(move |s| sink.lock().unwrap().push(s.settings));
         assert_eq!(u.set_settings(Some(false), None), Ok(false));
-        assert_eq!(u.set_settings(Some(true), Some(UpdateChannel::Beta)), Ok(true));
+        assert_eq!(
+            u.set_settings(Some(true), Some(UpdateChannel::Beta)),
+            Ok(true)
+        );
         assert_eq!(u.set_settings(Some(true), None), Ok(false));
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 4, "注册时推送一次，之后每次修改推送");
@@ -1218,6 +1404,53 @@ mod tests {
                 channel: UpdateChannel::Beta
             }
         );
+    }
+
+    #[test]
+    fn abandoned_version_is_recorded_and_survives_cleanup() {
+        let tmp = TempDir::new();
+        let u = updater(&tmp, "1.2.2", None);
+        let p = PendingUpdate {
+            attempts: MAX_INSTALL_ATTEMPTS,
+            ..pending("1.2.3")
+        };
+        u.store_package(&p, HELLO).unwrap();
+        assert!(!install_on_startup(&u));
+        assert_eq!(u.read_pending(), None);
+        assert_eq!(u.abandoned_version().as_deref(), Some("1.2.3"));
+        // 之后存入新版本、启动清理都不删放弃记录
+        u.store_package(&pending("1.2.4"), HELLO).unwrap();
+        u.remove_packages_except(None);
+        assert_eq!(u.abandoned_version().as_deref(), Some("1.2.3"));
+    }
+
+    #[test]
+    fn store_keeps_new_package_and_removes_old_after_commit() {
+        let tmp = TempDir::new();
+        let u = updater(&tmp, "1.2.2", None);
+        let old = pending("1.2.3");
+        u.store_package(&old, HELLO).unwrap();
+        let new = PendingUpdate {
+            file: "Primus_1.2.4_x64_zh-CN.msi".into(),
+            ..pending("1.2.4")
+        };
+        u.store_package(&new, HELLO).unwrap();
+        assert_eq!(u.read_pending(), Some(new.clone()));
+        assert!(tmp.0.join("updates").join(&new.file).exists());
+        assert!(!tmp.0.join("updates").join(&old.file).exists());
+    }
+
+    #[test]
+    fn verify_stored_detects_corrupt_or_missing_package() {
+        let tmp = TempDir::new();
+        let u = updater(&tmp, "1.2.2", None);
+        let p = pending("1.2.3");
+        u.store_package(&p, HELLO).unwrap();
+        assert_eq!(u.verify_stored(&p, TAURI_PUBKEY), Ok(()));
+        fs::write(tmp.0.join("updates").join(&p.file), b"hello!\n").unwrap();
+        assert!(u.verify_stored(&p, TAURI_PUBKEY).is_err());
+        fs::remove_file(tmp.0.join("updates").join(&p.file)).unwrap();
+        assert!(u.verify_stored(&p, TAURI_PUBKEY).is_err());
     }
 
     #[test]

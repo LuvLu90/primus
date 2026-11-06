@@ -478,7 +478,7 @@ pub(crate) async fn update_check(
     channel: Option<UpdateChannel>,
 ) -> Result<UpdateStatus, UpdateError> {
     let updater = updater.inner().clone();
-    updater.check_and_download(&app, channel).await
+    updater.check_and_download(&app, channel, true).await
 }
 
 /// 修改更新设置（自动更新开关、通道），保存到 `users/<SID>/app/update.json`；自动更新从关到开时立即在后台检查一次。
@@ -492,14 +492,16 @@ pub(crate) fn update_settings_set(
     if updater.set_settings(auto_update, channel)? && updater.available() {
         let updater = updater.inner().clone();
         tauri::async_runtime::spawn(async move {
-            let _ = updater.check_and_download(&app, None).await;
+            let _ = updater.check_and_download(&app, None, false).await;
         });
     }
     Ok(updater.status())
 }
 
 /// 立即重启并安装已下载的更新。有正在运行的 Agent 时返回 `busy`，前端确认后带 `force` 再调。
-/// 安装包校验通过后停掉全部 Core，经 UAC 拉起安装器并退出；用户取消 UAC 返回 `cancelled`，待装包保留（下次启动再装）。
+/// 忙碌检查与“安装中”标记在会话表的同一次加锁内完成，之后新的 prompt 与会话拉起被拒绝，直到安装取消或失败。
+/// 安装包校验通过后经 UAC 拉起安装器；安装器已运行才结束全部 Core 并退出。用户取消 UAC 返回 `cancelled`、
+/// 拉起失败返回 `failed`：两种情况下 Core 都没有被停掉，会话照常可用，待装包保留（下次启动再装）。
 #[tauri::command(async)]
 pub(crate) fn update_install(
     app: tauri::AppHandle,
@@ -508,22 +510,21 @@ pub(crate) fn update_install(
     supervisor: State<'_, Supervisor>,
     force: Option<bool>,
 ) -> Result<(), UpdateError> {
-    if !force.unwrap_or(false) && sessions.any_busy() {
-        return Err(UpdateError::new(
-            "busy",
-            "有正在运行的 Agent，更新会停止它们",
-        ));
-    }
+    let hold = sessions
+        .hold_for_update(force.unwrap_or(false))
+        .ok_or_else(|| UpdateError::new("busy", "有正在运行的 Agent，更新会停止它们"))?;
     let package = updater.prepare_install()?;
     updater.set_installing(true);
-    // 安装器会替换 resources 下的 node.exe 与 Core 文件：先结束全部 Core（含工具子进程）
-    supervisor.shutdown();
     match crate::updater::launch(&updater, package) {
         Ok(LaunchOutcome::Started) => {
+            // 安装器会替换 resources 下的 node.exe 与 Core 文件：结束全部 Core（含工具子进程）后退出
+            supervisor.shutdown();
             app.exit(0);
+            std::mem::forget(hold);
             Ok(())
         }
         Ok(LaunchOutcome::Cancelled) => {
+            drop(hold);
             updater.set_installing(false);
             Err(UpdateError::new(
                 "cancelled",
@@ -531,6 +532,7 @@ pub(crate) fn update_install(
             ))
         }
         Err(e) => {
+            drop(hold);
             updater.set_installing(false);
             Err(e)
         }

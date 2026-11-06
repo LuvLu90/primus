@@ -125,6 +125,12 @@ describe("设置·更新", () => {
     expect(updateStateText({ ...base, lastError: "超时" }, false)).toBe(
       tu.lastError.replace("{message}", "超时"),
     );
+    expect(
+      updateStateText(
+        { ...base, lastError: "超时", pending: { version: "0.0.7", notes: null } },
+        false,
+      ),
+    ).toBe(tu.lastError.replace("{message}", "超时"));
     expect(updateStateText(base, false)).toBeNull();
     expect(updateStateText(base, true)).toBe(tu.upToDate);
   });

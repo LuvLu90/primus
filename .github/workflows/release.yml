@@ -267,6 +267,12 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    # 共享的 update-feed 清单“读取 → 比较 → 上传”必须串行：不同标签的发布作业若并发，较旧版本可能读到旧清单后
+    # 覆盖较新版本刚上传的清单。所有标签的发布作业共用一个并发组，同一时刻只有一个在运行，后来的排队等待。
+    # （GitHub 每组只保留一个排队中的作业：短时间内连发三个以上标签时，中间排队的会被更新的取代，按需手动重跑）
+    concurrency:
+      group: release-publish-update-feed
+      cancel-in-progress: false
     # 仅发布作业持有写权限；构建作业只读
     permissions:
       contents: write

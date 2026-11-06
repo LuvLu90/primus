@@ -28,23 +28,25 @@
 
 ### 设置与待装包的位置（C2）
 - 设置：`data/users/<SID>/app/update.json`（`autoUpdate` 默认 `true`，`channel` 默认 `stable`）；文件缺失或损坏时用默认值。
-- 待装包：`data/users/<SID>/updates/`。`users/<SID>` 的 DACL 只有当前用户与 SYSTEM，普通用户可写的共享目录（如 `data` 根、`shared`）里的安装包可能被其他本地用户替换，再由受害者点击 UAC 以管理员身份运行，形成提权；放在用户目录下避免这一点。另给 `updates` 目录追加 Administrators **只读**（可继承），供标准用户“过肩”输入管理员账号提权时，以该管理员账号运行的安装器能读到安装包；写权限仍只有当前用户与 SYSTEM。
-- 下载完成后先写安装包（临时文件 + 改名），再原子写 `pending.json`：`version`、`notes`、`kind`、`file`（只是文件名，读取时再校验只含 `[A-Za-z0-9._-]` 且扩展名与安装方式一致）、`sha256`、`signature`、`attempts`。换新包前先删旧描述与旧包。
+- 待装包：`data/users/<SID>/updates/`。`users/<SID>` 的 DACL 只有当前用户与 SYSTEM，普通用户可写的共享目录（如 `data` 根、`shared`）里的安装包可能被其他本地用户替换，再由受害者点击 UAC 以管理员身份运行，形成提权；放在用户目录下避免这一点。另给 `updates` 目录追加 Administrators **只读**（可继承），供标准用户“过肩”输入管理员账号提权时，以该管理员账号运行的安装器能读到安装包；写权限仍只有当前用户与 SYSTEM。追加失败时不发布待装包（报下载失败），避免提示“已就绪”而过肩提权后安装器读不到自身。
+- 下载完成后先写安装包（临时文件 + 改名），再原子写 `pending.json`：`version`、`notes`、`kind`、`file`（只是文件名，读取时再校验只含 `[A-Za-z0-9._-]` 且扩展名与安装方式一致）、`sha256`、`signature`、`attempts`。新包与新描述都提交后才删除旧包；写入失败时旧的待装包仍然可用。
 
 ### 安装前二次校验
 - “立即重启更新”与“下次启动时安装”共用一个函数：从磁盘重新读安装包，核对版本严格大于当前（SemVer，含预发布）、安装方式一致、SHA-256 与下载时一致，再用**编译进 exe 的公钥**重新校验 minisign 签名，规则与插件相同（`minisign-verify` 0.3.0，与插件依赖树中的版本一致；`allow_legacy = true`；trusted comment 的 `version:` 须与待装版本按 SemVer 相等）。任一项不通过即删除待装包并记日志。
 - Windows 上校验时以只共享读的方式打开安装包，句柄保持到安装器拉起之后，缩小“校验之后、安装器读取之前被替换”的窗口。
 
 ### 启动安装器与非提权重启
-- 通过校验后先 `Supervisor::shutdown()` 结束全部 Core（含工具子进程；安装器要替换 `resources` 下的 `node.exe` 与 Core 文件），再用 `ShellExecuteExW`（`runas`、`SEE_MASK_NOCLOSEPROCESS`）启动安装器：MSI → `%SystemRoot%\System32\msiexec.exe /i "<file>" /passive /norestart`（安装目录由 `Primus.wxs` 的 `PREVIOUS_INSTALLFOLDER` 沿用，`data` 不受影响）；NSIS → `"<setup.exe>" /P /UPDATE`（不传 `/R`，安装器不自己启动 App）。msiexec 与 PowerShell 的路径取自 `GetSystemDirectoryW`，不经 PATH。
-- 拿到安装器进程句柄后，复制一个只有 `SYNCHRONIZE` 权限的可继承句柄，以当前（非提权）身份拉起隐藏的 PowerShell：按句柄等待安装器结束后 `Start-Process` 新的 `Primus.exe`，然后 Primus 退出。按句柄而不是按 PID 等待：非提权进程不一定能按 PID 打开提权的安装器进程，PID 也可能被复用。这样更新后的 App 以普通权限运行，而不是由提权的 msiexec / NSIS 直接启动（否则 WebView、Core 与它们写出的文件都会是管理员身份）。PowerShell 优先 `CREATE_BREAKAWAY_FROM_JOB`，所在作业不允许脱离时退回普通创建。
-- 用户取消 UAC 或启动失败：待装包保留，App 照常运行（立即重启路径上 Core 已停，界面按“内核已停止 → 重启”恢复），前端再次显示提示；启动时的安装路径则照常启动。
-- 成功拉起安装器记一次 `attempts`；同一待装版本成功拉起 3 次后版本仍未变化（安装失败），启动时删除待装包，不再每次启动都弹 UAC。
+- 通过校验后用 `ShellExecuteExW`（`runas`、`SEE_MASK_NOCLOSEPROCESS`）启动安装器：MSI → `%SystemRoot%\System32\msiexec.exe /i "<file>" /passive /norestart`（安装目录由 `Primus.wxs` 的 `PREVIOUS_INSTALLFOLDER` 沿用，`data` 不受影响）；NSIS → `"<setup.exe>" /P /UPDATE`（不传 `/R`，安装器不自己启动 App）。msiexec 与 PowerShell 的路径取自 `GetSystemDirectoryW`，不经 PATH。
+- 拿到安装器进程句柄后，复制一个只有 `SYNCHRONIZE` 权限的可继承句柄，以当前（非提权）身份拉起隐藏的 PowerShell：按句柄等待安装器结束后 `Start-Process` 新的 `Primus.exe`，然后 Primus 退出。按句柄而不是按 PID 等待：非提权进程不一定能按 PID 打开提权的安装器进程，PID 也可能被复用。这样更新后的 App 以普通权限运行，而不是由提权的 msiexec / NSIS 直接启动（否则 WebView、Core 与它们写出的文件都会是管理员身份）。PowerShell 优先 `CREATE_BREAKAWAY_FROM_JOB`，所在作业不允许脱离时退回普通创建；仍无法安排重新打开（复制句柄或启动 PowerShell 失败）时，退出前弹窗提示用户安装完成后手动打开。`--data-dir` 指定的数据目录（绝对路径）原样传给重新打开的进程。
+- 安装器已运行后才 `Supervisor::shutdown()` 结束全部 Core（含工具子进程；安装器要替换 `resources` 下的 `node.exe` 与 Core 文件）并退出。
+- 用户取消 UAC 或启动失败：待装包保留，Core 没有被停掉，App 与会话照常运行，前端再次显示提示；启动时的安装路径则照常启动。
+- 成功拉起安装器记一次 `attempts`；同一待装版本成功拉起 3 次后版本仍未变化（安装失败），启动时删除待装包并把该版本记入 `updates/abandoned.json`，自动检查不再下载它（不再每次启动都弹 UAC）；更高的版本照常更新，用户在设置页手动检查时清除记录重新下载。
 
 ### 自动流程
-- 主窗口创建后约 10 秒，若 `autoUpdate` 开启则检查；之后每 24 小时一次。清单版本严格大于当前、且不是已下载待装的同一版本时下载（插件验签，下载进度经 `update_watch` 推送，最多每 250ms 一次），存为待装包后推送带 `pending` 的状态，前端显示非阻塞提示“Primus x.y.z 已下载并校验，重启即可更新”，按钮“立即重启更新”“下次启动时更新”。自动检查失败只写 `updates/updater.log`（当前用户私有，超过 1MB 重写），不打扰用户；设置页显示上次失败原因。
+- 主窗口创建后约 10 秒，若 `autoUpdate` 开启则检查；之后每 24 小时一次。清单版本严格大于当前、且不是已下载待装的同一版本时下载（已下载的同一版本先重新核对 SHA-256 与签名，损坏或缺失则重新下载；插件验签；连接 30 秒、读取停滞 60 秒、总时长 2 小时超时，安装包超过 512 MB 即中止，下载进度经 `update_watch` 推送，最多每 250ms 一次），存为待装包后推送带 `pending` 的状态，前端显示非阻塞提示“Primus x.y.z 已下载并校验，重启即可更新”，按钮“立即重启更新”“下次启动时更新”。自动检查失败只写 `updates/updater.log`（当前用户私有，超过 1MB 重写），不打扰用户；设置页显示上次失败原因。
 - 下次启动：`lib.rs` 的 `setup` 一开始（数据目录就绪、单实例插件已确认是主实例之后，写模型配置、打开会话索引、创建窗口和拉起 Core 之前）处理待装包：版本更高 → 走同一安装函数，拉起成功即退出；版本不大于当前（已装过）或安装方式不符 → 清理。
-- `update_install` 在有运行中的 Agent（任一会话 `agent_start` 之后未 `agent_settled`、有未响应的 prompt，或正在打开 / 重启）时返回 `busy`，前端确认后带 `force` 再调。
+- `update_install` 在有运行中的 Agent（任一会话 `agent_start` 之后未 `agent_settled`、有未响应的 prompt，或正在打开 / 重启）时返回 `busy`，前端确认后带 `force` 再调。忙碌检查与“安装中”标记在会话表的同一把锁内完成，之后新的 prompt、会话打开与重启被拒绝，直到安装取消或失败，不会有新的一轮夹在检查与停掉 Core 之间。
+- 发布工作流中所有标签的发布作业共用一个并发组，`update-feed` 清单的读取、比较与上传串行执行，较旧版本不会覆盖较新版本的清单。
 
 ### 前端
 - `features/update/update-store.ts` 统一订阅一次 `update_watch`（薄壳只保留一个订阅，与 `session_watch` 相同的模式，ADR 0006），根布局中的 `UpdatePrompt` 与设置页“更新”分组都读它。设置页：当前版本、“自动更新”开关（默认开）、通道（稳定版 / Beta 版）、“立即检查”，有待装版本时也可从这里立即重启更新。
