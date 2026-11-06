@@ -182,9 +182,11 @@ fn current_arch() -> &'static str {
     }
 }
 
-/// 版本严格大于当前（SemVer，含预发布：`1.3.0-beta.2` < `1.3.0`）。解析不了的版本一律不算更新。
+/// 版本优先级严格高于当前（SemVer，含预发布：`1.3.0-beta.2` < `1.3.0`；只差构建元数据的不算更新）。
+/// 解析不了的版本一律不算更新。
 pub(crate) fn is_newer(candidate: &str, current: &Version) -> bool {
-    parse_version(candidate).is_some_and(|v| v > *current)
+    parse_version(candidate)
+        .is_some_and(|v| v.cmp_precedence(current) == std::cmp::Ordering::Greater)
 }
 
 fn parse_version(v: &str) -> Option<Version> {
@@ -696,14 +698,15 @@ impl Updater {
             return Ok(self.status());
         }
         let result = self.check_inner(app, channel, manual).await;
-        self.busy.store(false, Ordering::Release);
         {
+            // 先在锁内复位状态再放开 busy，下一次检查开始时看到的已是复位后的状态
             let mut runtime = lock(&self.runtime);
             runtime.phase = UpdatePhase::Idle;
             runtime.progress = None;
             runtime.last_check = Some(now_millis());
             runtime.last_error = result.as_ref().err().map(|e| e.message.clone());
         }
+        self.busy.store(false, Ordering::Release);
         if let Err(e) = &result {
             self.log(&format!("检查或下载更新失败：{}", e.message));
         }
@@ -1106,6 +1109,7 @@ mod tests {
         assert!(is_newer("1.3.0", &cur));
         assert!(is_newer("v1.3.0", &cur));
         assert!(!is_newer("1.3.0-beta.2", &cur));
+        assert!(!is_newer("1.3.0-beta.2+build.7", &cur));
         assert!(!is_newer("1.3.0-alpha.9", &cur));
         assert!(!is_newer("1.2.9", &cur));
         assert!(!is_newer("garbage", &cur));

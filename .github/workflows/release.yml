@@ -524,8 +524,10 @@ jobs:
               --prerelease --latest=false
           fi
           mkdir -p feed-old feed
+          # 先单独查询附件列表：查询失败就停止发布，不能当成“没有旧清单”而覆盖
+          existing="$(gh release view "$feed" --json assets --jq '.assets[].name')"
           for name in stable.json beta.json; do
-            if gh release view "$feed" --json assets --jq '.assets[].name' | grep -Fxq -- "$name"; then
+            if grep -Fxq -- "$name" <<<"$existing"; then
               gh release download "$feed" --pattern "$name" --dir feed-old
             fi
           done
@@ -542,7 +544,18 @@ jobs:
           fi
           uploads=()
           for name in "${written[@]}"; do uploads+=("feed/${name}"); done
-          gh release upload "$feed" "${uploads[@]}" --clobber
+          if ! gh release upload "$feed" "${uploads[@]}" --clobber; then
+            # --clobber 会先删同名附件；上传失败时用 feed-old 里的旧清单恢复，避免客户端读不到清单
+            echo "::error::上传 update-feed 清单失败，尝试恢复旧清单"
+            restore=()
+            for name in "${written[@]}"; do
+              [[ -f "feed-old/${name}" ]] && restore+=("feed-old/${name}")
+            done
+            if [[ ${#restore[@]} -gt 0 ]] && ! gh release upload "$feed" "${restore[@]}" --clobber; then
+              echo "::error::恢复旧清单也失败了，请手动检查 update-feed：${restore[*]}"
+            fi
+            exit 1
+          fi
           for name in "${written[@]}"; do
             got="$(gh release download "$feed" --pattern "$name" --output - | jq -r .version)"
             [[ "$got" == "$VERSION" ]] || { echo "::error::update-feed 中的 ${name} 版本为 ${got}，应为 ${VERSION}"; exit 1; }

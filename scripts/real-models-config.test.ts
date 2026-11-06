@@ -154,4 +154,18 @@ describe("真实模型配置", () => {
     expect(isProviderRateLimited('500 {"detail":"速率限制"}')).toBe(false);
     expect(isProviderRateLimited(undefined)).toBe(false);
   });
+
+  it("只提到请求频率的参数错误不算限流；异常类名前缀与转义的嵌套 JSON 也能识别", () => {
+    expect(isProviderRateLimited('400 {"detail":"参数 max_tokens 无效，与请求频率无关"}')).toBe(
+      false,
+    );
+    const prefixed = 'BadRequestError: 400 {"detail":"您的账户已达到速率限制，请您控制请求频率"}';
+    expect(errorStatus(prefixed)).toBe(400);
+    expect(isProviderRateLimited(prefixed)).toBe(true);
+    // 正文里的状态码不算
+    expect(errorStatus("BadRequestError: something 400")).toBeUndefined();
+    const nested =
+      '400 {"error":{"message":"{\\"detail\\":\\"\\u60a8\\u7684\\u8d26\\u6237\\u5df2\\u8fbe\\u5230\\u901f\\u7387\\u9650\\u5236\\"}"}}';
+    expect(isProviderRateLimited(nested)).toBe(true);
+  });
 });

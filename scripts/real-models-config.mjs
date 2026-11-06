@@ -102,7 +102,9 @@ export function smokeEnv({ home, coreDir, tmpDir, apiKey, extraEnv = {}, env = p
 
 // Core 的错误文本形如 "<供应商> API error (429): <正文>" 或 "429: <正文>"（agent-core formatProviderError）；
 // 只认开头的状态码，不认正文里偶然出现的 429（例如请求 ID）
-const HTTP_STATUS = /^(?:[\w .-]+ API error \((\d{3})\):|(\d{3})(?:\s|:|$))/i;
+// 也认 SDK 异常类名前缀，如 "BadRequestError: 400 ..."
+const HTTP_STATUS =
+  /^(?:[A-Za-z]\w*Error:\s*)?(?:[\w .-]+ API error \((\d{3})\):|(\d{3})(?:\s|:|$))/i;
 // 临时容量 / 冷却类错误，会自动恢复
 const TRANSIENT_QUOTA =
   /model_cooldown|RESOURCE_EXHAUSTED|exhausted your capacity|quota will reset/i;
@@ -127,7 +129,15 @@ export function isQuotaExhausted(errorMessage) {
 }
 
 // 智谱（GLM）网关把账户限流报成 HTTP 400：{"detail":"您的账户已达到速率限制，请您控制请求频率"}
-const PROVIDER_RATE_LIMIT_400 = /速率限制|请求频率/;
+// 只认明确“已触发限流”的说法；只提到“请求频率”的参数错误不算
+const PROVIDER_RATE_LIMIT_400 = /已达到速率限制|已触发限流|请求频率(?:过高|过快|超限)/;
+
+/** 正文常是嵌套的 JSON 字符串，中文被转义成 \\uXXXX；匹配前先还原 */
+function decodeUnicodeEscapes(text) {
+  return text.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) =>
+    String.fromCharCode(Number.parseInt(hex, 16)),
+  );
+}
 
 /**
  * 上游把限流报成 400 的已知情况（智谱 GLM）：共享的内置密钥被限流不是配置或代码问题，冒烟记为跳过。
@@ -135,5 +145,6 @@ const PROVIDER_RATE_LIMIT_400 = /速率限制|请求频率/;
  */
 export function isProviderRateLimited(errorMessage) {
   if (errorStatus(errorMessage) !== 400) return false;
-  return PROVIDER_RATE_LIMIT_400.test(errorMessage) && !ACCOUNT_QUOTA.test(errorMessage);
+  const text = decodeUnicodeEscapes(errorMessage);
+  return PROVIDER_RATE_LIMIT_400.test(text) && !ACCOUNT_QUOTA.test(text);
 }

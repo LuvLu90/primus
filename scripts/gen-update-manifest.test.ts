@@ -158,7 +158,8 @@ describe("gen-update-manifest", () => {
           "2026-11-05T00:00:00Z",
           ...extra,
         ],
-        { encoding: "utf8" },
+        // 清空宿主环境里可能存在的公钥，缺公钥的断言才稳定
+        { encoding: "utf8", env: { ...process.env, TAURI_SIGNING_PUBLIC_KEY: "" } },
       );
     const r = run();
     expect(r.status, r.stderr).toBe(0);
