@@ -15,6 +15,7 @@ import {
   hasModelId,
   hasModelLevelApiKey,
   hasOnlyAllowedApis,
+  isProviderRateLimited,
   isQuotaExhausted,
   resolveApiKey,
   smokeEnv,
@@ -52,6 +53,7 @@ const sandbox = mkdtempSync(join(devDataDir, "real-models-"));
 let failed = 0;
 let passed = 0;
 let quotaSkipped = 0;
+let rateLimitSkipped = 0;
 try {
   const target = prepareCoreTarget({ sandbox: join(sandbox, "target") });
   for (const [id, provider] of providers) {
@@ -148,6 +150,13 @@ try {
         );
         continue;
       }
+      if (finalMessage?.errorMessage && isProviderRateLimited(finalMessage.errorMessage)) {
+        rateLimitSkipped++;
+        console.warn(
+          `⚠ ${label} ${model}：上游限流，跳过（${finalMessage.errorMessage.slice(0, 200)}）`,
+        );
+        continue;
+      }
       if (finalMessage?.errorMessage)
         throw new Error(`模型报错：${finalMessage.errorMessage.slice(0, 300)}`);
       if (
@@ -172,7 +181,8 @@ try {
 } finally {
   rmSync(sandbox, { recursive: true, force: true });
 }
-// 额度用尽只算跳过；但至少要有一个模型真正跑通，全部跳过视为失败
+// 额度用尽与已知的上游限流只算跳过；但至少要有一个模型真正跑通，全部跳过视为失败
 if (quotaSkipped) console.warn(`⚠ ${quotaSkipped} 个模型因上游额度用尽跳过`);
+if (rateLimitSkipped) console.warn(`⚠ ${rateLimitSkipped} 个模型因上游限流跳过`);
 if (!failed && !passed) console.error("✗ 没有任何模型完成冒烟");
 process.exit(failed || !passed ? 1 : 0);

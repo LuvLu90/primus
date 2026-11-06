@@ -125,3 +125,15 @@ export function isQuotaExhausted(errorMessage) {
   if (errorStatus(errorMessage) !== 429) return false;
   return TRANSIENT_QUOTA.test(errorMessage) && !ACCOUNT_QUOTA.test(errorMessage);
 }
+
+// 智谱（GLM）网关把账户限流报成 HTTP 400：{"detail":"您的账户已达到速率限制，请您控制请求频率"}
+const PROVIDER_RATE_LIMIT_400 = /速率限制|请求频率/;
+
+/**
+ * 上游把限流报成 400 的已知情况（智谱 GLM）：共享的内置密钥被限流不是配置或代码问题，冒烟记为跳过。
+ * 只认状态码 400 加限流正文；其他 400（参数错误、模型不存在等）仍算失败。
+ */
+export function isProviderRateLimited(errorMessage) {
+  if (errorStatus(errorMessage) !== 400) return false;
+  return PROVIDER_RATE_LIMIT_400.test(errorMessage) && !ACCOUNT_QUOTA.test(errorMessage);
+}

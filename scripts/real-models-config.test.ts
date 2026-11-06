@@ -6,6 +6,7 @@ import {
   hasModelId,
   hasModelLevelApiKey,
   hasOnlyAllowedApis,
+  isProviderRateLimited,
   isQuotaExhausted,
   resolveApiKey,
   smokeEnv,
@@ -140,5 +141,17 @@ describe("真实模型配置", () => {
       ),
     ).toBe(false);
     expect(isQuotaExhausted(undefined)).toBe(false);
+  });
+
+  it("智谱把限流报成 400 时识别为上游限流，其他 400 不算", () => {
+    const glm = '400 {"detail":"您的账户已达到速率限制，请您控制请求频率"}';
+    expect(errorStatus(glm)).toBe(400);
+    expect(isProviderRateLimited(glm)).toBe(true);
+    expect(isProviderRateLimited(`x API error (400): ${glm.slice(4)}`)).toBe(true);
+    expect(isProviderRateLimited('400 {"detail":"model not found"}')).toBe(false);
+    // 不是 400 的不归这里管
+    expect(isProviderRateLimited('429 {"detail":"您的账户已达到速率限制"}')).toBe(false);
+    expect(isProviderRateLimited('500 {"detail":"速率限制"}')).toBe(false);
+    expect(isProviderRateLimited(undefined)).toBe(false);
   });
 });
