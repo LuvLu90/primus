@@ -8,7 +8,7 @@ import {
 } from "./index.ts";
 
 const exe = String.raw`D:\Primus\Primus.exe`;
-const command = `!"${exe}" --secret model-token`;
+const command = `!"${exe}" --secret provider:ioply`;
 
 function deps(over: Partial<AuthDeps> = {}): AuthDeps {
   return {
@@ -31,7 +31,7 @@ function deps(over: Partial<AuthDeps> = {}): AuthDeps {
 
 describe("primus-auth", () => {
   it("解析薄壳写入的取令牌命令", () => {
-    expect(parseSecretCommand(command)).toEqual({ exe, id: "model-token" });
+    expect(parseSecretCommand(command)).toEqual({ exe, id: "provider:ioply" });
     expect(
       parseSecretCommand(String.raw`!"C:\Program Files\Primus\Primus.exe" --secret a.b`),
     ).toEqual({ exe: String.raw`C:\Program Files\Primus\Primus.exe`, id: "a.b" });
@@ -50,7 +50,7 @@ describe("primus-auth", () => {
     const d = deps();
     const keys = resolveProviderKeys(d);
     expect(d.run).toHaveBeenCalledTimes(1);
-    expect(d.run).toHaveBeenCalledWith(exe, ["--secret", "model-token"]);
+    expect(d.run).toHaveBeenCalledWith(exe, ["--secret", "provider:ioply"]);
     expect([...keys]).toEqual([
       ["primus-messages", "tok-123"],
       ["primus-responses", "tok-123"],

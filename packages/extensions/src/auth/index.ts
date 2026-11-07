@@ -1,6 +1,6 @@
 // primus-auth：模型令牌直接取，不经 shell（技术方案第 9.4 节）。
 //
-// 薄壳写给 Core 的 models.json 里，每个供应商的 apiKey 是取令牌命令 `!"<Primus.exe>" --secret <id>`。
+// 薄壳写给 Core 的 models.json 里，每个渠道的 apiKey 是取密钥命令 `!"<Primus.exe>" --secret provider:<渠道 ID>`。
 // Core 在 Windows 上把这类命令交给 shell 执行：优先 Git Bash，其次 PATH 上的 bash.exe（可能是 WSL 的
 // System32\bash.exe，在 Linux 里根本找不到 D:\… 这样的 Windows 路径），bash 拉起原生程序时还可能脱离 Core 的
 // 作业对象——任何一种都会让取令牌失败，对话报 “Failed to resolve API key … from shell command”。
@@ -14,7 +14,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 /** models.json 中取令牌命令的格式（与薄壳 core_config::secret_command 一致） */
-const SECRET_COMMAND = /^!"([^"]+)" --secret ([A-Za-z0-9._-]+)$/;
+const SECRET_COMMAND = /^!"([^"]+)" --secret ([A-Za-z0-9._:-]+)$/;
 
 export interface SecretCommand {
   exe: string;
