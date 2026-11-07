@@ -1,6 +1,6 @@
 # 0005 账号服务接入前内置模型配置与测试账号
 
-- 状态：已接受（临时，账号服务接入后废止）
+- 状态：已废止（2026-11-07 被 [ADR 0008 用户自配模型渠道与内置 ioply 渠道](0008-user-providers-and-builtin-ioply.md) 取代：内置 `catalog.json`、内置测试账号与 `pnpm smoke:builtin` 均已删除）
 - 日期：2026-11-02
 
 ## 背景
