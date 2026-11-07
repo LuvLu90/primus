@@ -55,6 +55,8 @@ windows-sys = { version = "=0.61.2", features = [
 ] }
 # 语音输入（speech_*，platform/speech.rs）：系统自带的 Windows.Media.SpeechRecognition（WinRT），与 Tauri 依赖树中的版本一致
 windows = { version = "=0.62.2", features = ["Foundation", "Globalization", "Media_SpeechRecognition"] }
+# 麦克风自动授权（platform/webview_permissions.rs）：WebView2 的 PermissionRequested 与 Profile 权限，与 Tauri 依赖树中的版本一致
+webview2-com = "=0.39.1"
 
 [profile.release]
 lto = true

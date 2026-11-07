@@ -10,6 +10,7 @@ use std::path::Path;
 use crate::paths::RepairChoice;
 
 pub(crate) mod speech;
+pub(crate) mod webview_permissions;
 
 /// 安装包下载页：修复引导中“重新安装到其他目录”打开它。
 pub(crate) const REINSTALL_URL: &str = "https://github.com/skaduv/primus/releases";
@@ -943,7 +944,7 @@ mod windows_impl {
         Ok(exit_code == 0)
     }
 
-    /// 用系统默认浏览器打开 URL（调用方已校验只含 http/https）。
+    /// 用系统默认浏览器打开 URL（调用方已校验只含 http/https 或白名单中的 ms-settings 设置页）。
     pub(crate) fn open_url(url: &str) -> io::Result<()> {
         let verb = wide("open");
         let target = wide(url);
@@ -1214,6 +1215,23 @@ pub fn set_window_bounds(
     }
     Ok(())
 }
+
+/// 麦克风自动授权（[`webview_permissions`]）：Windows 上给 WebView2 挂权限事件；失败只记日志（退回 WebView2 默认的询问）。
+#[cfg(windows)]
+pub(crate) fn auto_grant_microphone(window: &tauri::WebviewWindow) {
+    let result = window.with_webview(|webview| {
+        if let Err(e) = webview_permissions::grant_microphone(&webview.controller()) {
+            eprintln!("无法设置 WebView2 麦克风权限：{e}");
+        }
+    });
+    if let Err(e) = result {
+        eprintln!("无法设置 WebView2 麦克风权限：{e}");
+    }
+}
+
+/// 其他平台：语音输入不可用，不处理权限。
+#[cfg(not(windows))]
+pub(crate) fn auto_grant_microphone(_window: &tauri::WebviewWindow) {}
 
 /// 其他平台没有原子接口，分两步设置。
 #[cfg(not(windows))]

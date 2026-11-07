@@ -18,8 +18,18 @@ use crate::supervisor::Supervisor;
 use crate::updater::{LaunchOutcome, UpdateChannel, UpdateError, UpdateStatus, Updater};
 use crate::workspaces::{TrustDetails, WorkspaceInfo, Workspaces};
 
-/// 外部链接只允许 http/https，长度有限且不含空白与控制字符（防止被当成命令行参数或本地路径执行）。
+/// 可以打开的系统设置页（语音输入被系统隐私设置拒绝时，引导用户去开麦克风 / 联机语音识别）。只认这几个完整值。
+const SETTINGS_PAGES: &[&str] = &[
+    "ms-settings:privacy-microphone",
+    "ms-settings:privacy-speech",
+];
+
+/// 外部链接只允许 http/https（以及 [`SETTINGS_PAGES`] 中的系统设置页），长度有限且不含空白与控制字符
+/// （防止被当成命令行参数或本地路径执行）。
 fn check_external_url(target: &str) -> Result<(), String> {
+    if SETTINGS_PAGES.contains(&target) {
+        return Ok(());
+    }
     let lower = target.to_ascii_lowercase();
     let scheme_ok = lower.starts_with("https://") || lower.starts_with("http://");
     let host_ok = target.split_once("://").is_some_and(|(_, rest)| {
@@ -547,6 +557,8 @@ mod tests {
     fn external_url_only_http_https() {
         assert!(check_external_url("https://example.com/a?b=1").is_ok());
         assert!(check_external_url("HTTP://example.com").is_ok());
+        assert!(check_external_url("ms-settings:privacy-microphone").is_ok());
+        assert!(check_external_url("ms-settings:privacy-speech").is_ok());
         for bad in [
             "file:///C:/Windows/System32/cmd.exe",
             "C:\\Windows\\notepad.exe",
@@ -555,6 +567,10 @@ mod tests {
             "https:///etc/passwd",
             "https://example.com/a b",
             "https://example.com/\n",
+            "ms-settings:",
+            "ms-settings:privacy-webcam",
+            "ms-settings:privacy-microphone ",
+            "MS-SETTINGS:privacy-microphone",
         ] {
             assert!(check_external_url(bad).is_err(), "{bad}");
         }
@@ -859,14 +875,20 @@ pub(crate) fn speech_available(speech: State<'_, crate::platform::speech::Speech
 }
 
 /// 开始语音听写：识别事件（interim / final / error / end）经 Channel 推送；已有会话时先停止旧的。
+/// 启动失败也走事件（`error` 带可解决它的系统设置页，随后 `end`），命令本身只在 IPC 层失败。
 #[tauri::command(async)]
 pub(crate) fn speech_start(
     speech: State<'_, crate::platform::speech::Speech>,
     on_event: Channel<crate::platform::speech::SpeechEvent>,
 ) -> Result<(), String> {
-    speech.start(Arc::new(move |event| {
+    let sink: crate::platform::speech::SpeechSink = Arc::new(move |event| {
         let _ = on_event.send(event);
-    }))
+    });
+    if let Err(failure) = speech.start(sink.clone()) {
+        sink(failure.into());
+        sink(crate::platform::speech::SpeechEvent::End);
+    }
+    Ok(())
 }
 
 /// 停止语音听写（之后推送 `end`）。

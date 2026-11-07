@@ -5,10 +5,54 @@
 //!   识别语言为系统语音语言；系统“联机语音识别”隐私开关关闭时听写不可用，返回明确的错误。
 //! - 其他平台：不可用（前端隐藏麦克风按钮）。
 //!
-//! 麦克风音量（波形）由前端 WebView 的 getUserMedia + AnalyserNode 计算，薄壳不推送音量。
+//! 麦克风音量（波形）由前端 WebView 的 getUserMedia + AnalyserNode 计算，薄壳不推送音量；
+//! App 自己的页面由薄壳自动授予 WebView2 麦克风权限（`webview_permissions`），不弹权限框。
+//! 系统隐私设置（麦克风、联机语音识别）App 无权更改：被拒时错误事件带上对应的设置页，前端提供“打开设置”。
 //! 识别结果只经 Channel 推给前端，不落盘。
 
 use serde::Serialize;
+
+/// 错误可以去哪个系统设置页解决（前端经 `open_external` 打开 `ms-settings:privacy-*`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum SettingsPage {
+    /// 设置 → 隐私和安全性 → 麦克风
+    Microphone,
+    /// 设置 → 隐私和安全性 → 语音（联机语音识别）
+    Speech,
+}
+
+/// 识别失败：给用户看的错误，以及能解决它的系统设置页。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SpeechFailure {
+    pub message: String,
+    pub settings: Option<SettingsPage>,
+}
+
+impl SpeechFailure {
+    pub(crate) fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            settings: None,
+        }
+    }
+
+    fn with_settings(message: impl Into<String>, settings: SettingsPage) -> Self {
+        Self {
+            message: message.into(),
+            settings: Some(settings),
+        }
+    }
+}
+
+impl From<SpeechFailure> for SpeechEvent {
+    fn from(failure: SpeechFailure) -> Self {
+        SpeechEvent::Error {
+            message: failure.message,
+            settings: failure.settings,
+        }
+    }
+}
 
 /// 推给前端的识别事件。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -18,8 +62,12 @@ pub(crate) enum SpeechEvent {
     Interim { text: String },
     /// 定稿的一句
     Final { text: String },
-    /// 识别出错（会话随后结束）
-    Error { message: String },
+    /// 识别出错（会话随后结束）；`settings` 为能解决它的系统设置页
+    Error {
+        message: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        settings: Option<SettingsPage>,
+    },
     /// 会话结束（主动停止、超时或出错）
     End,
 }
@@ -35,35 +83,43 @@ pub(crate) use fallback_speech::Speech;
 
 /// 识别会话结束的状态 → 给用户看的错误；正常结束（成功、用户取消）返回 `None`。
 #[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) fn completion_error(status: i32) -> Option<&'static str> {
+pub(crate) fn completion_error(status: i32) -> Option<SpeechFailure> {
     match status {
         // Success / UserCanceled
         0 | 5 => None,
-        1 => Some("系统语音语言不支持听写，请在 Windows 设置中安装语音包"),
-        4 => Some("音频质量太差，未能识别"),
+        1 => Some(SpeechFailure::new(
+            "系统语音语言不支持听写，请在 Windows 设置中安装语音包",
+        )),
+        4 => Some(SpeechFailure::new("音频质量太差，未能识别")),
         // TimeoutExceeded / PauseLimitExceeded：长时间没有说话，正常结束
         7 | 8 => None,
-        9 => Some("联机语音识别连接失败，请检查网络"),
-        10 => Some("麦克风不可用，请检查麦克风权限与设备"),
-        _ => Some("语音识别意外结束"),
+        9 => Some(SpeechFailure::new("联机语音识别连接失败，请检查网络")),
+        10 => Some(SpeechFailure::with_settings(
+            "麦克风不可用，请检查麦克风权限与设备",
+            SettingsPage::Microphone,
+        )),
+        _ => Some(SpeechFailure::new("语音识别意外结束")),
     }
 }
 
 /// 识别启动失败的 HRESULT → 给用户看的错误。
 #[cfg_attr(not(windows), allow(dead_code))]
-pub(crate) fn start_error(hresult: i32, fallback: &str) -> String {
+pub(crate) fn start_error(hresult: i32, fallback: &str) -> SpeechFailure {
     // SPERR_SPEECH_PRIVACY_POLICY_NOT_ACCEPTED：系统“联机语音识别”未开启
     const PRIVACY_NOT_ACCEPTED: i32 = 0x8004_5509_u32 as i32;
     // 没有麦克风或麦克风权限被拒绝
     const ACCESS_DENIED: i32 = 0x8007_0005_u32 as i32;
     const NO_AUDIO_DEVICE: i32 = 0x8004_5510_u32 as i32;
     match hresult {
-        PRIVACY_NOT_ACCEPTED => {
-            "语音输入需要开启 Windows 的“联机语音识别”（设置 → 隐私和安全性 → 语音）".into()
+        PRIVACY_NOT_ACCEPTED => SpeechFailure::with_settings(
+            "语音输入需要开启 Windows 的“联机语音识别”",
+            SettingsPage::Speech,
+        ),
+        ACCESS_DENIED => {
+            SpeechFailure::with_settings("Windows 没有允许乾元使用麦克风", SettingsPage::Microphone)
         }
-        ACCESS_DENIED => "没有麦克风权限（设置 → 隐私和安全性 → 麦克风）".into(),
-        NO_AUDIO_DEVICE => "没有找到可用的麦克风".into(),
-        _ => format!("语音识别启动失败：{fallback}"),
+        NO_AUDIO_DEVICE => SpeechFailure::new("没有找到可用的麦克风"),
+        _ => SpeechFailure::new(format!("语音识别启动失败：{fallback}")),
     }
 }
 
@@ -81,7 +137,7 @@ mod windows_speech {
     };
     use windows_sys::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
 
-    use super::{SpeechEvent, SpeechSink, completion_error, start_error};
+    use super::{SpeechEvent, SpeechFailure, SpeechSink, completion_error, start_error};
 
     /// 当前识别会话：一个专用线程持有识别器，收到停止信号（或会话自行结束）后清理并退出。
     #[derive(Default)]
@@ -96,10 +152,10 @@ mod windows_speech {
         }
 
         /// 开始连续听写；已有会话时先停止旧的。识别器启动失败时直接返回错误。
-        pub(crate) fn start(&self, sink: SpeechSink) -> Result<(), String> {
+        pub(crate) fn start(&self, sink: SpeechSink) -> Result<(), SpeechFailure> {
             self.stop();
             let (stop_tx, stop_rx) = mpsc::channel::<()>();
-            let (ready_tx, ready_rx) = mpsc::channel::<Result<(), String>>();
+            let (ready_tx, ready_rx) = mpsc::channel::<Result<(), SpeechFailure>>();
             let completed_tx = stop_tx.clone();
             std::thread::Builder::new()
                 .name("primus-speech".into())
@@ -127,12 +183,12 @@ mod windows_speech {
                         unsafe { CoUninitialize() };
                     }
                 })
-                .map_err(|e| format!("语音识别启动失败：{e}"))?;
+                .map_err(|e| SpeechFailure::new(format!("语音识别启动失败：{e}")))?;
             // 先登记停止信号：启动期间收到的 speech_stop 不丢失（专用线程在报告启动成功后才等待它）
             *self.stop.lock().unwrap_or_else(|e| e.into_inner()) = Some(stop_tx);
             let result = ready_rx
                 .recv()
-                .unwrap_or_else(|_| Err("语音识别启动失败".into()));
+                .unwrap_or_else(|_| Err(SpeechFailure::new("语音识别启动失败")));
             if result.is_err() {
                 self.stop.lock().unwrap_or_else(|e| e.into_inner()).take();
             }
@@ -151,7 +207,7 @@ mod windows_speech {
     fn run(
         sink: &SpeechSink,
         completed: mpsc::Sender<()>,
-    ) -> Result<(SpeechRecognizer, SpeechContinuousRecognitionSession), String> {
+    ) -> Result<(SpeechRecognizer, SpeechContinuousRecognitionSession), SpeechFailure> {
         let err = |e: windows::core::Error| start_error(e.code().0, &e.message());
         let recognizer = SpeechRecognizer::new().map_err(err)?;
         let compiled = recognizer
@@ -161,8 +217,7 @@ mod windows_speech {
         let status = compiled.Status().map_err(err)?;
         if status != SpeechRecognitionResultStatus::Success {
             return Err(completion_error(status.0)
-                .unwrap_or("语音识别启动失败")
-                .to_string());
+                .unwrap_or_else(|| SpeechFailure::new("语音识别启动失败")));
         }
 
         let interim = sink.clone();
@@ -206,11 +261,9 @@ mod windows_speech {
                 SpeechContinuousRecognitionCompletedEventArgs,
             >::new(move |_, args| {
                 if let Some(args) = args.as_ref()
-                    && let Some(message) = completion_error(args.Status()?.0)
+                    && let Some(failure) = completion_error(args.Status()?.0)
                 {
-                    done(SpeechEvent::Error {
-                        message: message.into(),
-                    });
+                    done(failure.into());
                 }
                 // 会话已结束：通知专用线程清理（重复发送无害）
                 let _ = completed.send(());
@@ -225,7 +278,7 @@ mod windows_speech {
 
 #[cfg(not(windows))]
 mod fallback_speech {
-    use super::SpeechSink;
+    use super::{SpeechFailure, SpeechSink};
 
     /// 非 Windows：语音输入不可用。
     #[derive(Default)]
@@ -236,8 +289,8 @@ mod fallback_speech {
             false
         }
 
-        pub(crate) fn start(&self, _sink: SpeechSink) -> Result<(), String> {
-            Err("当前系统不支持语音输入".into())
+        pub(crate) fn start(&self, _sink: SpeechSink) -> Result<(), SpeechFailure> {
+            Err(SpeechFailure::new("当前系统不支持语音输入"))
         }
 
         pub(crate) fn stop(&self) {}
@@ -253,14 +306,23 @@ mod tests {
         assert_eq!(completion_error(0), None);
         assert_eq!(completion_error(5), None);
         assert_eq!(completion_error(7), None);
-        assert!(completion_error(10).unwrap().contains("麦克风"));
-        assert!(completion_error(42).is_some());
+        let mic = completion_error(10).unwrap();
+        assert!(mic.message.contains("麦克风"));
+        assert_eq!(mic.settings, Some(SettingsPage::Microphone));
+        assert_eq!(completion_error(42).unwrap().settings, None);
     }
 
     #[test]
     fn start_error_maps_privacy_policy() {
-        assert!(start_error(0x8004_5509_u32 as i32, "x").contains("联机语音识别"));
-        assert_eq!(start_error(1, "boom"), "语音识别启动失败：boom");
+        let privacy = start_error(0x8004_5509_u32 as i32, "x");
+        assert!(privacy.message.contains("联机语音识别"));
+        assert_eq!(privacy.settings, Some(SettingsPage::Speech));
+        let denied = start_error(0x8007_0005_u32 as i32, "x");
+        assert_eq!(denied.settings, Some(SettingsPage::Microphone));
+        assert_eq!(
+            start_error(1, "boom"),
+            SpeechFailure::new("语音识别启动失败：boom")
+        );
     }
 
     #[test]
@@ -273,6 +335,16 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&SpeechEvent::End).unwrap(),
             r#"{"type":"end"}"#
+        );
+        let error: SpeechEvent =
+            SpeechFailure::with_settings("没有权限", SettingsPage::Microphone).into();
+        assert_eq!(
+            serde_json::to_string(&error).unwrap(),
+            r#"{"type":"error","message":"没有权限","settings":"microphone"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&SpeechEvent::from(SpeechFailure::new("x"))).unwrap(),
+            r#"{"type":"error","message":"x"}"#
         );
     }
 

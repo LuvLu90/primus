@@ -163,6 +163,8 @@ pub fn run() {
                     .data_directory(webview_dir)
                     .build()?;
                 place_main_window(app.handle(), &window, size, min);
+                // App 自己的页面直接授予麦克风权限（语音输入的波形），不弹 WebView2 权限框
+                platform::auto_grant_microphone(&window);
                 if visible {
                     window.show()?;
                 }
