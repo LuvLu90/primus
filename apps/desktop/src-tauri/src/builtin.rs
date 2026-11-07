@@ -1,20 +1,47 @@
-//! 内置模型配置与内置账号（临时方案，替代第 9 章的账号服务下发；登录与下发接入后删除本模块）。
+//! 内置渠道（种子）：首次启动（`providers.json` 还不存在）时写入一个预置渠道与其密钥，之后完全由用户管理。
 //!
-//! - 端点与模型清单在 `builtin/catalog.json`，格式与账号服务“客户端配置”接口（第 9.2 节）相同，
-//!   由 `core_config` 按同一套规则校验后写入 Core 的 `models.json`。
-//! - 访问令牌只有下面一个常量：首次启动（以及常量变化后的启动）写入 DPAPI 保险库（`vault`），
-//!   `models.json` 里只放取令牌命令，不含明文。CI 的真实模型冒烟（`scripts/builtin-models.mjs`）也从这里读取。
+//! - 只在渠道文件不存在时写一次：用户删除或修改它之后不会再被加回或覆盖。
+//! - 密钥只有下面一个常量：种子写入时存进 DPAPI 保险库（`provider:ioply`），`models.json` 里只放取密钥命令。
+//! - 模型清单起初为空，启动后在后台按该渠道的模型列表接口获取一次（`lib.rs`）；失败时留空，由设置页提示用户获取。
 
-/// 内置模型网关的访问令牌。
-///
-/// 临时内置，后续改为账号服务下发。更换令牌只改这一行：下次启动时薄壳发现与保险库中的值不同，会自动重写保险库。
+use crate::providers::{Api, Provider};
+
+/// 内置渠道 ID（也是名称）。
+pub(crate) const SEED_PROVIDER_ID: &str = "ioply";
+
+/// 内置渠道协议。
+const SEED_API: Api = Api::OpenAiResponses;
+
+/// 内置渠道接口地址。
+const SEED_BASE_URL: &str = "http://218.93.48.244:3304/openai/v1";
+
+/// 内置渠道密钥，用户要求直接写在源码中，后续会更换。
 pub(crate) const BUILTIN_API_KEY: &str = "sk-bb4055656ec644379b3571c8be0dc74e";
 
-/// 内置客户端配置（第 9.2 节的下发格式）。
-pub(crate) const BUILTIN_CATALOG: &str = include_str!("../builtin/catalog.json");
+/// 旧版内置模型配置在保险库中的令牌 ID：启动时删除（迁移）。
+pub(crate) const LEGACY_TOKEN_ID: &str = "model-token";
 
-/// 内置账号的展示名；`auth_status` 直接返回它为已登录。
-pub(crate) const BUILTIN_ACCOUNT_NAME: &str = "内置测试账号";
+/// 内置渠道（模型清单为空，启动后获取）。
+pub(crate) fn seed_provider() -> Provider {
+    Provider {
+        id: SEED_PROVIDER_ID.to_owned(),
+        name: SEED_PROVIDER_ID.to_owned(),
+        api: SEED_API,
+        base_url: SEED_BASE_URL.to_owned(),
+        enabled: true,
+        models: Vec::new(),
+    }
+}
 
-/// 内置账号的标识（不是秘密，只用于界面与日志区分）。
-pub(crate) const BUILTIN_ACCOUNT_ID: &str = "builtin";
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn seed_provider_is_valid() {
+        let p = seed_provider();
+        crate::providers::check_provider(&p).unwrap();
+        assert!(p.models.is_empty() && p.enabled);
+        assert!(!serde_json::to_string(&p).unwrap().contains(BUILTIN_API_KEY));
+    }
+}

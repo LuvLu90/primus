@@ -2,7 +2,7 @@
 //!
 //! 启动顺序：取令牌模式（`--secret`，无窗口）→ 提权修复模式（`--repair-data-dir`）→ 准备数据目录
 //! （第 4 章，不可写时弹修复引导）→ 单实例 → 安装待装的更新（有则拉起安装器并退出，第 3.6 节）→
-//! 写入模型配置与令牌（第 9.2、9.4 节）→ 主窗口 → 约 10 秒后自动检查更新。
+//! 写入内置渠道（仅首次）并按模型渠道生成 Core 配置（第 9.2、9.4 节）→ 主窗口 → 约 10 秒后自动检查更新。
 //! 各模块随开发计划逐步实现。
 
 mod account;
@@ -15,6 +15,7 @@ mod git;
 mod job;
 mod paths;
 mod platform;
+mod providers;
 mod rpc_bridge;
 mod session_index;
 mod sessions;
@@ -49,8 +50,11 @@ pub fn run() {
 
     // 模型配置状态；写入（refresh）放到 setup 中，等单实例插件放行本进程之后再做，
     // 避免被转发后退出的第二个实例改写主实例正在使用的保险库与 models.json
-    let model_config =
-        core_config::ModelConfigState::new(data_paths.core_dir(), data_paths.vault_dir());
+    let model_config = core_config::ModelConfigState::new(
+        data_paths.core_dir(),
+        data_paths.vault_dir(),
+        &data_paths.app_dir(),
+    );
 
     // Core 进程监管：所有 Core 进程放进同一个 Job Object，主进程被强杀时由系统统一回收（第 2.2 节）
     let supervisor = paths::exe_dir()
@@ -122,10 +126,23 @@ pub fn run() {
                 if updater::install_on_startup(&updater) {
                     std::process::exit(0);
                 }
-                // 模型配置：校验内置配置（将来为账号服务下发），令牌写入保险库，生成 Core 的 models.json 与默认模型。
+                // 模型配置：首次启动写入内置渠道与其密钥（之后由用户管理），删除旧版内置令牌，
+                // 再按 providers.json 生成 Core 的 models.json 与默认模型。
                 // 插件（含单实例）在 setup 之前初始化，到这里已确认是主实例。
                 // 失败不阻止启动：设置页与输入框据 models_get 的 error 提示，并可用 models_refresh 重试
-                app.state::<core_config::ModelConfigState>().refresh();
+                let model_config = app.state::<core_config::ModelConfigState>();
+                let seeded = model_config.seed_and_migrate();
+                model_config.refresh();
+                if seeded {
+                    // 内置渠道的模型列表在后台获取一次，不阻塞启动；失败时留空，设置页提示用户获取
+                    let handle = app.handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        let state = handle.state::<core_config::ModelConfigState>();
+                        if let Err(e) = state.fetch_and_save(builtin::SEED_PROVIDER_ID).await {
+                            eprintln!("[core_config] 内置渠道模型列表获取失败：{e}");
+                        }
+                    });
+                }
                 // 会话索引（第 10.2 节）：同样在 setup 中打开，第二个实例不碰主实例的库。
                 // 库文件打不开时退回内存库，本次运行内列表照常可用
                 let session_index = Arc::new(
@@ -204,6 +221,11 @@ pub fn run() {
             commands::models_get,
             commands::models_refresh,
             commands::models_set_default,
+            commands::models_watch,
+            commands::providers_list,
+            commands::provider_save,
+            commands::provider_delete,
+            commands::provider_fetch_models,
             commands::update_status,
             commands::update_watch,
             commands::update_check,

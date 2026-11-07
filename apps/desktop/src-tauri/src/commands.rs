@@ -8,9 +8,12 @@ use tauri::State;
 use tauri::ipc::Channel;
 
 use crate::account::{AuthError, AuthStatus};
-use crate::core_config::{ModelConfigState, ModelsInfo};
+use crate::core_config::{
+    FetchInput, ModelConfigState, ModelsInfo, ProviderInput, ProviderView, ProvidersChanged,
+};
 use crate::fs_watch::{IndexChanged, IndexNotifier};
 use crate::paths::DataPaths;
+use crate::providers::ProviderModel;
 use crate::rpc_bridge::{BatchSink, BridgeError, CoreBatch};
 use crate::session_index::{SessionIndex, SessionPage, SessionSummary};
 use crate::sessions::{AppSessions, SessionError, Sessions};
@@ -425,19 +428,19 @@ fn delete_session<S: BatchSink + Clone>(
     Ok(())
 }
 
-/// 账号状态（第 9.7 节）。内置账号阶段恒为已登录。
+/// 账号状态（第 9.7 节）。账号服务接入前恒为未登录、不可登录。
 #[tauri::command]
 pub(crate) fn auth_status() -> AuthStatus {
     crate::account::status()
 }
 
-/// 系统浏览器登录（PKCE）。内置账号阶段返回 `notAvailable`。
+/// 系统浏览器登录（PKCE）。账号服务接入前返回 `notAvailable`。
 #[tauri::command]
 pub(crate) fn auth_login() -> Result<AuthStatus, AuthError> {
     crate::account::login()
 }
 
-/// 登出。内置账号阶段返回 `notAvailable`。
+/// 登出。账号服务接入前返回 `notAvailable`。
 #[tauri::command]
 pub(crate) fn auth_logout() -> Result<(), AuthError> {
     crate::account::logout()
@@ -449,10 +452,57 @@ pub(crate) fn models_get(models: State<'_, ModelConfigState>) -> ModelsInfo {
     models.info()
 }
 
-/// 重新获取并写入模型配置；内置阶段为按内置配置重写 `models.json` 与保险库中的令牌。
+/// 重新读取 `providers.json` 并重写 Core 的 `models.json` 与默认模型（不联网获取模型列表）。
 #[tauri::command(async)]
 pub(crate) fn models_refresh(models: State<'_, ModelConfigState>) -> ModelsInfo {
     models.refresh()
+}
+
+/// 订阅模型配置变化：每次渠道保存 / 删除、刷新、改默认模型或启动时后台获取到内置渠道的模型后推送完整的 `ModelsInfo`。
+/// 再次调用替换旧的订阅。
+#[tauri::command]
+pub(crate) fn models_watch(models: State<'_, ModelConfigState>, on_event: Channel<ModelsInfo>) {
+    models.set_listener(move |info| {
+        let _ = on_event.send(info);
+    });
+}
+
+/// 全部模型渠道（含 `hasKey` 与密钥末 4 位 `keyHint`，不含密钥）。
+#[tauri::command(async)]
+pub(crate) fn providers_list(
+    models: State<'_, ModelConfigState>,
+) -> Result<Vec<ProviderView>, String> {
+    models.providers_list()
+}
+
+/// 新建（`input.id` 缺省）或修改渠道；`input.apiKey` 缺省为保留已存的密钥。保存后重写 Core 配置。
+#[tauri::command(async)]
+pub(crate) fn provider_save(
+    models: State<'_, ModelConfigState>,
+    input: ProviderInput,
+) -> Result<ProvidersChanged, String> {
+    models.provider_save(input)
+}
+
+/// 删除渠道及其密钥，重写 Core 配置。
+#[tauri::command(async)]
+pub(crate) fn provider_delete(
+    models: State<'_, ModelConfigState>,
+    id: String,
+) -> Result<ProvidersChanged, String> {
+    models.provider_delete(&id)
+}
+
+/// 从渠道的模型列表接口获取模型（不保存）：已保存的渠道给 `id`（可带未保存的修改），草稿给 `api` + `baseUrl` + `apiKey`。
+/// 已保存的模型保留用户改过的参数，新模型用默认参数。
+#[tauri::command]
+pub(crate) async fn provider_fetch_models(
+    models: State<'_, ModelConfigState>,
+    input: FetchInput,
+) -> Result<Vec<ProviderModel>, String> {
+    let target = models.fetch_target(input)?;
+    let fetched = crate::providers::fetch_models(target.api, &target.base_url, &target.key).await?;
+    Ok(crate::providers::merge_models(&target.saved, &fetched))
 }
 
 /// 设置页改选默认模型（`provider/modelId`，只能选列表中的模型；新拉起的 Core 进程生效）。
