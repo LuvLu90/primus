@@ -6,6 +6,7 @@
 //! 各模块随开发计划逐步实现。
 
 mod account;
+mod attachments;
 mod builtin;
 mod commands;
 mod core_config;
@@ -161,6 +162,7 @@ pub fn run() {
         .manage(workspaces::Workspaces::new(&workspaces_dir))
         .manage(model_config)
         .manage(updater)
+        .manage(platform::speech::Speech::default())
         .invoke_handler(tauri::generate_handler![
             commands::window_set_bounds,
             commands::open_external,
@@ -190,6 +192,11 @@ pub fn run() {
             commands::update_check,
             commands::update_settings_set,
             commands::update_install,
+            commands::git_branch,
+            commands::attachment_image,
+            commands::speech_available,
+            commands::speech_start,
+            commands::speech_stop,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build Primus")
