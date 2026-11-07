@@ -5,16 +5,24 @@
 // System32\bash.exe，在 Linux 里根本找不到 D:\… 这样的 Windows 路径），bash 拉起原生程序时还可能脱离 Core 的
 // 作业对象——任何一种都会让取令牌失败，对话报 “Failed to resolve API key … from shell command”。
 //
-// 这里在 Core 加载扩展时直接用 execFile 拉起 Primus.exe（不经任何 shell，子进程留在 Core 的作业里），
+// 这里直接用 execFile 拉起 Primus.exe（不经任何 shell，子进程留在 Core 的作业里），
 // 把取到的令牌经 registerProvider 覆盖到对应供应商（扩展层的 apiKey 优先于 models.json）。
 // 取不到时什么也不做，Core 仍按 models.json 的命令重试，报错信息不变。令牌只留在 Core 进程内存中。
+//
+// models.json 在 Core 运行期间会被薄壳重写（首次启动在后台获取内置渠道的模型列表、设置里增删改渠道或换密钥），
+// 所以不只在加载时取一次：监听 models.json 的变化，并在每次对话开始前（before_agent_start）再核对一次。
+// 文件变了就让 Core 重新读取 models.json（modelRegistry.refresh），并只为新出现、命令变了或上次没取到的渠道
+// 重新取令牌；文件内容没变但被重写（薄壳保存新密钥时会重写一次）则所有渠道重新取；没变化时不拉起任何进程。
+// 渠道被删除时撤销本扩展为它设置的令牌。
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, watch } from "node:fs";
 import { join } from "node:path";
 
 /** models.json 中取令牌命令的格式（与薄壳 core_config::secret_command 一致） */
 const SECRET_COMMAND = /^!"([^"]+)" --secret ([A-Za-z0-9._:-]+)$/;
+
+const MODELS_FILE = "models.json";
 
 export interface SecretCommand {
   exe: string;
@@ -42,16 +50,31 @@ export interface AuthDeps {
   env: Record<string, string | undefined>;
   readFile: (path: string) => string;
   exists: (path: string) => boolean;
+  /** 文件的修改戳（mtime + 大小）；读不到时返回 null */
+  stamp: (path: string) => string | null;
   /** 直接拉起程序（不经 shell），返回 stdout */
   run: (exe: string, args: string[]) => string;
+  /** 监听目录中某个文件的变化；返回停止监听。不支持时返回 null */
+  watch: (dir: string, file: string, onChange: () => void) => (() => void) | null;
   warn: (message: string) => void;
 }
+
+/** 合并短时间内的多次文件事件（替换写入会连续触发几次） */
+const WATCH_DEBOUNCE_MS = 200;
 
 const defaultDeps: AuthDeps = {
   platform: process.platform,
   env: process.env,
   readFile: (p) => readFileSync(p, "utf8"),
   exists: existsSync,
+  stamp: (p) => {
+    try {
+      const s = statSync(p);
+      return `${s.mtimeMs}:${s.size}`;
+    } catch {
+      return null;
+    }
+  },
   run: (exe, args) =>
     execFileSync(exe, args, {
       encoding: "utf8",
@@ -59,11 +82,36 @@ const defaultDeps: AuthDeps = {
       windowsHide: true,
       stdio: ["ignore", "pipe", "ignore"],
     }),
+  watch: (dir, file, onChange) => {
+    try {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const watcher = watch(dir, { persistent: false }, (_event, name) => {
+        // 部分平台不给文件名：当作可能变化
+        if (name && String(name) !== file) return;
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(onChange, WATCH_DEBOUNCE_MS);
+        timer.unref?.();
+      });
+      watcher.on("error", () => watcher.close());
+      return () => {
+        if (timer) clearTimeout(timer);
+        watcher.close();
+      };
+    } catch {
+      return null;
+    }
+  },
   warn: (m) => console.error(m),
 };
 
 interface ProviderApi {
   registerProvider: (name: string, config: { apiKey: string }) => void;
+  unregisterProvider?: (name: string) => void;
+  on?: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => unknown;
+}
+
+interface Registry {
+  refresh: () => Promise<unknown>;
 }
 
 function hasRegisterProvider(pi: unknown): pi is ProviderApi {
@@ -74,27 +122,46 @@ function hasRegisterProvider(pi: unknown): pi is ProviderApi {
   );
 }
 
-/** 读 models.json，为使用取令牌命令的供应商直接取令牌；返回 供应商 → 令牌 */
-export function resolveProviderKeys(deps: AuthDeps = defaultDeps): Map<string, string> {
-  const keys = new Map<string, string>();
-  // 取令牌模式只在 Windows 上可用（作业对象校验）；其他平台由开发配置直接给出密钥
-  if (deps.platform !== "win32") return keys;
-  const coreDir = deps.env.PRIMUS_CODING_AGENT_DIR;
-  if (!coreDir) return keys;
-  const file = join(coreDir, "models.json");
-  if (!deps.exists(file)) return keys;
+/** 事件上下文里的模型注册表（用于让 Core 重新读取 models.json） */
+function registryOf(ctx: unknown): Registry | null {
+  const registry = (ctx as { modelRegistry?: { refresh?: unknown } } | null)?.modelRegistry;
+  return registry && typeof registry.refresh === "function" ? (registry as Registry) : null;
+}
+
+/** models.json 的位置；只在 Windows（作业对象校验）且设置了 Core 目录时启用 */
+function modelsFile(deps: AuthDeps): { dir: string; file: string } | null {
+  if (deps.platform !== "win32") return null;
+  const dir = deps.env.PRIMUS_CODING_AGENT_DIR;
+  return dir ? { dir, file: join(dir, MODELS_FILE) } : null;
+}
+
+/** 解析 models.json 的内容：供应商 → 取令牌命令（只收录取令牌命令格式的）；解析失败返回 null，空内容为没有渠道 */
+function parseCommands(content: string): Map<string, SecretCommand> | null {
   let providers: Record<string, { apiKey?: unknown }>;
   try {
-    providers = JSON.parse(deps.readFile(file)).providers ?? {};
+    providers = content.trim() ? (JSON.parse(content).providers ?? {}) : {};
   } catch {
-    return keys;
+    return null;
   }
-  // 同一条命令只执行一次
-  const cache = new Map<string, string | null>();
+  const commands = new Map<string, SecretCommand>();
   for (const [name, provider] of Object.entries(providers)) {
     const command = parseSecretCommand(provider?.apiKey);
-    if (!command) continue;
-    const cacheKey = `${command.exe}\u0000${command.id}`;
+    if (command) commands.set(name, command);
+  }
+  return commands;
+}
+
+const commandKey = (c: SecretCommand) => `${c.exe}\u0000${c.id}`;
+
+/** 为给定供应商取令牌（同一条命令只执行一次）；返回 供应商 → 令牌（取不到的不在其中） */
+function resolveCommands(
+  deps: AuthDeps,
+  commands: Iterable<[string, SecretCommand]>,
+): Map<string, string> {
+  const keys = new Map<string, string>();
+  const cache = new Map<string, string | null>();
+  for (const [name, command] of commands) {
+    const cacheKey = commandKey(command);
     if (!cache.has(cacheKey)) {
       let value: string | null = null;
       try {
@@ -111,16 +178,144 @@ export function resolveProviderKeys(deps: AuthDeps = defaultDeps): Map<string, s
   return keys;
 }
 
+/** 读 models.json，为使用取令牌命令的供应商直接取令牌；返回 供应商 → 令牌 */
+export function resolveProviderKeys(deps: AuthDeps = defaultDeps): Map<string, string> {
+  const location = modelsFile(deps);
+  if (!location || !deps.exists(location.file)) return new Map();
+  let commands: Map<string, SecretCommand> | null;
+  try {
+    commands = parseCommands(deps.readFile(location.file));
+  } catch {
+    return new Map();
+  }
+  return commands ? resolveCommands(deps, commands) : new Map();
+}
+
+/** 本扩展已经为各供应商设置的状态：取令牌命令与是否成功设置了令牌 */
+interface Applied {
+  command: string;
+  registered: boolean;
+}
+
 export function createAuth(deps: AuthDeps = defaultDeps) {
   return function auth(pi: unknown): void {
     if (!hasRegisterProvider(pi)) return;
-    for (const [name, key] of resolveProviderKeys(deps)) {
+    const location = modelsFile(deps);
+    if (!location) return;
+
+    const applied = new Map<string, Applied>();
+    let lastContent: string | null = null;
+    let lastStamp: string | null = null;
+    let registry: Registry | null = null;
+    let stopWatch: (() => void) | null = null;
+    let queue: Promise<void> = Promise.resolve();
+
+    const register = (name: string, key: string): boolean => {
       try {
         pi.registerProvider(name, { apiKey: literalConfigValue(key) });
+        return true;
       } catch {
         deps.warn(`primus-auth：无法为供应商 ${name} 设置模型令牌`);
+        return false;
       }
-    }
+    };
+
+    const readContent = (): string | null => {
+      try {
+        return deps.exists(location.file) ? deps.readFile(location.file) : "";
+      } catch {
+        return null;
+      }
+    };
+
+    /**
+     * 按当前 models.json 设置令牌。`all` 为真时所有渠道都重新取（文件被重写但内容没变：可能换了密钥），
+     * 否则只取新出现、命令变了或上次没取到的渠道。返回内容是否与上次不同。
+     */
+    const apply = (content: string, all: boolean): boolean => {
+      const changed = content !== lastContent;
+      lastContent = content;
+      const commands = parseCommands(content);
+      // 写到一半或损坏：保持现状，下次变化再处理
+      if (!commands) return changed;
+      const pending: [string, SecretCommand][] = [];
+      for (const [name, command] of commands) {
+        const prev = applied.get(name);
+        if (all || !prev || !prev.registered || prev.command !== commandKey(command)) {
+          pending.push([name, command]);
+        }
+      }
+      const keys = resolveCommands(deps, pending);
+      for (const [name, command] of pending) {
+        const key = keys.get(name);
+        applied.set(name, {
+          command: commandKey(command),
+          registered: key !== undefined && register(name, key),
+        });
+      }
+      // 渠道已删除，或不再使用取令牌命令：撤销本扩展设置的令牌
+      for (const [name, state] of [...applied]) {
+        if (commands.has(name)) continue;
+        applied.delete(name);
+        if (state.registered && typeof pi.unregisterProvider === "function") {
+          try {
+            pi.unregisterProvider(name);
+          } catch {
+            // 供应商已不存在时忽略
+          }
+        }
+      }
+      return changed;
+    };
+
+    /** 核对 models.json 是否变化；变化时让 Core 重新读取并补设令牌（串行执行） */
+    const sync = (): Promise<void> => {
+      queue = queue
+        .then(async () => {
+          const stamp = deps.stamp(location.file);
+          if (stamp === lastStamp && stamp !== null) return;
+          const content = readContent();
+          if (content === null) return;
+          const rewritten = content === lastContent;
+          lastStamp = stamp;
+          const changed = apply(content, rewritten);
+          if (changed && registry) {
+            try {
+              await registry.refresh();
+            } catch {
+              deps.warn("primus-auth：内核重新读取模型配置失败");
+            }
+          }
+        })
+        .catch(() => {
+          // 不让一次失败阻断之后的核对
+        });
+      return queue;
+    };
+
+    // 加载时同步设置一次（Core 在创建会话前应用这些注册）
+    lastStamp = deps.stamp(location.file);
+    const initial = readContent();
+    if (initial !== null) apply(initial, true);
+
+    if (typeof pi.on !== "function") return;
+    pi.on("session_start", (_event, ctx) => {
+      registry = registryOf(ctx) ?? registry;
+      stopWatch?.();
+      stopWatch = deps.watch(location.dir, MODELS_FILE, () => {
+        void sync();
+      });
+      // 加载与会话开始之间文件可能已被改写
+      return sync();
+    });
+    pi.on("before_agent_start", (_event, ctx) => {
+      registry = registryOf(ctx) ?? registry;
+      return sync();
+    });
+    pi.on("session_shutdown", () => {
+      stopWatch?.();
+      stopWatch = null;
+    });
   };
 }
 
