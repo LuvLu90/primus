@@ -14,6 +14,8 @@ ADR 0005 在账号服务接入前用一份内置客户端配置（`builtin/catal
 - 每个渠道的密钥存进 DPAPI 保险库 `provider:<渠道 ID>`。返回给 WebView 的只有 `hasKey` 与末 4 位 `keyHint`（密钥少于 8 个字符时不提示）；编辑时 `apiKey` 缺省表示保留已存密钥，空字符串或含控制字符的密钥被拒绝。删除渠道同时删除其密钥。
 - Core 的 `models.json` 只收录“启用 + 已存密钥 + 至少一个模型”的渠道，供应商键 = 渠道 ID，`apiKey` 写成 `!"<Primus.exe>" --secret provider:<渠道 ID>`。`--secret` 模式只接受 `provider:<合法渠道 ID>` 形式的名字，Job Object 校验不变。默认模型失效（渠道被删、停用或模型被去掉）时回退为第一个可用模型，没有可用模型时清除；`models_get.error` 给出“还没有可用的模型”。
 - 模型列表获取（`provider_fetch_models`）由薄壳发起，不保存：openai-responses 为 `GET {baseUrl}/models`（Bearer），anthropic-messages 为 `GET {baseUrl}/v1/models`（`baseUrl` 已以 `/v1` 结尾时不重复，`x-api-key` + `anthropic-version: 2023-06-01`），15 秒超时、系统代理。错误只返回分类文案（HTTP 状态 / 超时 / 连不上 / 格式不对），不带地址、密钥与响应正文。HTTP 客户端复用自动更新插件依赖树里已有的 `reqwest` 0.13.5 + `rustls` 0.23.46（ring、tls12），不引入新的 HTTP 栈。
+- 新模型的能力（上下文长度、最大输出、图片输入、思考）逐项按 接口返回的字段 → 已知模型能力表 → 默认参数（不思考、仅文本、128,000 / 32,000）取，已保存的模型保留用户改过的参数（2026-11-07 补充）。很多网关的 `/models` 只有 `id`，原先所有模型都落到默认参数、思考强度滑块不显示；能力表由脚本从 Core 锁定的模型目录生成并嵌入薄壳（`model_capabilities.json`，`pnpm check:model-capabilities` 核对同步），不另造数据源；目录里没有的按模型系列推断（技术方案第 9.3 节）。
+- 运行中的 Core 随 `models.json` 更新：`primus-auth` 监听该文件并在每轮对话前核对，变化时让 Core 重新读取并只为新增 / 变更的渠道取密钥；换密钥时薄壳原样重写一次 `models.json` 作为信号（技术方案第 9.4 节）。
 - 新增命令 `providers_list`、`provider_save`、`provider_delete`、`provider_fetch_models`、`models_watch`（附录 B）；`models_get` / `models_refresh` / `models_set_default` 形状不变，`models_refresh` 只重读 `providers.json` 并重写 `models.json`，不联网。
 
 ### 内置 ioply 渠道（种子）
