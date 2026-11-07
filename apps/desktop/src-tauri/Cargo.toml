@@ -54,7 +54,7 @@ windows-sys = { version = "=0.61.2", features = [
   "Win32_UI_WindowsAndMessaging",
 ] }
 # 语音输入（speech_*，platform/speech.rs）：系统自带的 Windows.Media.SpeechRecognition（WinRT），与 Tauri 依赖树中的版本一致
-windows = { version = "=0.62.2", features = ["Foundation", "Media_SpeechRecognition"] }
+windows = { version = "=0.62.2", features = ["Foundation", "Globalization", "Media_SpeechRecognition"] }
 
 [profile.release]
 lto = true
