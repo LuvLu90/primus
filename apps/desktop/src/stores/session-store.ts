@@ -6,6 +6,7 @@ import type {
   CoreRecord,
   ExtensionUiDialogRequest,
   RpcResponse,
+  SessionStats,
   ToolResult,
 } from "@primus/protocol";
 import { isDialogRequest } from "@primus/protocol";
@@ -63,6 +64,12 @@ export interface SessionState {
   thinkingLevels?: string[];
   /** 上下文占用（get_session_stats）；每条回复结束后刷新 */
   contextUsage?: ContextUsage;
+  /** 本会话累计用量（get_session_stats 的 tokens 与 cost） */
+  sessionUsage?: Pick<SessionStats, "tokens" | "cost">;
+  /** 自动压缩开关（get_state 的 autoCompactionEnabled；set_auto_compaction 成功后更新） */
+  autoCompaction?: boolean;
+  /** 正在压缩（compaction_start 到 compaction_end） */
+  compacting: boolean;
 }
 
 export const initialSessionState: SessionState = {
@@ -74,6 +81,7 @@ export const initialSessionState: SessionState = {
   running: false,
   toolRuns: {},
   uiRequests: [],
+  compacting: false,
 };
 
 /** 末尾（忽略空白）是不是 `}`：完整的 JSON 对象必然以它结尾 */
@@ -201,13 +209,18 @@ function applyRecord(draft: SessionState, record: CoreRecord): void {
         const { model, thinkingLevel } = r.data;
         if (model) draft.model = { provider: model.provider, id: model.id };
         if (thinkingLevel) draft.thinkingLevel = thinkingLevel;
+        draft.autoCompaction = r.data.autoCompactionEnabled;
+        draft.compacting = r.data.isCompacting;
       }
       if (r.command === "set_model" && r.data) {
         draft.model = { provider: r.data.provider, id: r.data.id };
         // 旧模型的档位不再适用：等 get_available_thinking_levels 给出新模型的
         draft.thinkingLevels = undefined;
       }
-      if (r.command === "get_session_stats" && r.data) draft.contextUsage = r.data.contextUsage;
+      if (r.command === "get_session_stats" && r.data) {
+        draft.contextUsage = r.data.contextUsage;
+        draft.sessionUsage = { tokens: r.data.tokens, cost: r.data.cost };
+      }
       if (r.command === "get_available_thinking_levels" && Array.isArray(r.data?.levels))
         draft.thinkingLevels = r.data.levels;
       return;
@@ -276,8 +289,14 @@ function applyRecord(draft: SessionState, record: CoreRecord): void {
       }
       return;
     }
+    case "compaction_start":
+      draft.compacting = true;
+      return;
+    case "compaction_end":
+      draft.compacting = false;
+      return;
     default:
-      // 其余事件（queue_update、compaction_* 等）由后续功能处理
+      // 其余事件（queue_update 等）由后续功能处理
       return;
   }
 }

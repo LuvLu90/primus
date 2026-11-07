@@ -464,16 +464,152 @@ describe("对话区（mock 事件流）", () => {
     expect(screen.queryByRole("article")).toBeNull();
   });
 
-  it("附件只引用本地路径：选中后显示文件名，可移除，单独附件也能发送", async () => {
+  it("附件图块：文件即时落地、图片排队读取，读完前不能发送；移除后消失；能看图时图片随 prompt 发送", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50, attachmentDelayMs: 40 });
+    setPlatformForTesting(platform);
+    const prompts: { message: string; images?: unknown[] }[] = [];
+    const coreSend = platform.coreSend.bind(platform);
+    vi.spyOn(platform, "coreSend").mockImplementation((key, record) => {
+      if (isUserPrompt(record as { type: string; message?: unknown }))
+        prompts.push(record as unknown as { message: string; images?: unknown[] });
+      return coreSend(key, record);
+    });
     render(<ChatPanel />);
     fireEvent.click(await screen.findByRole("button", { name: t.attach }));
     expect(await screen.findByText("README.md")).toBeTruthy();
     expect(screen.getByText("main.ts")).toBeTruthy();
+    // 图片还在排队/读取：发送按钮不可用
+    const send = screen.getByRole("button", { name: t.send }) as HTMLButtonElement;
+    expect(send.disabled).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: `${t.removeAttachment} main.ts` }));
-    expect(screen.queryByText("main.ts")).toBeNull();
+    await waitFor(() => expect(screen.queryByText("main.ts")).toBeNull());
+    // 读完后显示缩略图，发送可用
+    expect(await screen.findByRole("img", { name: "设计稿.png" })).toBeTruthy();
+    await waitFor(() => expect(send.disabled).toBe(false));
+    fireEvent.click(send);
+    await waitFor(() => expect(prompts).toHaveLength(1));
+    expect(prompts[0]?.images).toHaveLength(1);
+    expect(prompts[0]?.message).toContain("README.md");
+    expect(prompts[0]?.message).not.toContain("设计稿.png");
+    // 发送成功后清空附件
+    await waitFor(() => expect(screen.queryByText("README.md")).toBeNull());
+  });
+
+  it("当前模型不看图：图片不读取，标“按路径”，按路径引用发送", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50, attachmentDelayMs: 40 });
+    setPlatformForTesting(platform);
+    const readImage = vi.spyOn(platform, "attachmentImage");
+    const prompts: { message: string; images?: unknown[] }[] = [];
+    const coreSend = platform.coreSend.bind(platform);
+    vi.spyOn(platform, "coreSend").mockImplementation((key, record) => {
+      if (isUserPrompt(record as { type: string; message?: unknown }))
+        prompts.push(record as unknown as { message: string; images?: unknown[] });
+      return coreSend(key, record);
+    });
+    render(<ChatPanel />);
+    // 会话打开前切到不看图的模型
+    fireEvent.keyDown(await screen.findByRole("button", { name: /模型：Mock 大模型/ }), {
+      key: "Enter",
+    });
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: "Mock 快速模型" }));
+    await screen.findByRole("button", { name: /模型：Mock 快速模型/ });
+    fireEvent.click(screen.getByRole("button", { name: t.attach }));
+    expect(await screen.findByText(t.attachments.byPath)).toBeTruthy();
+    const send = screen.getByRole("button", { name: t.send }) as HTMLButtonElement;
+    expect(send.disabled).toBe(false);
+    fireEvent.click(send);
+    await waitFor(() => expect(prompts).toHaveLength(1));
+    expect(prompts[0]?.images).toBeUndefined();
+    expect(prompts[0]?.message).toContain("设计稿.png");
+    expect(readImage).not.toHaveBeenCalled();
+  });
+
+  it("唇条显示 Git 分支与工作区；不是仓库时不显示分支", async () => {
+    render(<ChatPanel />);
+    fireEvent.keyDown(screen.getByRole("button", { name: new RegExp(t.chooseFolder) }), {
+      key: "Enter",
+    });
+    fireEvent.click(await screen.findByRole("menuitem", { name: /示例工作区/ }));
+    expect(await screen.findByTitle(`${t.lip.branch}：main`)).toBeTruthy();
+    // 换到不是仓库的文件夹：分支消失
+    useAppStore.setState({
+      workspace: {
+        path: "C:\\Users\\mock\\新项目",
+        name: "新项目",
+        trusted: true,
+        needsTrust: false,
+      },
+    });
+    await waitFor(() => expect(screen.queryByTitle(new RegExp(t.lip.branch))).toBeNull());
+    expect(screen.getByRole("button", { name: "新项目" })).toBeTruthy();
+  });
+
+  it("上下文按钮在模型按钮旁，点开显示上下文卡片与本会话用量，可立即压缩", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    setPlatformForTesting(platform);
+    const records: { type: string }[] = [];
+    const coreSend = platform.coreSend.bind(platform);
+    vi.spyOn(platform, "coreSend").mockImplementation((key, record) => {
+      records.push(record as { type: string });
+      return coreSend(key, record);
+    });
+    render(<ChatPanel />);
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    fireEvent.change(input, { target: { value: "你好" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(screen.getByText(/你刚才说：「你好」/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole("button", { name: t.send })).toBeTruthy());
+    const button = await screen.findByRole("button", { name: /^上下文 \d/ });
+    fireEvent.click(button);
+    const card = await screen.findByRole("dialog", { name: t.contextCard.title });
+    expect(card.textContent).toContain(t.contextCard.usageTitle);
+    expect(card.textContent).toContain(t.contextCard.cacheRead);
+    // 打开时刷新用量
+    await waitFor(() =>
+      expect(records.filter((r) => r.type === "get_session_stats").length).toBeGreaterThan(1),
+    );
+    await waitFor(() => expect(card.textContent).toMatch(/\$\d/));
+    // 展开明细：已用与可用空间
+    fireEvent.click(screen.getByRole("button", { name: t.contextCard.expand }));
+    expect(screen.getByText(t.contextCard.free)).toBeTruthy();
+    expect(screen.getByText(t.contextCard.used)).toBeTruthy();
+    // 自动压缩开关与立即压缩
+    fireEvent.click(screen.getByRole("switch", { name: t.contextCard.autoCompact }));
+    await waitFor(() =>
+      expect(records.find((r) => r.type === "set_auto_compaction")).toMatchObject({
+        enabled: false,
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: t.contextCard.compactNow }));
+    await waitFor(() => expect(records.some((r) => r.type === "compact")).toBe(true));
+    // 压缩后占用未知
+    await waitFor(() => expect(screen.getByRole("button", { name: "上下文 —" })).toBeTruthy());
+  });
+
+  it("语音输入：识别中的文字灰色显示，定稿插入输入框；停止后可发送", async () => {
+    setPlatformForTesting(createMockPlatform({ intervalMs: 1, batchSize: 50, speechStepMs: 2 }));
+    render(<ChatPanel />);
+    const input = screen.getByRole("textbox", { name: t.inputLabel }) as HTMLTextAreaElement;
+    fireEvent.click(await screen.findByRole("button", { name: t.voice.start }));
+    expect(await screen.findByRole("timer")).toBeTruthy();
+    await waitFor(() => expect(input.value).toContain("帮我看下这张截图里的布局问题，"), {
+      timeout: 3000,
+    });
+    fireEvent.click(screen.getByRole("button", { name: t.voice.stop }));
+    await waitFor(() => expect(input.readOnly).toBe(false));
+    expect(input.value.startsWith("帮我看下这张截图里的布局问题，")).toBe(true);
     expect((screen.getByRole("button", { name: t.send }) as HTMLButtonElement).disabled).toBe(
       false,
     );
+  });
+
+  it("语音输入不可用时不显示麦克风按钮", async () => {
+    const base = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    setPlatformForTesting({ ...base, speechAvailable: async () => false });
+    render(<ChatPanel />);
+    await screen.findByRole("button", { name: t.attach });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByRole("button", { name: t.voice.start })).toBeNull();
   });
 
   it("三档权限都可选，选择后发给 Core（/primus-mode），打开会话时先同步当前档位", async () => {
@@ -525,10 +661,12 @@ describe("对话区（mock 事件流）", () => {
     const button = await screen.findByRole("button", { name: /模型：Mock 大模型/ });
     // 会话打开前选择：记下，打开后发送第一条消息前应用
     fireEvent.keyDown(button, { key: "Enter" });
-    // 思考强度是滑杆：拖到“高”，松手才切换（默认档位为 off/low/medium/high/xhigh，“高”是第 3 档）
-    const slider = await screen.findByRole("slider", { name: "思考" });
-    fireEvent.change(slider, { target: { value: "3" } });
-    fireEvent.pointerUp(slider);
+    // 思考程度是滑杆：默认停在中间档（中），方向键右移一档到“高”，抬键才切换
+    const slider = await screen.findByRole("slider", { name: t.model.thinkingDegree });
+    expect(slider.getAttribute("aria-valuetext")).toBe("中");
+    fireEvent.keyDown(slider, { key: "ArrowRight" });
+    expect(slider.getAttribute("aria-valuetext")).toBe("高");
+    fireEvent.keyUp(slider, { key: "ArrowRight" });
     // 滑杆松手后菜单保持打开，关掉再看按钮
     fireEvent.keyDown(slider, { key: "Escape" });
     await waitFor(() =>
