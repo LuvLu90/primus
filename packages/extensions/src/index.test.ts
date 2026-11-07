@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import auth from "./auth/index.ts";
 import checkpoint from "./checkpoint/index.ts";
+import contextStats from "./context-stats/index.ts";
 import guard from "./guard/index.ts";
 import primus, { modules } from "./index.ts";
 import narrate from "./narrate/index.ts";
@@ -13,12 +14,21 @@ describe("primus-bundle 扩展入口", () => {
     expect(typeof primus).toBe("function");
   });
 
-  it("注册全部 7 个第一方扩展且不重复", () => {
-    expect(modules).toHaveLength(7);
-    expect(new Set(modules).size).toBe(7);
+  it("注册全部 8 个第一方扩展且不重复", () => {
+    expect(modules).toHaveLength(8);
+    expect(new Set(modules).size).toBe(8);
     for (const ext of modules) expect(typeof ext).toBe("function");
     expect(modules).toEqual(
-      expect.arrayContaining([guard, auth, checkpoint, subagent, plan, shell, narrate]),
+      expect.arrayContaining([
+        guard,
+        auth,
+        checkpoint,
+        subagent,
+        plan,
+        shell,
+        narrate,
+        contextStats,
+      ]),
     );
   });
 

@@ -12,6 +12,7 @@ export * from "./content.ts";
 export * from "./events.ts";
 export * from "./extension-ui.ts";
 export * from "./model.ts";
+export * from "./primus-data.ts";
 export * from "./responses.ts";
 export * from "./session.ts";
 
