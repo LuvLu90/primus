@@ -4,6 +4,7 @@ import {
   COMMANDS,
   type Platform,
   type SessionIndexEvent,
+  type SpeechEvent,
   toPlatformError,
   type UpdateStatus,
 } from "../types";
@@ -62,6 +63,15 @@ export function createTauriPlatform(): Platform {
     fsRead: (workspace, path) => call("fsRead", { workspace, path }),
     gitStatus: (workspace) => call("gitStatus", { workspace }),
     gitDiff: (workspace, path) => call("gitDiff", { workspace, path }),
+    gitBranch: (workspace) => call("gitBranch", { workspace }),
+    attachmentImage: (path, maxEdge) => call("attachmentImage", { path, maxEdge }),
+    speechAvailable: () => call("speechAvailable"),
+    speechStart: (onEvent) => {
+      const channel = new Channel<SpeechEvent>();
+      channel.onmessage = onEvent;
+      return call("speechStart", { onEvent: channel });
+    },
+    speechStop: () => call("speechStop"),
 
     terminalOpen: (cwd, onData) => {
       const channel = new Channel<string>();

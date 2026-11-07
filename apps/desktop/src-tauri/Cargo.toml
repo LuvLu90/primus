@@ -33,6 +33,8 @@ rusqlite = { version = "=0.40.2", features = ["bundled"] }
 notify = "=8.2.0"
 # 工作区信任：`.primus/` 内容指纹（第 17.2 节），与 Tauri 依赖树中的版本一致
 sha2 = "=0.10.9"
+# 输入框图片附件（attachment_image）：在内存中解码、缩小、重新编码，不写文件（约束 C2）；只开常见格式
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 
 # Windows 平台层（第 4.3 节 ACL、第 3.7 节修复引导、第 2.2 节 Job Object）：只用 windows-sys 的原始 FFI，版本见技术方案第 2.4 节
 [target.'cfg(windows)'.dependencies]
@@ -42,6 +44,7 @@ windows-sys = { version = "=0.61.2", features = [
   "Win32_Security_Authorization",
   "Win32_Security_Cryptography",
   "Win32_Storage_FileSystem",
+  "Win32_System_Com",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_JobObjects",
   "Win32_System_Registry",
@@ -50,6 +53,8 @@ windows-sys = { version = "=0.61.2", features = [
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ] }
+# 语音输入（speech_*，platform/speech.rs）：系统自带的 Windows.Media.SpeechRecognition（WinRT），与 Tauri 依赖树中的版本一致
+windows = { version = "=0.62.2", features = ["Foundation", "Media_SpeechRecognition"] }
 
 [profile.release]
 lto = true

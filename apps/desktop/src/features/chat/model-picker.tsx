@@ -1,11 +1,21 @@
 "use client";
 
-// 输入框右下角、上下文圆环左侧的模型按钮：显示当前模型与思考强度，点开可切换（第 9.5 节）。
+// 输入框右下角的模型按钮：显示当前模型与思考强度，点开可切换（第 9.5 节）。
 // 模型列表来自账号下发的配置（models_get）；思考强度按模型支持的档位（get_available_thinking_levels）。
+// 弹层：“模型”分组，每行模型名 + 右侧单选圆点（选中为橙色圆环白芯，选中行的浅色底在行间滑动）；
+// 分隔线下是“思考程度”滑杆（两端“更快 / 更聪明”，拇指弹到档位上）。
 import type { ThinkingLevel } from "@primus/protocol";
-import { Check, ChevronDown, Sparkles } from "lucide-react";
+import { ChevronDown, Sparkles } from "lucide-react";
 import { DropdownMenu as Menu } from "radix-ui";
-import { type CSSProperties, useEffect, useState } from "react";
+import {
+  type KeyboardEvent,
+  type PointerEvent,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   GlassPopover,
   GlassPopoverContent,
@@ -20,9 +30,12 @@ const t = strings.chat.model;
 /** 会话打开前（还不知道模型支持哪些档位）对推理模型显示的思考强度 */
 export const DEFAULT_THINKING_LEVELS: ThinkingLevel[] = ["off", "low", "medium", "high", "xhigh"];
 
+/** 思考滑杆拇指宽度（px）；刻度与填充都按“拇指中心可达范围”排布 */
+const THUMB_W = 32;
+
 const rowClass =
-  "mx-1.5 flex cursor-default select-none items-center gap-2.5 rounded-[10px] px-2.5 py-[7px] text-[13px] text-fg outline-none " +
-  "data-[highlighted]:bg-black/[0.06] data-[disabled]:opacity-45 dark:data-[highlighted]:bg-white/[0.1]";
+  "relative z-[1] mx-1.5 flex cursor-default select-none items-center gap-2.5 rounded-[10px] px-2.5 py-[9px] text-[14px] text-fg outline-none " +
+  "transition-colors data-[highlighted]:bg-black/[0.035] data-[disabled]:opacity-45 dark:data-[highlighted]:bg-white/[0.06]";
 
 export function thinkingLabel(level: string | undefined): string {
   return (level && (t.levels as Record<string, string>)[level]) || level || t.levelDefault;
@@ -63,36 +76,24 @@ export function ModelPicker({
           type="button"
           aria-label={`${t.label}：${model?.name ?? name}${showThinking ? `，${t.thinking}${thinkingLabel(thinkingLevel)}` : ""}`}
           title={model?.name ?? name}
-          className="flex h-8 max-w-56 items-center gap-1.5 rounded-full px-2.5 text-[12px] text-muted outline-none transition-colors hover:bg-hover hover:text-fg disabled:opacity-40 data-[state=open]:bg-hover data-[state=open]:text-fg"
+          className="flex h-8 max-w-64 items-center gap-1.5 rounded-full px-2.5 text-[12px] text-muted outline-none transition-colors hover:bg-hover hover:text-fg focus-visible:bg-hover disabled:opacity-40 data-[state=open]:bg-hover data-[state=open]:text-fg"
         >
           <Sparkles aria-hidden size={13} className="shrink-0" />
           <span className="truncate">{name}</span>
           {showThinking && (
-            <span className="shrink-0 text-muted/80">· {thinkingLabel(thinkingLevel)}</span>
+            <span className="shrink-0 text-muted/80">
+              · {t.thinking} {thinkingLabel(thinkingLevel)}
+            </span>
           )}
           <ChevronDown aria-hidden size={12} className="shrink-0 opacity-70" />
         </button>
       </GlassPopoverTrigger>
-      <GlassPopoverContent side="top" align="end" sideOffset={10} tint={0.8} minWidth={260}>
-        <Menu.Label className="px-4 pt-1 pb-1.5 text-[11px] font-medium text-muted">
-          {t.models}
-        </Menu.Label>
-        <Menu.RadioGroup value={current ?? ""} onValueChange={onSelectModel}>
-          {models.map((m) => (
-            <Menu.RadioItem key={m.key} value={m.key} textValue={m.name} className={rowClass}>
-              <span className="min-w-0 flex-1 truncate">{m.name}</span>
-              <Menu.ItemIndicator className="shrink-0">
-                <Check aria-hidden size={14} />
-              </Menu.ItemIndicator>
-            </Menu.RadioItem>
-          ))}
-        </Menu.RadioGroup>
+      <GlassPopoverContent side="top" align="end" sideOffset={10} tint={0.8} minWidth={300}>
+        <Menu.Label className="px-4 pt-1 pb-1.5 text-[12px] text-muted">{t.models}</Menu.Label>
+        <ModelList models={models} current={current} onSelect={onSelectModel} />
         {showThinking && (
           <>
-            <Menu.Separator className="mx-3 my-1.5 h-px bg-black/[0.07] dark:bg-white/[0.09]" />
-            <Menu.Label className="px-4 pt-1 pb-0.5 text-[11px] font-medium text-muted">
-              {t.thinking}
-            </Menu.Label>
+            <Menu.Separator className="mx-3 my-2 h-px bg-black/[0.07] dark:bg-white/[0.09]" />
             <ThinkingSlider
               levels={levels}
               value={thinkingLevel}
@@ -105,9 +106,69 @@ export function ModelPicker({
   );
 }
 
+/** 模型单选列表：选中行的浅色底是一块独立的高亮，切换时在行间滑动 */
+function ModelList({
+  models,
+  current,
+  onSelect,
+}: {
+  models: ModelSummary[];
+  current: string | null;
+  onSelect: (key: string) => void;
+}) {
+  const groupRef = useRef<HTMLDivElement>(null);
+  const [box, setBox] = useState<{ top: number; height: number } | null>(null);
+  // 首次定位不过渡（弹层刚打开），之后的切换才滑动
+  const [animate, setAnimate] = useState(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 选中项或列表变化时重新量取选中行的位置
+  useLayoutEffect(() => {
+    const row = groupRef.current?.querySelector<HTMLElement>('[data-state="checked"]');
+    setBox(row ? { top: row.offsetTop, height: row.offsetHeight } : null);
+  }, [current, models]);
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setAnimate(true));
+    return () => cancelAnimationFrame(id);
+  }, []);
+  return (
+    <Menu.RadioGroup value={current ?? ""} onValueChange={onSelect}>
+      <div ref={groupRef} className="relative">
+        <span
+          aria-hidden
+          className={cn(
+            "pointer-events-none absolute inset-x-1.5 top-0 rounded-[10px] bg-black/[0.05] dark:bg-white/[0.08]",
+            animate && "model-highlight",
+          )}
+          style={{
+            translate: `0 ${box?.top ?? 0}px`,
+            height: box?.height ?? 0,
+            opacity: box ? 1 : 0,
+          }}
+        />
+        {models.map((m) => (
+          <Menu.RadioItem key={m.key} value={m.key} textValue={m.name} className={rowClass}>
+            <span className="min-w-0 flex-1 truncate">{m.name}</span>
+            <span
+              aria-hidden
+              className={cn(
+                "grid size-[18px] shrink-0 place-items-center rounded-full transition-[box-shadow,background-color] duration-200",
+                m.key === current
+                  ? "bg-select"
+                  : "shadow-[inset_0_0_0_1.5px_color-mix(in_srgb,var(--color-muted)_55%,transparent)]",
+              )}
+            >
+              {m.key === current && <span className="radio-dot size-[7px] rounded-full bg-white" />}
+            </span>
+          </Menu.RadioItem>
+        ))}
+      </div>
+    </Menu.RadioGroup>
+  );
+}
+
 /**
- * 思考强度滑杆：档位多时不再把每档列成一行，拖动或用方向键选择，松手（或抬键）才切换，
- * 避免拖动途中逐档发请求。下方列出各档名称并突出当前档。当前档位未知（默认）时滑块停在中间档。
+ * 思考程度滑杆（role="slider"）：浅灰轨道上每档一道刻度，白色凸起拇指；拇指左侧是深一些的填充。
+ * 拖动时拇指跟手，松手弹到最近的档位；点轨道直接跳档；方向键 / Home / End 逐档移动。
+ * 松手（或抬键）才提交，避免拖动途中逐档发请求。当前档位未知（默认）时停在中间档。
  */
 function ThinkingSlider({
   levels,
@@ -121,38 +182,132 @@ function ThinkingSlider({
   const known = value ? levels.indexOf(value) : -1;
   const index = known >= 0 ? known : Math.floor((levels.length - 1) / 2);
   const [draft, setDraft] = useState(index);
-  useEffect(() => setDraft(index), [index]);
+  const draftRef = useRef(index);
+  useEffect(() => {
+    setDraft(index);
+    draftRef.current = index;
+  }, [index]);
   const max = levels.length - 1;
-  const commit = () => {
-    const level = levels[draft];
+  const trackRef = useRef<HTMLDivElement>(null);
+  // 拖动中拇指跟手的位置（0–1）；null 表示停在档位上
+  const [drag, setDrag] = useState<number | null>(null);
+
+  const set = useCallback((i: number) => {
+    draftRef.current = i;
+    setDraft(i);
+  }, []);
+  const commit = useCallback(() => {
+    const level = levels[draftRef.current];
     if (level && level !== value) onCommit(level);
+  }, [levels, value, onCommit]);
+
+  const ratioAt = (clientX: number) => {
+    const rect = trackRef.current?.getBoundingClientRect();
+    if (!rect || rect.width <= THUMB_W) return draftRef.current / Math.max(1, max);
+    return Math.min(1, Math.max(0, (clientX - rect.left - THUMB_W / 2) / (rect.width - THUMB_W)));
   };
+  const onPointerDown = (e: PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.currentTarget.focus();
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    const r = ratioAt(e.clientX);
+    setDrag(r);
+    set(Math.round(r * max));
+  };
+  const onPointerMove = (e: PointerEvent<HTMLDivElement>) => {
+    if (drag === null) return;
+    const r = ratioAt(e.clientX);
+    setDrag(r);
+    set(Math.round(r * max));
+  };
+  const onPointerUp = () => {
+    if (drag === null) return;
+    setDrag(null);
+    commit();
+  };
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    // Esc、Tab 交给菜单（关闭、移出焦点）；其余按键不让菜单拿去移动高亮或做首字母跳转
+    if (e.key === "Escape" || e.key === "Tab") return;
+    e.stopPropagation();
+    const step: Record<string, number> = {
+      ArrowRight: 1,
+      ArrowUp: 1,
+      ArrowLeft: -1,
+      ArrowDown: -1,
+      PageUp: 1,
+      PageDown: -1,
+    };
+    let next = draftRef.current;
+    if (e.key in step) next += step[e.key] ?? 0;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = max;
+    else return;
+    e.preventDefault();
+    set(Math.min(max, Math.max(0, next)));
+  };
+  const onKeyUp = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === "Escape" || e.key === "Tab") return;
+    e.stopPropagation();
+    commit();
+  };
+
+  const ratio = drag ?? (max > 0 ? draft / max : 0);
+  const thumbLeft = `calc(${ratio} * (100% - ${THUMB_W}px))`;
+  const label = thinkingLabel(levels[draft]);
   return (
-    <div className="px-4 pb-1.5">
-      <input
-        type="range"
-        min={0}
-        max={max}
-        step={1}
-        value={draft}
-        aria-label={t.thinking}
-        aria-valuetext={thinkingLabel(levels[draft])}
-        onChange={(e) => setDraft(Number(e.target.value))}
-        onPointerUp={commit}
-        onKeyUp={commit}
-        // 方向键、Home/End 留给滑杆，不让菜单拿去移动高亮或做首字母跳转
-        onKeyDown={(e) => {
-          if (e.key !== "Escape" && e.key !== "Tab") e.stopPropagation();
-        }}
-        className="ui-range w-full"
-        style={{ "--pct": `${max > 0 ? (draft / max) * 100 : 0}%` } as CSSProperties}
-      />
-      <div aria-hidden className="flex justify-between text-[11px] text-muted">
+    <div className="px-4 pt-0.5 pb-2">
+      <div className="flex items-baseline gap-1.5 text-[12px] text-muted">
+        <span>{t.thinkingDegree}</span>
+        <span key={label} aria-hidden className="value-in text-[13px] font-medium text-fg">
+          {label}
+        </span>
+      </div>
+      <div aria-hidden className="mt-2 mb-1.5 flex justify-between text-[12px] text-muted">
+        <span>{t.faster}</span>
+        <span>{t.smarter}</span>
+      </div>
+      <div
+        ref={trackRef}
+        role="slider"
+        tabIndex={0}
+        aria-label={t.thinkingDegree}
+        aria-valuemin={0}
+        aria-valuemax={max}
+        aria-valuenow={draft}
+        aria-valuetext={label}
+        data-dragging={drag !== null || undefined}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        onKeyDown={onKeyDown}
+        onKeyUp={onKeyUp}
+        className="think-track relative h-[34px] cursor-pointer touch-none select-none rounded-[10px] bg-black/[0.045] outline-none focus-visible:ring-2 focus-visible:ring-accent/35 dark:bg-white/[0.07]"
+      >
+        <span
+          aria-hidden
+          className="think-fill absolute inset-y-0 left-0 rounded-[10px] bg-black/[0.09] dark:bg-white/[0.12]"
+          style={{ width: `calc(${ratio} * (100% - ${THUMB_W}px) + ${THUMB_W}px)` }}
+        />
         {levels.map((level, i) => (
-          <span key={level} className={cn(i === draft && "font-medium text-fg")}>
-            {thinkingLabel(level)}
-          </span>
+          <span
+            key={level}
+            aria-hidden
+            className={cn(
+              "absolute top-1/2 h-3 w-[2px] -translate-x-1/2 -translate-y-1/2 rounded-full transition-colors duration-200",
+              i <= draft ? "bg-black/25 dark:bg-white/35" : "bg-black/15 dark:bg-white/20",
+            )}
+            style={{
+              left: `calc(${max > 0 ? i / max : 0} * (100% - ${THUMB_W}px) + ${THUMB_W / 2}px)`,
+            }}
+          />
         ))}
+        <span
+          aria-hidden
+          className="think-thumb glass-knob absolute top-[2px] bottom-[2px] rounded-[8px]"
+          style={{ left: thumbLeft, width: THUMB_W }}
+        />
       </div>
     </div>
   );

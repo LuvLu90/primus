@@ -1,6 +1,6 @@
 "use client";
 
-import type { CoreBatch, ExtensionUiResponse, ThinkingLevel } from "@primus/protocol";
+import type { CoreBatch, ExtensionUiResponse, ImageContent, ThinkingLevel } from "@primus/protocol";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { CORE_NOT_RUNNING, getPlatform, type Platform, PlatformError } from "@/lib/platform";
@@ -48,8 +48,16 @@ export interface ChatSession {
   unresponsive: boolean;
   /** 内核未运行（已自行退出、因进程上限被淘汰或重启失败）：同样提示并提供重启，重启成功前禁止发送 */
   coreStopped: boolean;
-  /** 发送成功返回 true；失败时设置 error 并返回 false */
-  send: (message: string) => Promise<boolean>;
+  /** 发送成功返回 true；失败时设置 error 并返回 false。`images` 随 prompt 一起发给支持看图的模型 */
+  send: (message: string, images?: ImageContent[]) => Promise<boolean>;
+  /** 会话已打开（压缩、自动压缩、用量统计只在打开后可用） */
+  connected: boolean;
+  /** 刷新上下文占用与本会话用量（get_session_stats）；会话未打开时什么也不做 */
+  refreshStats: () => void;
+  /** 立即压缩（compact）；成功返回 true，失败设置 error 并返回 false */
+  compact: () => Promise<boolean>;
+  /** 开关自动压缩（set_auto_compaction）；成功返回 true */
+  setAutoCompaction: (enabled: boolean) => Promise<boolean>;
   /** abort 成功（Core 已回成功响应）返回 true；失败时设置 error 并返回 false */
   abort: () => Promise<boolean>;
   /** 正在重启内核：期间重启入口不可用，避免连点重复重启 */
@@ -119,6 +127,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
   );
 
   const conn = useRef<{ platform: Platform; client: RpcClient }>(null);
+  const [connected, setConnected] = useState(false);
   // Core 里当前生效的权限模式（新进程默认“每次询问”，打开或重启后重新同步）
   const syncedMode = useRef<PermissionMode | null>(null);
   const [pendingModel, setPendingModel] = useState<{
@@ -264,6 +273,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
       });
       for (const batch of early) client.receive(batch);
       conn.current = { platform, client };
+      setConnected(true);
       syncedMode.current = null;
       optionsRef.current.onOpening?.(false);
       optionsRef.current.onOpened?.({ sessionId: sessionId ?? null, workspace: path });
@@ -306,6 +316,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
         opening.current = null;
         const c = conn.current;
         conn.current = null;
+        setConnected(false);
         if (c) {
           c.client.close();
           void c.platform.sessionClose(c.client.sessionKey).catch(() => {});
@@ -336,7 +347,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
   }, [historyPath, loadHistory, fail]);
 
   const send = useCallback(
-    async (message: string): Promise<boolean> => {
+    async (message: string, images?: ImageContent[]): Promise<boolean> => {
       // 重建失败的提示保留到重建成功为止
       setErrorState((e) => (e?.kind === "resync" ? e : undefined));
       try {
@@ -351,7 +362,10 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
         const pendingChoice = pendingModelRef.current;
         if (pendingChoice.model || pendingChoice.thinkingLevel) await applySession(c.client);
         await syncMode(c.client);
-        const res = await c.client.request("prompt", { message });
+        const res = await c.client.request(
+          "prompt",
+          images && images.length > 0 ? { message, images } : { message },
+        );
         return res.success;
       } catch (e) {
         // 超时时 Core 可能已受理（它不按 id 去重）：保留草稿，但由界面在内核恢复或重启前禁止重发
@@ -426,6 +440,44 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     }
   }, [fail]);
 
+  const refreshStats = useCallback(() => {
+    conn.current?.client.request("get_session_stats").catch(() => {});
+  }, []);
+
+  const compact = useCallback(async (): Promise<boolean> => {
+    const c = conn.current;
+    if (!c) return false;
+    try {
+      const res = await c.client.request("compact");
+      if (!res.success) throw new Error(`${strings.chat.contextCard.compactFailed}：${res.error}`);
+      // 压缩后上下文占用未知（tokens 为 null），用量统计照常刷新
+      await c.client.request("get_session_stats").catch(() => {});
+      return true;
+    } catch (e) {
+      fail(e);
+      return false;
+    }
+  }, [fail]);
+
+  const setAutoCompaction = useCallback(
+    async (enabled: boolean): Promise<boolean> => {
+      const c = conn.current;
+      if (!c) return false;
+      try {
+        const res = await c.client.request("set_auto_compaction", { enabled });
+        if (!res.success)
+          throw new Error(`${strings.chat.contextCard.autoCompactFailed}：${res.error}`);
+        // 读回实际生效的值
+        await c.client.request("get_state");
+        return true;
+      } catch (e) {
+        fail(e);
+        return false;
+      }
+    },
+    [fail],
+  );
+
   // 同步的重入保护（state 要到下一次渲染才生效）；restarting 只用于界面禁用按钮
   const restartingRef = useRef(false);
   const [restarting, setRestarting] = useState(false);
@@ -473,5 +525,9 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     respondUi,
     selectModel,
     pendingModel,
+    connected,
+    refreshStats,
+    compact,
+    setAutoCompaction,
   };
 }

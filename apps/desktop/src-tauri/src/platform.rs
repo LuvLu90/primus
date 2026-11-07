@@ -9,6 +9,8 @@ use std::path::Path;
 
 use crate::paths::RepairChoice;
 
+pub(crate) mod speech;
+
 /// 安装包下载页：修复引导中“重新安装到其他目录”打开它。
 pub(crate) const REINSTALL_URL: &str = "https://github.com/skaduv/primus/releases";
 

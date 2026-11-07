@@ -828,3 +828,49 @@ mod tests {
         );
     }
 }
+
+/// 工作区所在 Git 仓库的当前分支（只读，直接读 `.git/HEAD`）；不是仓库时返回 `null`。
+#[tauri::command(async)]
+pub(crate) fn git_branch(workspace: String) -> Option<crate::git::GitBranch> {
+    let path = Path::new(&workspace);
+    if workspace.is_empty() || !path.is_absolute() {
+        return None;
+    }
+    crate::git::branch(path)
+}
+
+/// 输入框图片附件：读取本地图片，在内存中按最长边 `max_edge` 缩小并编码为 base64，附带缩略图（不写任何文件）。
+#[tauri::command(async)]
+pub(crate) fn attachment_image(
+    path: String,
+    max_edge: u32,
+) -> Result<crate::attachments::AttachmentImage, String> {
+    let path = Path::new(&path);
+    if !path.is_absolute() {
+        return Err("附件路径必须是绝对路径".into());
+    }
+    crate::attachments::read_image(path, max_edge)
+}
+
+/// 语音输入是否可用（Windows 有系统语音语言时为 true）。
+#[tauri::command]
+pub(crate) fn speech_available(speech: State<'_, crate::platform::speech::Speech>) -> bool {
+    speech.available()
+}
+
+/// 开始语音听写：识别事件（interim / final / error / end）经 Channel 推送；已有会话时先停止旧的。
+#[tauri::command(async)]
+pub(crate) fn speech_start(
+    speech: State<'_, crate::platform::speech::Speech>,
+    on_event: Channel<crate::platform::speech::SpeechEvent>,
+) -> Result<(), String> {
+    speech.start(Arc::new(move |event| {
+        let _ = on_event.send(event);
+    }))
+}
+
+/// 停止语音听写（之后推送 `end`）。
+#[tauri::command]
+pub(crate) fn speech_stop(speech: State<'_, crate::platform::speech::Speech>) {
+    speech.stop();
+}

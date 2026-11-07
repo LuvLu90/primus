@@ -93,4 +93,26 @@ describe("Tauri 平台实现", () => {
       runtime: "tauri",
     });
   });
+
+  it("语音、附件图片与分支命令按附录 B 传参，语音事件经 Channel 推送", async () => {
+    const p = createTauriPlatform();
+    await p.attachmentImage("C:\\a.png", 2048);
+    expect(invoke).toHaveBeenLastCalledWith("attachment_image", {
+      path: "C:\\a.png",
+      maxEdge: 2048,
+    });
+    await p.gitBranch("C:\\repo");
+    expect(invoke).toHaveBeenLastCalledWith("git_branch", { workspace: "C:\\repo" });
+    const onEvent = vi.fn();
+    await p.speechStart(onEvent);
+    const [name, args] = invoke.mock.calls.at(-1) as [
+      string,
+      { onEvent: InstanceType<typeof FakeChannel<unknown>> },
+    ];
+    expect(name).toBe("speech_start");
+    args.onEvent.onmessage({ type: "final", text: "你好" });
+    expect(onEvent).toHaveBeenCalledWith({ type: "final", text: "你好" });
+    await p.speechStop();
+    expect(invoke).toHaveBeenLastCalledWith("speech_stop", undefined);
+  });
 });
