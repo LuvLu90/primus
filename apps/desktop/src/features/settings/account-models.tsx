@@ -4,6 +4,7 @@ import { RadioGroup } from "radix-ui";
 import { useEffect, useId, useState } from "react";
 import { type AuthStatus, getPlatform, type ModelSummary, type ModelsInfo } from "@/lib/platform";
 import { strings } from "@/lib/strings";
+import { useModelsInfo } from "@/lib/use-models";
 import { cn } from "@/lib/utils";
 import { Row, Section } from "./settings-section";
 
@@ -17,11 +18,11 @@ export function formatTokens(n: number): string {
   return String(n);
 }
 
-function errorText(e: unknown, fallback: string): string {
+export function errorText(e: unknown, fallback: string): string {
   return e instanceof Error && e.message ? e.message : fallback;
 }
 
-function Badge({ children }: { children: string }) {
+export function Badge({ children }: { children: string }) {
   return (
     <span className="rounded-full bg-black/[0.05] px-2 py-0.5 text-[11px] text-muted dark:bg-white/[0.08]">
       {children}
@@ -29,7 +30,7 @@ function Badge({ children }: { children: string }) {
   );
 }
 
-// 设置·账号（第 9.7 节）：内置账号阶段只展示账号名与说明，登录 / 登出按钮禁用（loginAvailable 为 false）。
+// 设置·账号（第 9.7 节）：账号服务接入前显示未登录与说明，登录 / 登出按钮禁用（loginAvailable 为 false）。
 export function AccountSettings() {
   const [status, setStatus] = useState<AuthStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -48,17 +49,14 @@ export function AccountSettings() {
   if (error) return <p className="text-sm text-danger">{error}</p>;
   if (!status) return <p className="text-sm text-muted">{ta.loading}</p>;
 
-  const account = status.account;
+  const account = status.loggedIn ? status.account : null;
   return (
     <Section title={ta.title}>
       <Row
-        label={account?.name ?? ta.title}
-        hint={account?.kind === "builtin" ? ta.builtinHint : undefined}
+        label={account?.name ?? ta.notSignedIn}
+        hint={status.loginAvailable ? undefined : ta.notSignedInHint}
       >
-        <div className="flex shrink-0 items-center gap-2">
-          {account?.kind === "builtin" && <Badge>{ta.builtinBadge}</Badge>}
-          {status.loggedIn && <span className="text-sm text-muted">{ta.signedIn}</span>}
-        </div>
+        {status.loggedIn && <span className="shrink-0 text-sm text-muted">{ta.signedIn}</span>}
       </Row>
       <Row label={status.loggedIn ? ta.logout : ta.login} hint={ta.loginUnavailable}>
         <button
@@ -85,31 +83,21 @@ function ModelDetail({ model }: { model: ModelSummary }) {
   );
 }
 
-// 设置·模型（第 9.5 节）：从下发列表中改选默认模型（新会话生效）；显示压缩与标题使用的模型与配置错误。
+// 设置·模型（第 9.5 节）：从已启用渠道的模型中改选默认模型（新会话生效）；显示压缩与标题使用的模型与配置错误。
+// 随 models_watch 更新：添加、修改渠道或后台获取到模型列表后立即刷新。
 export function ModelSettings() {
-  const [info, setInfo] = useState<ModelsInfo | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const { info, error: loadError, update } = useModelsInfo();
+  const error = loadError ? errorText(loadError, tm.loadFailed) : null;
   // 改选与刷新的失败分别用各自的标题
   const [actionError, setActionError] = useState<{ title: string; message: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const labelId = useId();
 
-  useEffect(() => {
-    let cancelled = false;
-    getPlatform()
-      .then((p) => p.modelsGet())
-      .then((i) => !cancelled && setInfo(i))
-      .catch((e: unknown) => !cancelled && setError(errorText(e, tm.loadFailed)));
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   const run = async (action: () => Promise<ModelsInfo>, title: string) => {
     setBusy(true);
     setActionError(null);
     try {
-      setInfo(await action());
+      update(await action());
     } catch (e) {
       setActionError({ title, message: errorText(e, title) });
     } finally {
@@ -156,6 +144,9 @@ export function ModelSettings() {
           disabled={busy}
           className="flex flex-col"
         >
+          {info.models.length === 0 && !info.error && (
+            <p className="px-4 pt-1 pb-3 text-sm text-muted">{tm.noModels}</p>
+          )}
           {info.models.map((model) => (
             <RadioGroup.Item
               key={model.key}

@@ -18,6 +18,10 @@ import {
   type ModelsInfo,
   type Platform,
   PlatformError,
+  type ProviderApi,
+  type ProviderModel,
+  type ProvidersChanged,
+  type ProviderView,
   type SessionIndexEvent,
   type SessionSummary,
   type SpeechEvent,
@@ -50,6 +54,8 @@ export interface MockOptions {
   attachmentDelayMs?: number;
   /** 模拟听写每一步（音量、逐字识别）的间隔，默认 90ms */
   speechStepMs?: number;
+  /** 模拟“获取模型”的网络耗时，默认 600ms（测试可调小） */
+  fetchDelayMs?: number;
 }
 
 /** mock 能“读取”的图片扩展名（与薄壳支持的格式一致） */
@@ -70,53 +76,106 @@ export function mockThumb(path: string): string {
 /** mock 听写的台词：逐字作为临时结果推送，每句结束时定稿 */
 const MOCK_SPEECH = ["帮我看下这张截图里的布局问题，", "对照需求说明改一下。"];
 
-/** 浏览器预览的内置账号与模型（与薄壳内置配置同形，模型只是示意，不连接任何端点） */
-const MOCK_AUTH: AuthStatus = {
-  loggedIn: true,
-  account: { id: "builtin", name: "内置测试账号", kind: "builtin" },
-  loginAvailable: false,
-};
+/** 浏览器预览的账号状态：账号服务接入前恒为未登录、不可登录（与薄壳一致） */
+const MOCK_AUTH: AuthStatus = { loggedIn: false, account: null, loginAvailable: false };
 
-const MOCK_LARGE: ModelSummary = {
-  key: "mock-messages/mock-large",
-  provider: "mock-messages",
-  id: "mock-large",
-  name: "Mock 大模型",
-  api: "anthropic-messages",
-  reasoning: true,
-  image: true,
-  contextWindow: 1_000_000,
-  maxTokens: 128_000,
-};
+/** mock 内部保存的渠道（含密钥；对外只给出 hasKey / keyHint，与薄壳一致） */
+interface MockProvider {
+  id: string;
+  name: string;
+  api: ProviderApi;
+  baseUrl: string;
+  enabled: boolean;
+  models: ProviderModel[];
+  apiKey: string | null;
+}
 
-const MOCK_FAST: ModelSummary = {
-  key: "mock-responses/mock-fast",
-  provider: "mock-responses",
-  id: "mock-fast",
-  name: "Mock 快速模型",
-  api: "openai-responses",
-  reasoning: false,
-  image: false,
-  contextWindow: 128_000,
-  maxTokens: 16_384,
-};
+/** 预置渠道（与薄壳首次启动写入的内置渠道同名同地址；密钥只是占位，模型只是示意，不连接任何端点） */
+const MOCK_SEED_PROVIDERS: MockProvider[] = [
+  {
+    id: "ioply",
+    name: "ioply",
+    api: "openai-responses",
+    baseUrl: "http://218.93.48.244:3304/openai/v1",
+    enabled: true,
+    apiKey: "mock-placeholder-key-c74e",
+    models: [
+      {
+        id: "mock-large",
+        name: "Mock 大模型",
+        reasoning: true,
+        input: ["text", "image"],
+        contextWindow: 1_000_000,
+        maxTokens: 128_000,
+      },
+      {
+        id: "mock-fast",
+        name: "Mock 快速模型",
+        reasoning: false,
+        input: ["text"],
+        contextWindow: 128_000,
+        maxTokens: 16_384,
+      },
+    ],
+  },
+];
 
-const MOCK_MODELS: ModelSummary[] = [MOCK_LARGE, MOCK_FAST];
+/** mock 的“获取模型”返回的服务端列表（新模型按薄壳的默认参数） */
+const MOCK_FETCHED_IDS: { id: string; name?: string }[] = [
+  { id: "mock-large", name: "Mock 大模型" },
+  { id: "mock-fast", name: "Mock 快速模型" },
+  { id: "mock-coder", name: "Mock 编程模型" },
+  { id: "mock-vision" },
+];
 
-/** get_state / set_model 响应里的模型对象（字段按 Core 的 Model，只填界面用到的） */
-function mockModel(key: string) {
-  const m = MOCK_MODELS.find((x) => x.key === key) ?? MOCK_LARGE;
+/** 获取模型时用这个密钥模拟“密钥无效”（浏览器预览与测试用） */
+export const MOCK_BAD_KEY = "bad";
+
+const PROVIDER_MODEL_KEYS = ["id", "name", "reasoning", "input", "contextWindow", "maxTokens"];
+
+/** 与薄壳一致的渠道 ID 生成：ASCII 字母数字转小写，其余折成 `-`；非字母开头加 `p-` */
+function providerSlug(name: string): string {
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  if (!slug) return "provider";
+  return /^[a-z]/.test(slug) ? slug : `p-${slug}`;
+}
+
+/** 密钥末 4 位；短于 8 个字符时不提示（与薄壳一致） */
+function keyHint(key: string | null): string | null {
+  return key && key.length >= 8 ? key.slice(-4) : null;
+}
+
+function toSummary(p: MockProvider, m: ProviderModel): ModelSummary {
   return {
+    key: `${p.id}/${m.id}`,
+    provider: p.id,
     id: m.id,
     name: m.name,
-    api: m.api,
-    provider: m.provider,
-    baseUrl: "https://mock.invalid",
+    api: p.api,
     reasoning: m.reasoning,
-    input: m.image ? ["text", "image"] : ["text"],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    image: m.input.includes("image"),
     contextWindow: m.contextWindow,
     maxTokens: m.maxTokens,
+  };
+}
+
+/** get_state / set_model 响应里的模型对象（字段按 Core 的 Model，只填界面用到的） */
+function mockModel(key: string, m: ModelSummary | undefined) {
+  const [provider = "", id = key] = key.split("/");
+  return {
+    id: m?.id ?? id,
+    name: m?.name ?? id,
+    api: m?.api ?? "openai-responses",
+    provider: m?.provider ?? provider,
+    baseUrl: "https://mock.invalid",
+    reasoning: m?.reasoning ?? false,
+    input: m?.image ? ["text", "image"] : ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: m?.contextWindow ?? 128_000,
+    maxTokens: m?.maxTokens ?? 16_384,
   };
 }
 
@@ -280,15 +339,47 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
   };
   const sortedIndex = () =>
     sessionIndex.slice().sort((a, b) => b.updatedAt - a.updatedAt || (a.path < b.path ? 1 : -1));
-  let defaultModel = MOCK_LARGE.key;
-  const modelsInfo = (): ModelsInfo => ({
-    version: 1,
-    models: structuredClone(MOCK_MODELS),
-    defaultModel,
-    compactionModel: MOCK_FAST.key,
-    titleModel: MOCK_FAST.key,
-    error: null,
+  // 模型渠道（模拟薄壳的 providers.json + 保险库）：预置 ioply
+  let providers: MockProvider[] = structuredClone(MOCK_SEED_PROVIDERS);
+  const fetchDelayMs = options.fetchDelayMs ?? 600;
+  /** 进入模型配置的模型：启用 + 已存密钥 + 有模型的渠道 */
+  const allModels = (): ModelSummary[] =>
+    providers
+      .filter((p) => p.enabled && p.apiKey)
+      .flatMap((p) => p.models.map((m) => toSummary(p, m)));
+  const findModel = (key: string) => allModels().find((m) => m.key === key);
+  let defaultModel: string | null = "ioply/mock-large";
+  const modelsInfo = (): ModelsInfo => {
+    const models = allModels();
+    const effective =
+      defaultModel && models.some((m) => m.key === defaultModel)
+        ? defaultModel
+        : (models[0]?.key ?? null);
+    return {
+      version: 1,
+      models,
+      defaultModel: effective,
+      compactionModel: effective,
+      titleModel: effective,
+      error: models.length === 0 ? "还没有可用的模型：请在设置中添加模型渠道并获取模型列表" : null,
+    };
+  };
+  let modelsListener: ((info: ModelsInfo) => void) | undefined;
+  const notifyModels = () => modelsListener?.(modelsInfo());
+  const providerView = (p: MockProvider): ProviderView => ({
+    id: p.id,
+    name: p.name,
+    api: p.api,
+    baseUrl: p.baseUrl,
+    enabled: p.enabled,
+    models: structuredClone(p.models),
+    hasKey: p.apiKey !== null,
+    keyHint: keyHint(p.apiKey),
   });
+  const providersChanged = (): ProvidersChanged => {
+    notifyModels();
+    return { providers: providers.map(providerView), models: modelsInfo() };
+  };
   let settings: Record<string, unknown> = {};
   // 自动更新（浏览器预览）：可用、默认自动更新开；有 latestVersion 时检查后模拟下载完成
   let update: UpdateStatus = {
@@ -428,7 +519,7 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
           // 推送时才生成：反映此前推送的 agent_settled 等事件之后的运行状态
           () =>
             respond(cmd, {
-              model: mockModel(s.model),
+              model: mockModel(s.model, findModel(s.model)),
               thinkingLevel: s.thinkingLevel,
               isStreaming: s.streaming,
               isCompacting: false,
@@ -443,24 +534,25 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
         return;
       case "set_model": {
         const key = `${cmd.provider}/${cmd.modelId}`;
-        if (!MOCK_MODELS.some((m) => m.key === key)) {
+        const found = findModel(key);
+        if (!found) {
           emit(s, respond(cmd, undefined, `模型 ${key} 不在可用列表中`));
           return;
         }
         s.model = key;
-        if (!MOCK_MODELS.find((m) => m.key === key)?.reasoning) s.thinkingLevel = "off";
-        emit(s, respond(cmd, mockModel(key)));
+        if (!found.reasoning) s.thinkingLevel = "off";
+        emit(s, respond(cmd, mockModel(key, found)));
         return;
       }
       case "set_thinking_level":
-        s.thinkingLevel = MOCK_MODELS.find((m) => m.key === s.model)?.reasoning ? cmd.level : "off";
+        s.thinkingLevel = findModel(s.model)?.reasoning ? cmd.level : "off";
         emit(s, respond(cmd));
         return;
       case "get_available_thinking_levels":
         emit(
           s,
           respond(cmd, {
-            levels: MOCK_MODELS.find((m) => m.key === s.model)?.reasoning
+            levels: findModel(s.model)?.reasoning
               ? ["off", "low", "medium", "high", "xhigh"]
               : ["off"],
           }),
@@ -468,7 +560,7 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
         return;
       case "get_session_stats": {
         // 粗略按 4 字符 1 token 估算上下文占用
-        const window = MOCK_MODELS.find((m) => m.key === s.model)?.contextWindow ?? 128_000;
+        const window = findModel(s.model)?.contextWindow ?? 128_000;
         emit(s, () => {
           const tokens = MOCK_CONTEXT_BASE + Math.round(JSON.stringify(s.messages).length / 4);
           // 累计用量也粗略估算：每轮输入约为上下文的两倍，缓存命中约为一半
@@ -631,7 +723,7 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
         closed: false,
         delivered: [],
         aborting: false,
-        model: defaultModel,
+        model: modelsInfo().defaultModel ?? "",
         thinkingLevel: "medium",
         autoCompaction: true,
         compacted: false,
@@ -699,19 +791,114 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
 
     authStatus: async () => structuredClone(MOCK_AUTH),
     authLogin: async () => {
-      throw new PlatformError("账号登录暂未开放，当前使用内置测试账号", AUTH_NOT_AVAILABLE);
+      throw new PlatformError("账号登录暂未开放", AUTH_NOT_AVAILABLE);
     },
     authLogout: async () => {
-      throw new PlatformError("账号登出暂未开放，当前使用内置测试账号", AUTH_NOT_AVAILABLE);
+      throw new PlatformError("账号登出暂未开放", AUTH_NOT_AVAILABLE);
     },
     modelsGet: async () => modelsInfo(),
-    modelsRefresh: async () => modelsInfo(),
+    modelsRefresh: async () => {
+      notifyModels();
+      return modelsInfo();
+    },
     modelsSetDefault: async (model) => {
-      if (!MOCK_MODELS.some((m) => m.key === model)) {
+      if (!findModel(model)) {
         throw new PlatformError(`模型 ${model} 不在可用列表中`);
       }
       defaultModel = model;
+      notifyModels();
       return modelsInfo();
+    },
+    modelsWatch: async (onChange) => {
+      modelsListener = onChange;
+    },
+    providersList: async () => providers.map(providerView),
+    providerSave: async (input) => {
+      // 与薄壳一致的校验（严格字段、名称、地址、密钥、模型 ID）
+      const name = input.name.trim();
+      if (!name) throw new Error("请填写渠道名称");
+      if ([...name].length > 64) throw new Error("渠道名称不能超过 64 个字符");
+      const baseUrl = input.baseUrl.trim().replace(/\/+$/, "");
+      if (!/^https?:\/\/[^/\s]+/i.test(baseUrl)) {
+        throw new Error("接口地址必须以 http:// 或 https:// 开头");
+      }
+      if (input.api !== "openai-responses" && input.api !== "anthropic-messages") {
+        throw new Error("不支持的协议");
+      }
+      if (input.apiKey !== undefined && !input.apiKey.trim()) throw new Error("API 密钥不能为空");
+      const ids = new Set<string>();
+      for (const m of input.models) {
+        const extra = Object.keys(m).filter((k) => !PROVIDER_MODEL_KEYS.includes(k));
+        if (extra.length) throw new Error(`模型参数包含未知字段：${extra.join("、")}`);
+        if (!m.id || m.id.includes("/")) throw new Error(`模型 ID 无效：${m.id}`);
+        if (ids.has(m.id)) throw new Error(`模型 ID 重复：${m.id}`);
+        if (!m.input.includes("text")) throw new Error(`模型 ${m.id} 必须支持文本输入`);
+        if (!(m.contextWindow > 0 && m.maxTokens > 0)) {
+          throw new Error(`模型 ${m.id} 的上下文长度与最大输出必须是正整数`);
+        }
+        ids.add(m.id);
+      }
+      const models = structuredClone(input.models);
+      if (input.id === undefined) {
+        if (input.apiKey === undefined) throw new Error("请填写 API 密钥");
+        const base = providerSlug(name);
+        let id = base;
+        for (let n = 2; providers.some((p) => p.id === id); n++) id = `${base}-${n}`;
+        providers.push({
+          id,
+          name,
+          api: input.api,
+          baseUrl,
+          enabled: input.enabled,
+          models,
+          apiKey: input.apiKey.trim(),
+        });
+      } else {
+        const existing = providers.find((p) => p.id === input.id);
+        if (!existing) throw new Error("渠道不存在，可能已被删除");
+        Object.assign(existing, {
+          name,
+          api: input.api,
+          baseUrl,
+          enabled: input.enabled,
+          models,
+          apiKey: input.apiKey === undefined ? existing.apiKey : input.apiKey.trim(),
+        });
+      }
+      return providersChanged();
+    },
+    providerDelete: async (id) => {
+      if (!providers.some((p) => p.id === id)) throw new Error("渠道不存在，可能已被删除");
+      providers = providers.filter((p) => p.id !== id);
+      return providersChanged();
+    },
+    providerFetchModels: async (input) => {
+      const saved = input.id === undefined ? undefined : providers.find((p) => p.id === input.id);
+      if (input.id !== undefined && !saved) throw new Error("渠道不存在，可能已被删除");
+      const api = input.api ?? saved?.api;
+      const baseUrl = input.baseUrl ?? saved?.baseUrl;
+      const apiKey = input.apiKey ?? saved?.apiKey ?? undefined;
+      if (saved && !apiKey) throw new Error("该渠道还没有保存 API 密钥");
+      if (!api || !baseUrl?.trim() || !apiKey?.trim()) {
+        throw new Error("请填写协议、接口地址与 API 密钥");
+      }
+      if (fetchDelayMs > 0) await new Promise((r) => setTimeout(r, fetchDelayMs));
+      if (!/^https?:\/\//i.test(baseUrl.trim())) {
+        throw new Error("无法连接到服务器，请检查接口地址与网络");
+      }
+      if (apiKey === MOCK_BAD_KEY) throw new Error("密钥无效或没有权限（HTTP 401）");
+      // 已保存的模型保留用户改过的参数；新模型按薄壳的默认参数
+      return MOCK_FETCHED_IDS.map(
+        ({ id, name }) =>
+          structuredClone(saved?.models.find((m) => m.id === id)) ?? {
+            id,
+            name: name ?? id,
+            reasoning: false,
+            input: ["text"],
+            contextWindow: 128_000,
+            maxTokens: 32_000,
+          },
+      );
     },
 
     shellDetect: async () => ({ shells: [{ kind: "powershell", version: "7.5.0" }] }),

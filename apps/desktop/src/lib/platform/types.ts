@@ -71,32 +71,87 @@ export interface SessionHandle {
 
 export type BatchListener = (batch: CoreBatch) => void;
 
-/** 账号信息（第 9.7 节）。`builtin` 为内置测试账号（临时方案），接入账号服务后为 `service` */
+/** 账号信息（第 9.7 节）；账号服务接入后提供 */
 export interface AccountInfo {
   id: string;
   name: string;
-  kind: "builtin" | "service";
+  kind: "service";
 }
 
-/** `auth_status` 的返回值 */
+/** `auth_status` 的返回值；账号服务接入前恒为未登录、不可登录 */
 export interface AuthStatus {
   loggedIn: boolean;
   account: AccountInfo | null;
-  /** 是否可以发起登录 / 登出；内置账号阶段为 false */
+  /** 是否可以发起登录 / 登出；账号服务接入前为 false */
   loginAvailable: boolean;
 }
 
-/** 可选模型（第 9.5 节下拉框显示的字段）；`key` 为 `provider/modelId` */
+/** 模型端点协议（约束 C1：只有这两种） */
+export type ProviderApi = "openai-responses" | "anthropic-messages";
+
+/** 可选模型（第 9.5 节下拉框显示的字段）；`key` 为 `<渠道 ID>/<模型 ID>`，`provider` 为渠道 ID */
 export interface ModelSummary {
   key: string;
   provider: string;
   id: string;
   name: string;
-  api: "openai-responses" | "anthropic-messages";
+  api: ProviderApi;
   reasoning: boolean;
   image: boolean;
   contextWindow: number;
   maxTokens: number;
+}
+
+/**
+ * 渠道下的一个模型（`provider_save` 的 `models` 项，也是 `provider_fetch_models` 的返回项）。
+ * 薄壳严格校验字段：不得带多余字段
+ */
+export interface ProviderModel {
+  id: string;
+  name: string;
+  reasoning: boolean;
+  /** 必须含 `text`；支持图片时再含 `image` */
+  input: ("text" | "image")[];
+  contextWindow: number;
+  maxTokens: number;
+}
+
+/** 模型渠道（`providers_list`）；密钥不会返回，只有是否已保存与末 4 位 */
+export interface ProviderView {
+  id: string;
+  name: string;
+  api: ProviderApi;
+  baseUrl: string;
+  enabled: boolean;
+  models: ProviderModel[];
+  hasKey: boolean;
+  /** 密钥末 4 位；没有密钥或密钥太短时为 null */
+  keyHint: string | null;
+}
+
+/** `provider_save` 的参数：无 `id` 为新建（必须带 `apiKey`）；有 `id` 为修改，`apiKey` 缺省保留已存密钥 */
+export interface ProviderSaveInput {
+  id?: string;
+  name: string;
+  api: ProviderApi;
+  baseUrl: string;
+  apiKey?: string;
+  enabled: boolean;
+  models: ProviderModel[];
+}
+
+/** `provider_fetch_models` 的参数：有 `id` 时用已保存的渠道，提供的字段覆盖之；无 `id` 时三项必填 */
+export interface ProviderFetchInput {
+  id?: string;
+  api?: ProviderApi;
+  baseUrl?: string;
+  apiKey?: string;
+}
+
+/** `provider_save` / `provider_delete` 的返回值 */
+export interface ProvidersChanged {
+  providers: ProviderView[];
+  models: ModelsInfo;
 }
 
 /** `models_get` / `models_refresh` / `models_set_default` 的返回值 */
@@ -226,17 +281,27 @@ export interface Platform {
   settingsGet(): Promise<Record<string, unknown>>;
   settingsSet(patch: Record<string, unknown>): Promise<void>;
 
-  /** 账号状态；内置账号阶段恒为已登录 */
+  /** 账号状态；账号服务接入前恒为未登录 */
   authStatus(): Promise<AuthStatus>;
-  /** 系统浏览器登录；内置账号阶段以 code `notAvailable` 拒绝 */
+  /** 系统浏览器登录；账号服务接入前以 code `notAvailable` 拒绝 */
   authLogin(): Promise<AuthStatus>;
-  /** 登出；内置账号阶段以 code `notAvailable` 拒绝 */
+  /** 登出；账号服务接入前以 code `notAvailable` 拒绝 */
   authLogout(): Promise<void>;
   modelsGet(): Promise<ModelsInfo>;
-  /** 重新获取并写入模型配置 */
+  /** 按已保存的渠道重写模型配置（不联网） */
   modelsRefresh(): Promise<ModelsInfo>;
-  /** 改选默认模型（`provider/modelId`），新会话生效 */
+  /** 改选默认模型（`<渠道 ID>/<模型 ID>`），新会话生效 */
   modelsSetDefault(model: string): Promise<ModelsInfo>;
+  /** 订阅模型配置变化（保存 / 删除渠道、刷新、改默认、启动后台获取成功）；再次调用替换旧的订阅 */
+  modelsWatch(onChange: (info: ModelsInfo) => void): Promise<void>;
+  /** 全部模型渠道 */
+  providersList(): Promise<ProviderView[]>;
+  /** 新建或修改渠道，保存后重写模型配置 */
+  providerSave(input: ProviderSaveInput): Promise<ProvidersChanged>;
+  /** 删除渠道（连同其密钥） */
+  providerDelete(id: string): Promise<ProvidersChanged>;
+  /** 向渠道获取模型列表（不保存）；已保存的模型保留用户改过的参数 */
+  providerFetchModels(input: ProviderFetchInput): Promise<ProviderModel[]>;
 
   shellDetect(): Promise<unknown>;
   fsTree(workspace: string, path: string): Promise<FsEntry[]>;
@@ -284,7 +349,7 @@ export interface Platform {
   logWrite(level: LogLevel, message: string): Promise<void>;
 }
 
-/** 账号命令错误码：功能尚未开放（内置账号阶段的登录 / 登出） */
+/** 账号命令错误码：功能尚未开放（账号服务接入前的登录 / 登出） */
 export const AUTH_NOT_AVAILABLE = "notAvailable";
 
 /** 更新命令错误码：有正在运行的 Agent，需要用户确认后带 force 重试 */
@@ -340,6 +405,11 @@ export const COMMANDS = {
   modelsGet: "models_get",
   modelsRefresh: "models_refresh",
   modelsSetDefault: "models_set_default",
+  modelsWatch: "models_watch",
+  providersList: "providers_list",
+  providerSave: "provider_save",
+  providerDelete: "provider_delete",
+  providerFetchModels: "provider_fetch_models",
   shellDetect: "shell_detect",
   fsTree: "fs_tree",
   fsRead: "fs_read",

@@ -2,6 +2,7 @@
 
 import type { AgentMessage } from "@primus/protocol";
 import { ArrowUp, Maximize2, Minimize2, Plus, Square } from "lucide-react";
+import { useRouter } from "next/navigation";
 import {
   type ClipboardEvent,
   type DragEvent,
@@ -22,8 +23,9 @@ import { useMediaQuery } from "@/components/theme/appearance-controller";
 import { GlassButton } from "@/components/ui/glass-button";
 import { type ChatTab, useSessionsStore } from "@/features/sessions/sessions-store";
 import { getFileDrop, getPlatform, isTauriRuntime } from "@/lib/platform";
-import type { ModelsInfo, SpeechSettingsPage, WorkspaceInfo } from "@/lib/platform/types";
+import type { SpeechSettingsPage, WorkspaceInfo } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
+import { useModelsInfo, useProviderNames } from "@/lib/use-models";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
 import { AgentTurn } from "./agent-turn";
@@ -160,32 +162,15 @@ function useElementHeight<T extends HTMLElement>() {
 }
 
 /**
- * 模型配置是否可用于对话（首次引导与第 9.8 节）：没有任何已生效的模型配置时不能发送，
- * 输入框上方提示并提供“重试”（调用 `models_refresh`）。读取失败（如浏览器预览缺少该接口）时不拦截。
+ * 模型配置是否可用于对话（首次引导与第 9.8 节）：没有任何可用的模型时不能发送，
+ * 输入框上方提示并提供“去设置添加渠道”。随 `models_watch` 更新，在设置里添加渠道后立即恢复。
+ * 读取失败（如浏览器预览缺少该接口）时不拦截。
  */
 function useModelConfigGate() {
-  const [info, setInfo] = useState<ModelsInfo | null>(null);
-  const [retrying, setRetrying] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    getPlatform()
-      .then((p) => p.modelsGet())
-      .then((i) => !cancelled && setInfo(i))
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const { info } = useModelsInfo();
+  const providerNames = useProviderNames(info);
   const unavailable = info !== null && info.error !== null && info.models.length === 0;
-  const retry = () => {
-    setRetrying(true);
-    getPlatform()
-      .then((p) => p.modelsRefresh())
-      .then(setInfo)
-      .catch(() => {})
-      .finally(() => setRetrying(false));
-  };
-  return { info, unavailable, reason: info?.error ?? null, retrying, retry };
+  return { info, providerNames, unavailable, reason: info?.error ?? null };
 }
 
 /** 语音输入被系统隐私设置拒绝时打开对应的 Windows 设置页 */
@@ -231,6 +216,8 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     onOpened: tabId ? (opened) => markOpened(tabId, opened) : undefined,
   });
   const modelConfig = useModelConfigGate();
+  const router = useRouter();
+  const openModelSettings = () => router.push("/settings/?group=models");
   const [draft, setDraft] = useState("");
   const [preview, setPreview] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -661,11 +648,10 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
               </div>
               <button
                 type="button"
-                onClick={modelConfig.retry}
-                disabled={modelConfig.retrying}
-                className="rounded-full bg-hover px-3 py-1 font-medium disabled:opacity-50"
+                onClick={openModelSettings}
+                className="shrink-0 rounded-full bg-hover px-3 py-1 font-medium"
               >
-                {t.retryModelConfig}
+                {t.openModelSettings}
               </button>
             </div>
           )}
@@ -829,6 +815,8 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                 <span className="flex-1" />
                 <ModelPicker
                   models={modelConfig.info?.models ?? []}
+                  providerNames={modelConfig.providerNames}
+                  onOpenSettings={openModelSettings}
                   current={currentModel}
                   thinkingLevel={state.thinkingLevel ?? pendingModel.thinkingLevel}
                   thinkingLevels={state.model ? state.thinkingLevels : undefined}

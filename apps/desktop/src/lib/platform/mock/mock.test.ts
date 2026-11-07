@@ -15,6 +15,67 @@ describe("mock 平台", () => {
     expect(Object.keys(platform).sort()).toEqual(Object.keys(COMMANDS).sort());
   });
 
+  it("模型渠道：预置 ioply；保存、删除更新模型配置并经 models_watch 推送；账号未登录", async () => {
+    const platform = createMockPlatform({ fetchDelayMs: 0 });
+    await expect(platform.authStatus()).resolves.toEqual({
+      loggedIn: false,
+      account: null,
+      loginAvailable: false,
+    });
+    const [ioply] = await platform.providersList();
+    expect(ioply).toMatchObject({ id: "ioply", hasKey: true, keyHint: "c74e" });
+    expect(JSON.stringify(ioply)).not.toContain("placeholder");
+    expect((await platform.modelsGet()).defaultModel).toBe("ioply/mock-large");
+
+    const pushed: string[][] = [];
+    await platform.modelsWatch((info) => pushed.push(info.models.map((m) => m.key)));
+    await expect(
+      platform.providerFetchModels({
+        api: "openai-responses",
+        baseUrl: "https://x",
+        apiKey: "bad",
+      }),
+    ).rejects.toThrow("HTTP 401");
+    const fetched = await platform.providerFetchModels({ id: "ioply" });
+    expect(fetched.map((m) => m.id)).toContain("mock-coder");
+    // 已保存的模型保留原参数
+    expect(fetched.find((m) => m.id === "mock-large")?.contextWindow).toBe(1_000_000);
+
+    const created = await platform.providerSave({
+      name: "公司 网关",
+      api: "anthropic-messages",
+      baseUrl: "https://gw.example.com/v1/",
+      apiKey: "sk-12345678",
+      enabled: true,
+      models: fetched.filter((m) => m.id === "mock-coder"),
+    });
+    const added = created.providers.find((p) => p.name === "公司 网关");
+    expect(added).toMatchObject({
+      id: "provider",
+      baseUrl: "https://gw.example.com/v1",
+      keyHint: "5678",
+    });
+    expect(created.models.models.map((m) => m.key)).toContain("provider/mock-coder");
+    expect(pushed.at(-1)).toContain("provider/mock-coder");
+    await expect(
+      platform.providerSave({
+        name: "x",
+        api: "openai-responses",
+        baseUrl: "https://x",
+        apiKey: "k",
+        enabled: true,
+        models: [{ ...fetched[0], extra: 1 } as unknown as (typeof fetched)[0]],
+      }),
+    ).rejects.toThrow("未知字段");
+
+    await platform.providerDelete("ioply");
+    const left = await platform.providerDelete("provider");
+    expect(left.providers).toEqual([]);
+    expect(left.models).toMatchObject({ models: [], defaultModel: null });
+    expect(left.models.error).toContain("还没有可用的模型");
+    expect(pushed.at(-1)).toEqual([]);
+  });
+
   it("自动更新：默认开、稳定版；有新版本时检查后得到待装版本并推送", async () => {
     const platform = createMockPlatform({ latestVersion: "9.9.9", now: () => 5 });
     const seen: string[] = [];

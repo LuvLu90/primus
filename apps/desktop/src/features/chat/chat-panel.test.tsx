@@ -1,7 +1,13 @@
 import type { CoreBatch } from "@primus/protocol";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useRouter } from "next/navigation";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CORE_NOT_RUNNING, PlatformError, setPlatformForTesting } from "@/lib/platform";
+import {
+  CORE_NOT_RUNNING,
+  type ModelsInfo,
+  PlatformError,
+  setPlatformForTesting,
+} from "@/lib/platform";
 import { createMockPlatform } from "@/lib/platform/mock";
 import { strings } from "@/lib/strings";
 import { initialAppState, useAppStore } from "@/stores/app-store";
@@ -57,35 +63,39 @@ describe("对话区（mock 事件流）", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: t.send })).toBeTruthy());
   });
 
-  it("没有可用的模型配置时禁止发送，重试成功后恢复", async () => {
+  it("没有可用的模型时禁止发送，可去设置添加渠道，推送新配置后恢复", async () => {
     const base = createMockPlatform({ intervalMs: 1, batchSize: 50 });
     const ok = await base.modelsGet();
-    const modelsRefresh = vi.fn(async () => ok);
+    let push: ((info: ModelsInfo) => void) | undefined;
     setPlatformForTesting({
       ...base,
       modelsGet: async () => ({
         ...ok,
-        version: null,
         models: [],
         defaultModel: null,
         compactionModel: null,
         titleModel: null,
-        error: "写入模型配置失败：拒绝访问",
+        error: "还没有可用的模型：请在设置中添加模型渠道并获取模型列表",
       }),
-      modelsRefresh,
+      modelsWatch: async (onChange) => {
+        push = onChange;
+      },
     });
     render(<ChatPanel />);
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toContain(t.modelConfigUnavailable);
-    expect(alert.textContent).toContain("拒绝访问");
+    expect(alert.textContent).toContain("添加模型渠道");
     const input = screen.getByRole("textbox", { name: t.inputLabel });
     fireEvent.change(input, { target: { value: "你好" } });
     expect((screen.getByRole("button", { name: t.send }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.keyDown(input, { key: "Enter" });
     expect((input as HTMLTextAreaElement).value).toBe("你好");
 
-    fireEvent.click(screen.getByRole("button", { name: t.retryModelConfig }));
-    await waitFor(() => expect(modelsRefresh).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole("button", { name: t.openModelSettings }));
+    expect(useRouter().push).toHaveBeenCalledWith("/settings/?group=models");
+    // 在设置里添加渠道后经 models_watch 推送新配置
+    await waitFor(() => expect(push).toBeDefined());
+    act(() => push?.(ok));
     await waitFor(() => expect(screen.queryByText(t.modelConfigUnavailable)).toBeNull());
     expect((screen.getByRole("button", { name: t.send }) as HTMLButtonElement).disabled).toBe(
       false,
@@ -700,7 +710,7 @@ describe("对话区（mock 事件流）", () => {
     fireEvent.click(await screen.findByRole("menuitemradio", { name: "Mock 快速模型" }));
     await waitFor(() =>
       expect(records.find((r) => r.type === "set_model")).toMatchObject({
-        provider: "mock-responses",
+        provider: "ioply",
         modelId: "mock-fast",
       }),
     );

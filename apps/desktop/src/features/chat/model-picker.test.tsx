@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { ModelSummary } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
@@ -136,5 +136,66 @@ describe("模型选择", () => {
     fireEvent.keyDown(trigger, { key: "Enter" });
     await screen.findByRole("menuitemradio", { name: "Fast" });
     expect(screen.queryByRole("slider")).toBeNull();
+  });
+
+  it("按渠道分组：每个渠道一个小节，标题为渠道名（缺少名称时显示渠道 ID）", async () => {
+    const onSelectModel = vi.fn();
+    render(
+      <ModelPicker
+        models={[
+          model("ioply/a", "Fable 5"),
+          model("corp/b", "Sonnet 5"),
+          model("ioply/c", "Fast"),
+        ]}
+        providerNames={{ ioply: "ioply 网关" }}
+        current="ioply/a"
+        thinkingLevel="medium"
+        thinkingLevels={["off", "medium"]}
+        onSelectModel={onSelectModel}
+        onSelectThinking={vi.fn()}
+      />,
+    );
+    fireEvent.keyDown(screen.getByRole("button", { name: /模型：Fable 5/ }), { key: "Enter" });
+    const first = await screen.findByRole("group", { name: "ioply 网关" });
+    const second = screen.getByRole("group", { name: "corp" });
+    // 同一渠道的模型归到一起，保持原有顺序
+    expect(
+      within(first)
+        .getAllByRole("menuitemradio")
+        .map((el) => el.textContent),
+    ).toEqual(["Fable 5", "Fast"]);
+    expect(
+      within(second)
+        .getAllByRole("menuitemradio")
+        .map((el) => el.textContent),
+    ).toEqual(["Sonnet 5"]);
+    // 仍保留“模型”与“思考程度”
+    expect(screen.getByText(t.models)).toBeTruthy();
+    expect(screen.getByRole("slider", { name: t.thinkingDegree })).toBeTruthy();
+    fireEvent.click(within(second).getByRole("menuitemradio", { name: "Sonnet 5" }));
+    expect(onSelectModel).toHaveBeenCalledWith("corp/b");
+  });
+
+  it("没有可用的模型：弹层提示并可去设置添加渠道，不显示思考程度", async () => {
+    const onOpenSettings = vi.fn();
+    render(
+      <ModelPicker
+        models={[]}
+        current={null}
+        thinkingLevel={undefined}
+        thinkingLevels={undefined}
+        onSelectModel={vi.fn()}
+        onSelectThinking={vi.fn()}
+        onOpenSettings={onOpenSettings}
+      />,
+    );
+    const trigger = screen.getByRole("button", { name: `模型：${t.empty}` });
+    expect((trigger as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.keyDown(trigger, { key: "Enter" });
+    expect(await screen.findByText(t.empty, { selector: "p" })).toBeTruthy();
+    expect(screen.queryByRole("menuitemradio")).toBeNull();
+    expect(screen.queryByRole("slider")).toBeNull();
+    fireEvent.click(screen.getByRole("menuitem", { name: t.addProvider }));
+    expect(onOpenSettings).toHaveBeenCalled();
   });
 });
