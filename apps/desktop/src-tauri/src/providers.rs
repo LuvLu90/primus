@@ -5,7 +5,9 @@
 //! - 密钥按渠道存进 DPAPI 保险库（`provider:<id>`），文件、日志、命令行与返回给 WebView 的数据里都没有明文，
 //!   界面只拿到 `hasKey` 与 `keyHint`（末 4 位）。
 //! - 模型列表获取（`provider_fetch_models`）：openai-responses 为 `GET {baseUrl}/models`（Bearer），
-//!   anthropic-messages 为 `GET {baseUrl}/v1/models`（`x-api-key` + `anthropic-version`），只取 `data[].id` / `display_name`。
+//!   anthropic-messages 为 `GET {baseUrl}/v1/models`（`x-api-key` + `anthropic-version`）。取 `data[].id` 与名称，
+//!   接口给出能力信息时一并识别（上下文长度、最大输出、图片输入、思考；字段见 [`parse_models_response`]），
+//!   没给的用默认参数（文本输入、不支持思考、128000 / 32000）。
 
 use std::fs;
 use std::io;
@@ -75,6 +77,30 @@ pub(crate) struct ProviderModel {
 }
 
 impl ProviderModel {
+    /// 新获取到的模型：每项能力按 接口给出的值 → 已知模型能力表（`model_catalog`）→ 默认参数 的顺序取。
+    pub(crate) fn from_fetched(f: &FetchedModel) -> Self {
+        let known = crate::model_catalog::lookup(&f.id);
+        let mut m = Self::with_defaults(&f.id, f.display_name.as_deref());
+        m.reasoning = f
+            .reasoning
+            .or(known.map(|k| k.reasoning))
+            .unwrap_or(m.reasoning);
+        if f.image.or(known.map(|k| k.image)).unwrap_or(false) {
+            m.input = vec![Input::Text, Input::Image];
+        }
+        m.context_window = f
+            .context_window
+            .or(known.map(|k| k.context_window))
+            .unwrap_or(m.context_window);
+        m.max_tokens = f
+            .max_tokens
+            .or(known.map(|k| k.max_tokens))
+            .unwrap_or(m.max_tokens);
+        // 最大输出不超过上下文长度
+        m.max_tokens = m.max_tokens.min(m.context_window);
+        m
+    }
+
     /// 新获取到的模型的默认参数。
     pub(crate) fn with_defaults(id: &str, name: Option<&str>) -> Self {
         Self {
@@ -299,7 +325,8 @@ pub(crate) fn write_atomic(file: &Path, text: &str) -> io::Result<()> {
     result
 }
 
-/// 用获取到的模型列表生成新的模型清单：已保存的模型保留用户改过的参数，新模型用默认参数；顺序按获取结果。
+/// 用获取到的模型列表生成新的模型清单：已保存的模型保留用户改过的参数，新模型用接口给出的能力（没给的用默认参数）；
+/// 顺序按获取结果。
 pub(crate) fn merge_models(
     saved: &[ProviderModel],
     fetched: &[FetchedModel],
@@ -311,18 +338,150 @@ pub(crate) fn merge_models(
                 .iter()
                 .find(|m| m.id == f.id)
                 .cloned()
-                .unwrap_or_else(|| ProviderModel::with_defaults(&f.id, f.display_name.as_deref()))
+                .unwrap_or_else(|| ProviderModel::from_fetched(f))
         })
         .collect()
 }
 
 // ---- 模型列表获取 ----
 
-/// 接口返回的一个模型。
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// 接口返回的一个模型（能力字段为接口给出的值，接口没提到时为 None）。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct FetchedModel {
     pub(crate) id: String,
     pub(crate) display_name: Option<String>,
+    pub(crate) context_window: Option<u64>,
+    pub(crate) max_tokens: Option<u64>,
+    /// 接口给出的是否支持图片输入
+    pub(crate) image: Option<bool>,
+    /// 接口给出的是否支持思考
+    pub(crate) reasoning: Option<bool>,
+}
+
+/// 能力数值的合理上限（防止异常值）：1 亿 token。
+const MAX_TOKEN_COUNT: u64 = 100_000_000;
+
+/// 按路径取字段（`a.b.c`）。
+fn field<'a>(item: &'a serde_json::Value, path: &str) -> Option<&'a serde_json::Value> {
+    path.split('.').try_fold(item, |v, key| v.get(key))
+}
+
+/// 正整数 token 数：数字（含整数值的小数）或数字字符串；超出合理范围的忽略。
+fn token_count(v: &serde_json::Value) -> Option<u64> {
+    let n = match v {
+        serde_json::Value::Number(n) => n.as_u64().or_else(|| {
+            n.as_f64()
+                .filter(|f| f.fract() == 0.0 && *f > 0.0)
+                .map(|f| f as u64)
+        }),
+        serde_json::Value::String(s) => s.trim().parse::<u64>().ok(),
+        _ => None,
+    }?;
+    (1..=MAX_TOKEN_COUNT).contains(&n).then_some(n)
+}
+
+/// 第一个给出有效 token 数的字段。
+fn first_count(item: &serde_json::Value, paths: &[&str]) -> Option<u64> {
+    paths
+        .iter()
+        .find_map(|p| field(item, p).and_then(token_count))
+}
+
+/// 能力开关：布尔值，或 `{"supported": true}`（Anthropic 的能力对象写法）；其他写法视为没给。
+fn flag(v: &serde_json::Value) -> Option<bool> {
+    match v {
+        serde_json::Value::Bool(b) => Some(*b),
+        serde_json::Value::Object(o) => o.get("supported").and_then(serde_json::Value::as_bool),
+        _ => None,
+    }
+}
+
+/// 若干字段里有一个为真 → Some(true)；都没有出现 → None；出现了但都不为真 → Some(false)。
+fn tri_state(values: impl IntoIterator<Item = Option<bool>>) -> Option<bool> {
+    values.into_iter().flatten().reduce(|a, b| a || b)
+}
+
+fn flags<'a>(
+    item: &'a serde_json::Value,
+    paths: &'a [&str],
+) -> impl Iterator<Item = Option<bool>> + 'a {
+    paths.iter().map(|p| field(item, p).and_then(flag))
+}
+
+/// 输入模态里是否有图片：数组（`["text","image"]`）或字符串（`"text+image->text"`，只看 `->` 之前的输入部分）。
+fn modalities_include_image(v: &serde_json::Value) -> bool {
+    let is_image = |s: &str| {
+        let s = s.trim().to_ascii_lowercase();
+        s == "image" || s == "images" || s == "vision"
+    };
+    match v {
+        serde_json::Value::Array(items) => items
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .any(is_image),
+        serde_json::Value::String(s) => {
+            let input = s.split("->").next().unwrap_or_default();
+            input.split(['+', ',', ' ']).any(is_image)
+        }
+        // `{"input": [...], "output": [...]}`
+        serde_json::Value::Object(o) => o.get("input").is_some_and(modalities_include_image),
+        _ => false,
+    }
+}
+
+/// 从一项模型信息里识别能力（字段都可缺省；不认识的忽略）。
+fn detect_capabilities(item: &serde_json::Value, model: &mut FetchedModel) {
+    model.context_window = first_count(
+        item,
+        &[
+            "context_length",
+            "context_window",
+            "max_context_length",
+            "max_input_tokens",
+            "top_provider.context_length",
+        ],
+    );
+    model.max_tokens = first_count(
+        item,
+        &[
+            "top_provider.max_completion_tokens",
+            "max_output_tokens",
+            "max_tokens",
+            "max_completion_tokens",
+        ],
+    );
+    let modalities = [
+        "architecture.input_modalities",
+        "input_modalities",
+        "modalities",
+        "architecture.modality",
+    ]
+    .iter()
+    .map(|p| field(item, p).map(modalities_include_image));
+    model.image = tri_state(modalities.chain(flags(
+        item,
+        &[
+            "capabilities.vision",
+            "capabilities.image_input",
+            "capabilities.image",
+        ],
+    )));
+    let params = field(item, "supported_parameters")
+        .and_then(serde_json::Value::as_array)
+        .map(|params| {
+            params
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .any(|p| matches!(p, "reasoning" | "include_reasoning" | "reasoning_effort"))
+        });
+    model.reasoning = tri_state(std::iter::once(params).chain(flags(
+        item,
+        &[
+            "capabilities.reasoning",
+            "capabilities.thinking",
+            "reasoning",
+        ],
+    )));
 }
 
 /// 模型列表接口地址：openai-responses 为 `{baseUrl}/models`；anthropic-messages 为 `{baseUrl}/v1/models`
@@ -347,30 +506,50 @@ pub(crate) fn auth_headers(api: Api, key: &str) -> Vec<(&'static str, String)> {
     }
 }
 
-/// 解析模型列表响应：`{"data":[{"id":"...","display_name":"..."}]}`；跳过无效与重复的 ID。
+/// 解析模型列表响应：`{"data":[{"id":"...", ...}]}`；跳过无效与重复的 ID。
+///
+/// 名称取 `display_name`（Anthropic）或 `name`（OpenRouter 等）。接口给出时识别能力，字段都可缺省：
+/// - 上下文长度：`context_length` / `context_window` / `max_context_length` / `max_input_tokens` /
+///   `top_provider.context_length`
+/// - 最大输出：`top_provider.max_completion_tokens` / `max_output_tokens` / `max_tokens` / `max_completion_tokens`
+/// - 图片输入：`architecture.input_modalities` / `input_modalities` / `modalities` / `architecture.modality`
+///   含 image（数组或 `"text+image->text"` 字符串），或 `capabilities.vision` / `image_input` 为真
+/// - 思考：`supported_parameters` 含 `reasoning` / `include_reasoning` / `reasoning_effort`，
+///   或 `capabilities.reasoning` / `capabilities.thinking` / `reasoning` 为真
+///
+/// 能力开关也接受 `{"supported": true}` 的写法。
 pub(crate) fn parse_models_response(body: &[u8]) -> Result<Vec<FetchedModel>, String> {
     #[derive(Deserialize)]
-    struct Item {
-        id: Option<String>,
-        display_name: Option<String>,
-    }
-    #[derive(Deserialize)]
     struct Body {
-        data: Vec<Item>,
+        data: Vec<serde_json::Value>,
     }
     let body: Body =
         serde_json::from_slice(body).map_err(|_| "返回内容不是有效的模型列表".to_owned())?;
     let mut models: Vec<FetchedModel> = Vec::new();
     for item in body.data {
-        let Some(id) = item.id.map(|id| id.trim().to_owned()) else {
+        let Some(id) = item
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .map(|id| id.trim().to_owned())
+        else {
             continue;
         };
-        if is_valid_model_id(&id) && !models.iter().any(|m| m.id == id) {
-            models.push(FetchedModel {
-                id,
-                display_name: item.display_name,
-            });
+        if !is_valid_model_id(&id) || models.iter().any(|m| m.id == id) {
+            continue;
         }
+        let display_name = ["display_name", "name"]
+            .iter()
+            .filter_map(|k| item.get(*k).and_then(serde_json::Value::as_str))
+            .map(str::trim)
+            .find(|n| !n.is_empty())
+            .map(str::to_owned);
+        let mut model = FetchedModel {
+            id,
+            display_name,
+            ..FetchedModel::default()
+        };
+        detect_capabilities(&item, &mut model);
+        models.push(model);
     }
     Ok(models)
 }
@@ -562,10 +741,12 @@ mod tests {
             FetchedModel {
                 id: "a".into(),
                 display_name: Some("Model A".into()),
+                ..FetchedModel::default()
             },
             FetchedModel {
                 id: "b".into(),
                 display_name: Some("B 服务端名".into()),
+                ..FetchedModel::default()
             },
         ];
         let merged = merge_models(&saved, &fetched);
@@ -581,6 +762,227 @@ mod tests {
         );
         assert_eq!(merged[0].input, vec![Input::Text]);
         assert_eq!(merged[1], edited, "保留用户改过的参数");
+    }
+
+    #[test]
+    fn merge_applies_detected_capabilities_to_new_models_only() {
+        let detected = FetchedModel {
+            id: "r1".into(),
+            display_name: None,
+            context_window: Some(200_000),
+            max_tokens: Some(64_000),
+            image: Some(true),
+            reasoning: Some(true),
+        };
+        let mut saved = ProviderModel::with_defaults("r1", None);
+        saved.context_window = 50_000;
+        // 新模型：用接口给出的能力
+        let fresh = merge_models(&[], std::slice::from_ref(&detected));
+        assert!(fresh[0].reasoning && fresh[0].image());
+        assert_eq!(
+            (fresh[0].context_window, fresh[0].max_tokens),
+            (200_000, 64_000)
+        );
+        // 已保存的模型：保留用户的值（含 reasoning=false）
+        let kept = merge_models(std::slice::from_ref(&saved), &[detected]);
+        assert_eq!(kept[0], saved);
+        // 最大输出大于上下文长度时收窄
+        let wide = ProviderModel::from_fetched(&FetchedModel {
+            id: "w".into(),
+            max_tokens: Some(1_000_000),
+            ..FetchedModel::default()
+        });
+        assert_eq!((wide.context_window, wide.max_tokens), (128_000, 128_000));
+    }
+
+    #[test]
+    fn detects_capabilities_from_common_model_list_payloads() {
+        // OpenRouter 风格
+        let openrouter = br#"{"data":[{
+            "id":"vision-thinker","name":"Vision Thinker",
+            "context_length":1048576,
+            "architecture":{"modality":"text+image->text","input_modalities":["text","image"],"output_modalities":["text"]},
+            "top_provider":{"context_length":1048576,"max_completion_tokens":65536},
+            "supported_parameters":["max_tokens","temperature","reasoning","include_reasoning"]
+        },{
+            "id":"plain","name":"Plain","context_length":"32768",
+            "architecture":{"modality":"text->text"},
+            "top_provider":{"max_completion_tokens":null},
+            "supported_parameters":["temperature"]
+        }]}"#;
+        let m = parse_models_response(openrouter).unwrap();
+        assert_eq!(
+            m[0],
+            FetchedModel {
+                id: "vision-thinker".into(),
+                display_name: Some("Vision Thinker".into()),
+                context_window: Some(1_048_576),
+                max_tokens: Some(65_536),
+                image: Some(true),
+                reasoning: Some(true),
+            }
+        );
+        assert_eq!(
+            m[1],
+            FetchedModel {
+                id: "plain".into(),
+                display_name: Some("Plain".into()),
+                context_window: Some(32_768),
+                max_tokens: None,
+                // 接口明确给了模态与参数：不支持
+                image: Some(false),
+                reasoning: Some(false),
+            }
+        );
+
+        // OpenAI 兼容网关的各种写法
+        let compat = br#"{"object":"list","data":[
+            {"id":"a","context_window":200000,"max_output_tokens":8192,"modalities":"text+image","capabilities":{"reasoning":true}},
+            {"id":"b","max_context_length":64000,"max_completion_tokens":4096,"input_modalities":["TEXT"],"reasoning":true},
+            {"id":"c","capabilities":{"vision":true,"thinking":false},"supported_parameters":["reasoning_effort"]},
+            {"id":"d","modalities":{"input":["text","image"],"output":["text"]},"context_length":-5,"max_tokens":0},
+            {"id":"e","capabilities":{"image_input":true},"context_length":1e12}
+        ]}"#;
+        let m = parse_models_response(compat).unwrap();
+        let caps: Vec<_> = m
+            .iter()
+            .map(|f| {
+                (
+                    f.id.as_str(),
+                    f.context_window,
+                    f.max_tokens,
+                    f.image,
+                    f.reasoning,
+                )
+            })
+            .collect();
+        assert_eq!(
+            caps,
+            vec![
+                ("a", Some(200_000), Some(8192), Some(true), Some(true)),
+                ("b", Some(64_000), Some(4096), Some(false), Some(true)),
+                ("c", None, None, Some(true), Some(true)),
+                ("d", None, None, Some(true), None),
+                ("e", None, None, Some(true), None),
+            ]
+        );
+
+        // Anthropic /v1/models：display_name、max_input_tokens、max_tokens 与能力对象
+        let anthropic = br#"{"data":[
+            {"type":"model","id":"claude-z","display_name":"Claude Z","created_at":"2026-01-01T00:00:00Z",
+             "max_input_tokens":200000,"max_tokens":64000,
+             "capabilities":{"image_input":{"supported":true},"thinking":{"supported":true,"types":{}}}},
+            {"type":"model","id":"claude-old","display_name":"Claude Old","created_at":"2024-01-01T00:00:00Z"}
+        ],"has_more":false,"first_id":"claude-z","last_id":"claude-old"}"#;
+        let m = parse_models_response(anthropic).unwrap();
+        assert_eq!(
+            m[0],
+            FetchedModel {
+                id: "claude-z".into(),
+                display_name: Some("Claude Z".into()),
+                context_window: Some(200_000),
+                max_tokens: Some(64_000),
+                image: Some(true),
+                reasoning: Some(true),
+            }
+        );
+        // 没有能力信息：全部缺省
+        assert_eq!(
+            m[1],
+            FetchedModel {
+                id: "claude-old".into(),
+                display_name: Some("Claude Old".into()),
+                ..FetchedModel::default()
+            }
+        );
+    }
+
+    #[test]
+    fn missing_capabilities_come_from_known_models_then_defaults() {
+        // CLIProxyAPI 一类网关：只有 id / object / owned_by（可能带 display_name）
+        let body = br#"{"object":"list","data":[
+            {"id":"claude-opus-5-5-high","object":"model","owned_by":"anthropic","display_name":"Claude Opus 5.5 (High)"},
+            {"id":"gpt-5.5","object":"model","owned_by":"openai"},
+            {"id":"gemini-3-pro","object":"model","owned_by":"google"},
+            {"id":"my-private-model","object":"model","owned_by":"me"},
+            {"id":"gpt-5.5-mini-text","object":"model","architecture":{"input_modalities":["text"]},"context_length":64000}
+        ]}"#;
+        let models = merge_models(&[], &parse_models_response(body).unwrap());
+        let summary: Vec<_> = models
+            .iter()
+            .map(|m| {
+                (
+                    m.id.as_str(),
+                    m.name.as_str(),
+                    m.context_window,
+                    m.max_tokens,
+                    m.image(),
+                    m.reasoning,
+                )
+            })
+            .collect();
+        let opus = crate::model_catalog::lookup("claude-opus-5-5").unwrap();
+        let gpt = crate::model_catalog::lookup("gpt-5-5").unwrap();
+        assert_eq!(
+            summary,
+            vec![
+                (
+                    "claude-opus-5-5-high",
+                    "Claude Opus 5.5 (High)",
+                    opus.context_window,
+                    opus.max_tokens,
+                    true,
+                    true
+                ),
+                (
+                    "gpt-5.5",
+                    "gpt-5.5",
+                    gpt.context_window,
+                    gpt.max_tokens,
+                    true,
+                    true
+                ),
+                (
+                    "gemini-3-pro",
+                    "gemini-3-pro",
+                    1_048_576,
+                    65_536,
+                    true,
+                    true
+                ),
+                // 不认识：默认参数
+                (
+                    "my-private-model",
+                    "my-private-model",
+                    128_000,
+                    32_000,
+                    false,
+                    false
+                ),
+                // 接口给出的字段优先于能力表（gpt-5 系列默认支持图片，这里接口说只有文本）
+                (
+                    "gpt-5.5-mini-text",
+                    "gpt-5.5-mini-text",
+                    64_000,
+                    64_000,
+                    false,
+                    true
+                ),
+            ]
+        );
+        assert_eq!(
+            models[3],
+            ProviderModel::with_defaults("my-private-model", None)
+        );
+        // 已保存的模型（含用户关掉的思考）在重新获取时保持不变
+        let mut saved = models[0].clone();
+        saved.reasoning = false;
+        saved.context_window = 100_000;
+        let again = merge_models(
+            std::slice::from_ref(&saved),
+            &parse_models_response(body).unwrap(),
+        );
+        assert_eq!(again[0], saved);
     }
 
     #[test]
@@ -623,11 +1025,13 @@ mod tests {
             vec![
                 FetchedModel {
                     id: "gpt-x".into(),
-                    display_name: None
+                    display_name: None,
+                    ..FetchedModel::default()
                 },
                 FetchedModel {
                     id: "claude-y".into(),
-                    display_name: Some("Claude Y".into())
+                    display_name: Some("Claude Y".into()),
+                    ..FetchedModel::default()
                 },
             ]
         );

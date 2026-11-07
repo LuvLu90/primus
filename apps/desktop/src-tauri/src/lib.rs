@@ -13,6 +13,7 @@ mod core_config;
 mod fs_watch;
 mod git;
 mod job;
+mod model_catalog;
 mod paths;
 mod platform;
 mod providers;

@@ -61,6 +61,8 @@ jobs:
       # Linux 上用当前 node 跑组装好的 dist/agent-core，确认产物自包含、不依赖仓库里的 node_modules
       - name: 构建 Agent Core 并组装 dist/
         run: pnpm build:core
+      - name: 已知模型能力表与锁定的模型目录一致（用 build:core 缓存的目录）
+        run: pnpm check:model-capabilities
       - name: Agent Core RPC 冒烟（dist/agent-core · 当前 node）
         run: pnpm smoke:core:dist
       # RPC 契约测试（技术方案第 23 章）：真实 Core 产物 + Faux 模型服务，prompt / abort / get_state

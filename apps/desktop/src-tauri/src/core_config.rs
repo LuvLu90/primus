@@ -8,7 +8,8 @@
 //!   `models.json` 不含明文密钥；内容不变时不重写文件。
 //! - 默认模型写进 Core 的 `settings.json`（`defaultProvider` / `defaultModel`），其余设置项原样保留；
 //!   用户改选的默认模型只要仍在列表中就不覆盖，失效时改为第一个可用模型，没有可用模型时清除。
-//!   变化只影响新拉起的 Core 进程。
+//!   默认模型的变化只影响新拉起的 Core 进程；运行中的 Core 由 primus-auth 监听 `models.json`，变化后重新读取
+//!   并补取密钥。已有渠道换密钥时 `models.json` 内容不变，原样重写一次让它据修改时间重新取密钥。
 
 use std::fs;
 use std::io;
@@ -518,11 +519,13 @@ impl ModelConfigState {
                 models: input.models,
             };
             providers::check_provider(&provider)?;
-            if let Some(key) = key {
-                self.vault()
+            let key_changed = match key {
+                Some(key) => self
+                    .vault()
                     .ensure(&providers::secret_name(&id), &key)
-                    .map_err(|e| format!("保存密钥失败：{e}"))?;
-            }
+                    .map_err(|e| format!("保存密钥失败：{e}"))?,
+                None => false,
+            };
             match index {
                 Some(i) => store.providers[i] = provider,
                 None => store.providers.push(provider),
@@ -530,12 +533,28 @@ impl ModelConfigState {
             store.save(&self.providers_file)?;
             let views = self.views(&store);
             self.regenerate(&mut inner, Ok(store));
+            if key_changed && index.is_some() {
+                self.touch_models_file();
+            }
             views
         };
         Ok(ProvidersChanged {
             providers,
             models: self.notify(),
         })
+    }
+
+    /// 已有渠道换了密钥时 `models.json` 的内容不变（只含取密钥命令），但运行中的 Core 里 primus-auth 缓存着旧密钥：
+    /// 原样重写一次文件，让它据修改时间重新取密钥（技术方案第 9.4 节）。失败只记日志。
+    fn touch_models_file(&self) {
+        let file = self.core_dir.join(MODELS_FILE);
+        let result =
+            fs::read_to_string(&file).and_then(|text| providers::write_atomic(&file, &text));
+        if let Err(e) = result
+            && e.kind() != io::ErrorKind::NotFound
+        {
+            eprintln!("[core_config] 重写 {MODELS_FILE} 失败：{e}");
+        }
     }
 
     /// `provider_delete`：删除渠道与其密钥，重新生成 Core 配置。
@@ -980,6 +999,47 @@ mod tests {
     }
 
     #[test]
+    fn changing_a_key_rewrites_models_json_for_running_core() {
+        let (root, state) = state("touch");
+        state.refresh();
+        state
+            .provider_save(input(None, "gw", Some("sk-one-1111"), &["m"]))
+            .unwrap();
+        let file = root.join("core").join(MODELS_FILE);
+        let text = fs::read_to_string(&file).unwrap();
+        let old = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000);
+        let backdate = || {
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&file)
+                .unwrap()
+                .set_modified(old)
+                .unwrap();
+        };
+        let modified = || fs::metadata(&file).unwrap().modified().unwrap();
+
+        // 不换密钥：内容不变，不重写
+        backdate();
+        state
+            .provider_save(input(Some("gw"), "gw", None, &["m"]))
+            .unwrap();
+        assert_eq!(modified(), old);
+        // 同一密钥再存一次：不算换密钥
+        state
+            .provider_save(input(Some("gw"), "gw", Some("sk-one-1111"), &["m"]))
+            .unwrap();
+        assert_eq!(modified(), old);
+        // 换密钥：内容相同但重写一次（运行中的 Core 据修改时间重新取密钥）
+        state
+            .provider_save(input(Some("gw"), "gw", Some("sk-two-2222"), &["m"]))
+            .unwrap();
+        assert!(modified() > old);
+        assert_eq!(fs::read_to_string(&file).unwrap(), text);
+        assert!(!text.contains("sk-two-2222"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn default_choice_and_fetched_merge() {
         let (root, state) = state("default");
         state
@@ -996,10 +1056,12 @@ mod tests {
             FetchedModel {
                 id: "b".into(),
                 display_name: None,
+                ..FetchedModel::default()
             },
             FetchedModel {
                 id: "c".into(),
                 display_name: Some("C".into()),
+                ..FetchedModel::default()
             },
         ];
         let from = (Api::AnthropicMessages, "https://gw.example");
@@ -1102,6 +1164,68 @@ mod tests {
         ] {
             assert!(state.fetch_target(bad).is_err());
         }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fetch_target_uses_each_providers_own_address_key_and_models() {
+        let (root, state) = state("fetch-each");
+        state.refresh();
+        let mut a = input(None, "gw a", Some("sk-aaaa-1111"), &["a1"]);
+        a.base_url = "https://a.example/v1".into();
+        let mut b = input(None, "gw b", Some("sk-bbbb-2222"), &["b1", "b2"]);
+        b.api = Api::OpenAiResponses;
+        b.base_url = "https://b.example/v1".into();
+        state.provider_save(a).unwrap();
+        state.provider_save(b).unwrap();
+        let target = |id: &str| {
+            state
+                .fetch_target(FetchInput {
+                    id: Some(id.into()),
+                    api: None,
+                    base_url: None,
+                    api_key: None,
+                })
+                .unwrap()
+        };
+        let (ta, tb) = (target("gw-a"), target("gw-b"));
+        assert_eq!(
+            (ta.api, ta.base_url.as_str(), ta.key.as_str()),
+            (
+                Api::AnthropicMessages,
+                "https://a.example/v1",
+                "sk-aaaa-1111"
+            )
+        );
+        assert_eq!(
+            (tb.api, tb.base_url.as_str(), tb.key.as_str()),
+            (Api::OpenAiResponses, "https://b.example/v1", "sk-bbbb-2222")
+        );
+        assert_eq!(
+            ta.saved.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["a1"]
+        );
+        assert_eq!(
+            tb.saved.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["b1", "b2"]
+        );
+        // 草稿（新建）不带 ID：只用输入的值，与已保存的渠道无关
+        let draft = state
+            .fetch_target(FetchInput {
+                id: None,
+                api: Some(Api::AnthropicMessages),
+                base_url: Some("https://c.example".into()),
+                api_key: Some("sk-cccc".into()),
+            })
+            .unwrap();
+        assert_eq!(
+            (
+                draft.base_url.as_str(),
+                draft.key.as_str(),
+                draft.saved.len()
+            ),
+            ("https://c.example", "sk-cccc", 0)
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
