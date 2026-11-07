@@ -14,8 +14,8 @@
     "windows": [
       {
         "title": "乾元 Primus",
-        "width": 1280,
-        "height": 800,
+        "width": 1120,
+        "height": 720,
         "minWidth": 396,
         "center": true,
         "minHeight": 640,

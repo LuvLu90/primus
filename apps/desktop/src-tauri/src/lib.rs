@@ -23,6 +23,7 @@ mod supervisor;
 mod tray;
 mod updater;
 mod vault;
+mod window_placement;
 mod workspaces;
 
 use std::sync::Arc;
@@ -140,7 +141,7 @@ pub fn run() {
                 app.manage(index_notifier.clone());
                 // 会话目录监听与首次全量扫描在后台线程进行，不阻塞窗口创建（第 10.2 节）
                 fs_watch::start(session_index, index_notifier);
-                let config = app
+                let mut config = app
                     .config()
                     .app
                     .windows
@@ -148,9 +149,23 @@ pub fn run() {
                     .find(|w| w.label == "main")
                     .cloned()
                     .ok_or("tauri.conf.json 缺少 main 窗口配置")?;
-                tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?
+                // 先隐藏创建，按光标所在显示器摆好位置与大小再显示（window_placement）；
+                // 不用配置里的 center（只按主显示器、按逻辑像素居中，窗口大于工作区时会出屏）
+                let size = (config.width, config.height);
+                let min = (
+                    config.min_width.unwrap_or(0.0),
+                    config.min_height.unwrap_or(0.0),
+                );
+                let visible = config.visible;
+                config.center = false;
+                config.visible = false;
+                let window = tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?
                     .data_directory(webview_dir)
                     .build()?;
+                place_main_window(app.handle(), &window, size, min);
+                if visible {
+                    window.show()?;
+                }
                 // 主窗口起来后约 10 秒自动检查更新，之后每 24 小时一次（自动更新关闭时跳过，失败只记日志）
                 updater::start_auto_check(app.handle().clone(), updater);
                 Ok(())
@@ -206,4 +221,44 @@ pub fn run() {
                 app.state::<supervisor::Supervisor>().shutdown();
             }
         });
+}
+
+/// 主窗口首次摆放：光标所在显示器（取不到时为主显示器）的工作区内居中，默认尺寸放不下时缩小（window_placement）。
+fn place_main_window(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+    size: (f64, f64),
+    min: (f64, f64),
+) {
+    let monitor = app
+        .cursor_position()
+        .ok()
+        .and_then(|p| app.monitor_from_point(p.x, p.y).ok().flatten())
+        .or_else(|| app.primary_monitor().ok().flatten());
+    let Some(monitor) = monitor else {
+        let _ = window.center();
+        return;
+    };
+    let area = monitor.work_area();
+    let bounds = window_placement::centered_bounds(
+        window_placement::WorkArea {
+            x: area.position.x,
+            y: area.position.y,
+            width: area.size.width,
+            height: area.size.height,
+        },
+        monitor.scale_factor(),
+        size,
+        min,
+    );
+    // 设两次：第一次把窗口移到目标显示器，跨缩放比例时系统会按新 DPI 调整窗口大小；第二次定下最终的物理尺寸与位置
+    for _ in 0..2 {
+        if let Err(e) =
+            platform::set_window_bounds(window, bounds.x, bounds.y, bounds.width, bounds.height)
+        {
+            eprintln!("主窗口摆放失败，改用系统居中：{e}");
+            let _ = window.center();
+            return;
+        }
+    }
 }
