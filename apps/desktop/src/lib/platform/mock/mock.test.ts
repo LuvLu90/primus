@@ -431,3 +431,49 @@ describe("假事件流脚本", () => {
     expect(updates.at(-1)).toBe("text_end");
   });
 });
+
+describe("mock 平台：输入框附件、分支与语音", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("图片附件返回占位缩略图，非图片与损坏文件拒绝", async () => {
+    const p = createMockPlatform({ attachmentDelayMs: 10 });
+    const ok = p.attachmentImage("C:\\x\\设计稿.png", 2048);
+    await vi.advanceTimersByTimeAsync(10);
+    await expect(ok).resolves.toMatchObject({ mimeType: "image/png" });
+    expect((await ok).thumb.startsWith("data:image/svg+xml;base64,")).toBe(true);
+    const bad = p.attachmentImage("C:\\x\\README.md", 2048).catch((e: Error) => e.message);
+    const broken = p.attachmentImage("C:\\x\\broken.png", 2048).catch((e: Error) => e.message);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(await bad).toBe("不是支持的图片格式");
+    expect(await broken).toContain("图片无法解码");
+  });
+
+  it("示例工作区在 main 分支，其他文件夹不是仓库", async () => {
+    const p = createMockPlatform();
+    await expect(p.gitBranch("C:\\Users\\mock\\示例工作区")).resolves.toEqual({
+      name: "main",
+      detached: false,
+    });
+    await expect(p.gitBranch("C:\\Users\\mock\\新项目")).resolves.toBeNull();
+  });
+
+  it("模拟听写：推送音量与逐字临时结果，句末定稿；停止后推送 end", async () => {
+    const p = createMockPlatform({ speechStepMs: 5 });
+    await expect(p.speechAvailable()).resolves.toBe(true);
+    const events: { type: string; text?: string }[] = [];
+    await p.speechStart((e) => events.push(e));
+    await vi.advanceTimersByTimeAsync(5 * 2 * 20);
+    expect(events.some((e) => e.type === "level")).toBe(true);
+    const interims = events.filter((e) => e.type === "interim").map((e) => e.text ?? "");
+    expect(interims[0]).toBe("帮");
+    expect(interims[1]).toBe("帮我");
+    const final = events.find((e) => e.type === "final");
+    expect(final?.text).toBe("帮我看下这张截图里的布局问题，");
+    await p.speechStop();
+    expect(events.at(-1)).toEqual({ type: "end" });
+    const count = events.length;
+    await vi.advanceTimersByTimeAsync(100);
+    expect(events).toHaveLength(count);
+  });
+});

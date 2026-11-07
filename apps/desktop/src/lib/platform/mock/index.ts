@@ -16,6 +16,7 @@ import {
   PlatformError,
   type SessionIndexEvent,
   type SessionSummary,
+  type SpeechEvent,
   UPDATE_BUSY,
   type UpdateStatus,
   type WorkspaceInfo,
@@ -41,7 +42,29 @@ export interface MockOptions {
    * 默认没有新版本（检查结果为已是最新）
    */
   latestVersion?: string;
+  /** 读取一张图片附件的模拟耗时，默认 700ms（测试可调小） */
+  attachmentDelayMs?: number;
+  /** 模拟听写每一步（音量、逐字识别）的间隔，默认 90ms */
+  speechStepMs?: number;
 }
+
+/** mock 能“读取”的图片扩展名（与薄壳支持的格式一致） */
+const MOCK_IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp)$/i;
+
+/** 1×1 透明 PNG：mock 图片附件发给假 Core 的数据（不会真的被识别） */
+const MOCK_PNG_1PX =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+
+/** 按路径生成一张渐变占位缩略图（SVG data URL），不同文件颜色不同 */
+export function mockThumb(path: string): string {
+  let h = 0;
+  for (const ch of path) h = (h * 31 + ch.charCodeAt(0)) % 360;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="112" height="112"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="hsl(${h},80%,72%)"/><stop offset="1" stop-color="hsl(${(h + 50) % 360},70%,48%)"/></linearGradient></defs><rect width="112" height="112" fill="url(#g)"/><circle cx="78" cy="38" r="14" fill="rgba(255,255,255,.75)"/><path d="M0 112 L40 60 L66 90 L84 72 L112 112Z" fill="rgba(0,0,0,.28)"/></svg>`;
+  return `data:image/svg+xml;base64,${btoa(svg)}`;
+}
+
+/** mock 听写的台词：逐字作为临时结果推送，每句结束时定稿 */
+const MOCK_SPEECH = ["帮我看下这张截图里的布局问题，", "对照需求说明改一下。"];
 
 /** 浏览器预览的内置账号与模型（与薄壳内置配置同形，模型只是示意，不连接任何端点） */
 const MOCK_AUTH: AuthStatus = {
@@ -115,6 +138,10 @@ interface MockSession {
   /** 当前模型（`provider/modelId`）与思考强度 */
   model: string;
   thinkingLevel: string;
+  /** 自动压缩开关（set_auto_compaction） */
+  autoCompaction: boolean;
+  /** 刚压缩过：下一次回复前上下文占用未知（tokens 为 null，与 Core 一致） */
+  compacted: boolean;
 }
 
 const MOCK_WORKSPACE = "C:\\Users\\mock\\示例工作区";
@@ -219,6 +246,17 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
   };
   let nextSession = 1;
   let nextTerminal = 1;
+  // 模拟听写：当前会话的定时器与回调
+  const speechStepMs = options.speechStepMs ?? 90;
+  let speech: { timer: ReturnType<typeof setInterval>; onEvent: (e: SpeechEvent) => void } | null =
+    null;
+  const endSpeech = () => {
+    if (!speech) return;
+    clearInterval(speech.timer);
+    const { onEvent } = speech;
+    speech = null;
+    onEvent({ type: "end" });
+  };
 
   const session = (key: string): MockSession => {
     const s = sessions.get(key);
@@ -294,6 +332,7 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
         }
         const scenario = promptScenario(message, now());
         s.streaming = true;
+        s.compacted = false;
         emit(s, respond(cmd, { disposition: "started" }), ...scenario.records);
         return;
       }
@@ -322,7 +361,7 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
               steeringMode: "one-at-a-time",
               followUpMode: "one-at-a-time",
               sessionId: s.key,
-              autoCompactionEnabled: true,
+              autoCompactionEnabled: s.autoCompaction,
               messageCount: s.messages.length,
               pendingMessageCount: 0,
             }),
@@ -358,6 +397,10 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
         const window = MOCK_MODELS.find((m) => m.key === s.model)?.contextWindow ?? 128_000;
         emit(s, () => {
           const tokens = Math.round(JSON.stringify(s.messages).length / 4);
+          // 累计用量也粗略估算：每轮输入约为上下文的两倍，缓存命中约为一半
+          const input = tokens * 2;
+          const output = Math.round(tokens / 4);
+          const cacheRead = tokens;
           return respond(cmd, {
             sessionId: s.key,
             userMessages: 0,
@@ -365,15 +408,36 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
             toolCalls: 0,
             toolResults: 0,
             totalMessages: s.messages.length,
-            tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: tokens },
-            cost: 0,
-            contextUsage: {
-              tokens,
-              contextWindow: window,
-              percent: Math.round((tokens / window) * 1000) / 10,
-            },
+            tokens: { input, output, cacheRead, cacheWrite: 0, total: input + output + cacheRead },
+            cost: Math.round((input * 3 + output * 15 + cacheRead * 0.3) / 10_000) / 100,
+            contextUsage: s.compacted
+              ? { tokens: null, contextWindow: window, percent: null }
+              : {
+                  tokens,
+                  contextWindow: window,
+                  percent: Math.round((tokens / window) * 1000) / 10,
+                },
           });
         });
+        return;
+      }
+      case "set_auto_compaction":
+        s.autoCompaction = cmd.enabled;
+        emit(s, respond(cmd));
+        return;
+      case "compact": {
+        // 与 Core 一致：压缩后到下一次回复前，上下文占用未知
+        const tokensBefore = Math.round(JSON.stringify(s.messages).length / 4);
+        s.compacted = true;
+        emit(
+          s,
+          respond(cmd, {
+            summary: "mock：已压缩的对话摘要",
+            firstKeptEntryId: "mock",
+            tokensBefore,
+            estimatedTokensAfter: Math.round(tokensBefore / 5),
+          }),
+        );
         return;
       }
       case "get_messages":
@@ -413,6 +477,7 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
     dialogPickFiles: async () => [
       `${MOCK_WORKSPACE}\\README.md`,
       `${MOCK_WORKSPACE}\\src\\main.ts`,
+      `${MOCK_WORKSPACE}\\设计稿.png`,
     ],
     workspaceTrust: async (path, trusted, fingerprint) => {
       // 与真实平台一致：信任必须带回 workspaceInspect 给出的指纹
@@ -491,6 +556,8 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
         aborting: false,
         model: defaultModel,
         thinkingLevel: "medium",
+        autoCompaction: true,
+        compacted: false,
       });
       return { sessionKey: key, sessionId: sessionPath ? null : key };
     },
@@ -575,6 +642,48 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
     fsRead: async () => "# 示例工作区\n\n这是 mock 平台返回的假文件内容。",
     gitStatus: async () => ({ branch: "main", changes: [] }),
     gitDiff: async () => "",
+    // 示例工作区是 Git 仓库（main 分支），其他文件夹不是
+    gitBranch: async (workspace) =>
+      workspace === MOCK_WORKSPACE ? { name: "main", detached: false } : null,
+    attachmentImage: async (path) => {
+      await new Promise((r) => setTimeout(r, options.attachmentDelayMs ?? 700));
+      if (!MOCK_IMAGE_EXT.test(path)) throw new Error("不是支持的图片格式");
+      if (/损坏|broken/i.test(path)) throw new Error("图片无法解码：mock 模拟的损坏文件");
+      return {
+        mimeType: "image/png",
+        data: MOCK_PNG_1PX,
+        thumb: mockThumb(path),
+        width: 1,
+        height: 1,
+      };
+    },
+    speechAvailable: async () => true,
+    speechStart: async (onEvent) => {
+      endSpeech();
+      // 逐字推送临时结果，每句结束时定稿；音量按正弦起伏，句间停顿时变小
+      let sentence = 0;
+      let chars = 0;
+      let tick = 0;
+      const timer = setInterval(() => {
+        tick += 1;
+        const line = MOCK_SPEECH[sentence];
+        const speaking = line !== undefined;
+        const level = speaking
+          ? 0.35 + 0.55 * Math.abs(Math.sin(tick / 2.3) * Math.sin(tick / 5.1 + 1))
+          : 0.04;
+        onEvent({ type: "level", level });
+        if (!line || tick % 2) return;
+        chars += 1;
+        if (chars <= line.length) onEvent({ type: "interim", text: line.slice(0, chars) });
+        else {
+          onEvent({ type: "final", text: line });
+          sentence += 1;
+          chars = 0;
+        }
+      }, speechStepMs);
+      speech = { timer, onEvent };
+    },
+    speechStop: async () => endSpeech(),
 
     terminalOpen: async (_cwd, onData) => {
       const terminalId = `mock-term-${nextTerminal++}`;

@@ -147,6 +147,35 @@ export interface UpdateStatus {
   lastError: string | null;
 }
 
+/** 工作区所在 Git 仓库的当前分支（`git_branch`）；分离 HEAD 时 `name` 为短 SHA */
+export interface GitBranch {
+  name: string;
+  detached: boolean;
+}
+
+/** 输入框图片附件（`attachment_image`）：在内存中缩小并编码，不写任何文件（约束 C2） */
+export interface AttachmentImage {
+  /** `image/png` 或 `image/jpeg` */
+  mimeType: string;
+  /** 缩小后图片的 base64（不含 data: 前缀），直接放进 prompt 的 `images` */
+  data: string;
+  /** 缩略图 data URL（短边约 112px），只用于图块显示 */
+  thumb: string;
+  width: number;
+  height: number;
+}
+
+/**
+ * 语音输入事件（`speech_start` 的 Channel）。`interim` 为当前这一句的临时文本（随时替换），`final` 为定稿；
+ * `level`（0–1）只有浏览器预览的 mock 会推送，真实薄壳的音量由前端 getUserMedia 计算
+ */
+export type SpeechEvent =
+  | { type: "interim"; text: string }
+  | { type: "final"; text: string }
+  | { type: "level"; level: number }
+  | { type: "error"; message: string }
+  | { type: "end" };
+
 export interface Platform {
   appInfo(): Promise<AppInfo>;
 
@@ -210,6 +239,21 @@ export interface Platform {
   fsRead(workspace: string, path: string): Promise<string>;
   gitStatus(workspace: string): Promise<unknown>;
   gitDiff(workspace: string, path?: string): Promise<string>;
+  /** 当前分支（只读）；不是 Git 仓库时为 null */
+  gitBranch(workspace: string): Promise<GitBranch | null>;
+
+  /**
+   * 读取图片附件：按最长边 `maxEdge` 在内存中缩小并编码，附带缩略图。
+   * 不是图片、超过 20 MB 或解码失败时拒绝（错误文案可直接显示）
+   */
+  attachmentImage(path: string, maxEdge: number): Promise<AttachmentImage>;
+
+  /** 系统语音识别是否可用（不可用时隐藏麦克风按钮） */
+  speechAvailable(): Promise<boolean>;
+  /** 开始听写；事件经回调推送，最后一定有 `end`。再次调用先结束旧的会话 */
+  speechStart(onEvent: (event: SpeechEvent) => void): Promise<void>;
+  /** 停止听写（之后推送 `end`） */
+  speechStop(): Promise<void>;
 
   terminalOpen(cwd: string, onData: (data: string) => void): Promise<{ terminalId: string }>;
   terminalWrite(terminalId: string, data: string): Promise<void>;
@@ -297,6 +341,11 @@ export const COMMANDS = {
   fsRead: "fs_read",
   gitStatus: "git_status",
   gitDiff: "git_diff",
+  gitBranch: "git_branch",
+  attachmentImage: "attachment_image",
+  speechAvailable: "speech_available",
+  speechStart: "speech_start",
+  speechStop: "speech_stop",
   terminalOpen: "terminal_open",
   terminalWrite: "terminal_write",
   terminalResize: "terminal_resize",

@@ -2,9 +2,11 @@
 // - 在 Tauri 窗口内加载 tauri/ 实现；在浏览器（next dev）里加载 mock/ 实现，用脚本化的假 Core 事件流预览。
 // - 只有 tauri/ 目录可以 import `@tauri-apps/*`（scripts/check-tauri-imports.mjs 检查）。
 // - 两套实现都用动态 import 按需加载，浏览器预览不会执行 Tauri 代码。
+import type { FileDropSource } from "./file-drop";
 import type { Platform } from "./types";
 import type { WindowControls } from "./window";
 
+export type { FileDropEvent, FileDropSource } from "./file-drop";
 export * from "./types";
 export type { WindowControls } from "./window";
 
@@ -47,6 +49,24 @@ export function getWindowControls(): Promise<WindowControls | undefined> {
     ? import("./tauri/window").then((m) => m.createTauriWindowControls())
     : Promise.resolve(undefined);
   return currentWindow;
+}
+
+let currentFileDrop: Promise<FileDropSource | undefined> | undefined;
+
+/**
+ * 取得原生文件拖放（单例）。浏览器预览返回 undefined：组件改用 HTML5 drop。
+ * 只能在客户端代码（useEffect / 事件处理）中调用
+ */
+export function getFileDrop(): Promise<FileDropSource | undefined> {
+  currentFileDrop ??= isTauriRuntime()
+    ? import("./tauri/file-drop").then((m) => m.createTauriFileDrop())
+    : Promise.resolve(undefined);
+  return currentFileDrop;
+}
+
+/** 仅测试用：注入或重置原生文件拖放 */
+export function setFileDropForTesting(source: FileDropSource | undefined): void {
+  currentFileDrop = source ? Promise.resolve(source) : undefined;
 }
 
 /** 仅测试用：注入或重置平台实现 */
