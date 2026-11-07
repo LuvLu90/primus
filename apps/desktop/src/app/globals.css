@@ -23,12 +23,13 @@
   --color-success: #248a3d;
   /* 选中指示（模型选择的单选圆点）：唯一的彩色强调，取系统橙 */
   --color-select: #ff8a00;
-  /* 图表分项色（上下文卡片的分段条）：系统蓝、靛、紫、橙、绿 */
+  /* 图表分项色（上下文卡片的分段条）：系统蓝、靛、紫、橙、绿、青 */
   --color-chart-1: #0a84ff;
   --color-chart-2: #5e5ce6;
   --color-chart-3: #bf5af2;
   --color-chart-4: #ff9f0a;
   --color-chart-5: #30d158;
+  --color-chart-6: #32ade6;
   /* 输入框附件图块、唇条与进度环轨道 */
   --color-tile: rgb(0 0 0 / 0.045);
   --color-tile-ring: rgb(0 0 0 / 0.06);
@@ -74,6 +75,7 @@
   --color-chart-3: #bf5af2;
   --color-chart-4: #ff9f0a;
   --color-chart-5: #30d158;
+  --color-chart-6: #64d2ff;
   --color-tile: rgb(255 255 255 / 0.07);
   --color-tile-ring: rgb(255 255 255 / 0.07);
   --color-lip: rgb(255 255 255 / 0.06);
@@ -1123,6 +1125,21 @@ html.window-effects.glass-clear body {
   transition-delay: calc(var(--i, 0) * 45ms + 60ms);
 }
 
+/* 明细分组展开：条目逐个错开淡入上移 */
+.ctx-item {
+  opacity: 0;
+  translate: 0 4px;
+  transition:
+    opacity 180ms ease,
+    translate 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.ctx-group[data-open] .ctx-item {
+  opacity: 1;
+  translate: 0 0;
+  transition-delay: calc(min(var(--i, 0), 12) * 30ms + 40ms);
+}
+
 @keyframes ctx-seg-in {
   from {
     width: 0;
@@ -1267,7 +1284,9 @@ html.window-effects.glass-clear body {
     transition: none;
   }
   .ctx-row,
-  .ctx-expand[data-open] .ctx-row {
+  .ctx-expand[data-open] .ctx-row,
+  .ctx-item,
+  .ctx-group[data-open] .ctx-item {
     translate: 0 0;
     transition: opacity 160ms ease;
     transition-delay: 0ms;

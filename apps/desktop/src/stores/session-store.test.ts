@@ -1,5 +1,5 @@
 import type { AgentMessage, CoreRecord } from "@primus/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { promptScenario, usage } from "@/lib/platform/mock/scenario";
 import {
   applyChunks,
@@ -317,5 +317,34 @@ describe("会话 store：流式消息重建（第 7.4 节）", () => {
     expect(s.thinkingLevel).toBe("high");
     // 换模型后旧模型的档位作废，等新的 get_available_thinking_levels
     expect(s.thinkingLevels).toBeUndefined();
+  });
+
+  it("primus:context-stats 按会话保存；未知版本忽略并记日志；空内容清除", () => {
+    const widget = (lines: string[] | undefined, id = "w") =>
+      ({
+        type: "extension_ui_request",
+        id,
+        method: "setWidget",
+        widgetKey: "primus:context-stats",
+        widgetLines: lines,
+      }) as CoreRecord;
+    const data = {
+      estimator: "chars/4",
+      categories: [{ key: "systemPrompt", tokens: 1200, items: [] }],
+      deferredTools: ["lazy"],
+    };
+    const s1 = applyChunks(initialSessionState, [
+      chunk([widget([JSON.stringify({ v: 1, type: "context-stats", data })])]),
+    ]);
+    expect(s1.contextStats).toEqual(data);
+    expect(s1.uiRequests).toEqual([]);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s2 = applyChunks(s1, [
+      chunk([widget([JSON.stringify({ v: 2, type: "context-stats", data: {} })])]),
+    ]);
+    expect(s2.contextStats).toEqual(data);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+    expect(applyChunks(s1, [chunk([widget(undefined)])]).contextStats).toBeUndefined();
   });
 });

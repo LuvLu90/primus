@@ -34,13 +34,47 @@ function open(props: Partial<Parameters<typeof ModelPicker>[0]> = {}) {
       {...props}
     />,
   );
-  const trigger = screen.getByRole("button", { name: /模型：Fable 5，思考中/ });
-  expect(trigger.textContent).toContain(`· ${t.thinking} 中`);
+  const trigger = screen.getByRole("button", { name: /模型：Fable 5，思考程度中/ });
+  expect(trigger.textContent).toBe("Fable 5· 中");
   fireEvent.keyDown(trigger, { key: "Enter" });
   return { onSelectModel, onSelectThinking };
 }
 
 describe("模型选择", () => {
+  it("按钮只显示“模型名 · 档位”：没有图标，不出现“思考”“默认”", () => {
+    const { container } = render(
+      <ModelPicker
+        models={MODELS}
+        current="p/b"
+        thinkingLevel="high"
+        thinkingLevels={["off", "low", "medium", "high"]}
+        onSelectModel={vi.fn()}
+        onSelectThinking={vi.fn()}
+      />,
+    );
+    const trigger = screen.getByRole("button", { name: "模型：Sonnet 5，思考程度高" });
+    expect(trigger.textContent).toBe("Sonnet 5· 高");
+    expect(trigger.textContent).not.toContain(t.thinking);
+    // 只有下拉箭头一个图标
+    expect(container.querySelectorAll("svg")).toHaveLength(1);
+  });
+
+  it("档位未知时只显示模型名，不显示“默认”", () => {
+    render(
+      <ModelPicker
+        models={MODELS}
+        current="p/a"
+        thinkingLevel={undefined}
+        thinkingLevels={undefined}
+        onSelectModel={vi.fn()}
+        onSelectThinking={vi.fn()}
+      />,
+    );
+    const trigger = screen.getByRole("button", { name: "模型：Fable 5" });
+    expect(trigger.textContent).toBe("Fable 5");
+    expect(trigger.textContent).not.toContain(t.levelDefault);
+  });
+
   it("“模型”分组列出模型，当前项为选中；点选切换", async () => {
     const { onSelectModel } = open();
     expect(await screen.findByText(t.models)).toBeTruthy();
@@ -97,7 +131,9 @@ describe("模型选择", () => {
         onSelectThinking={vi.fn()}
       />,
     );
-    fireEvent.keyDown(screen.getByRole("button", { name: "模型：Fast" }), { key: "Enter" });
+    const trigger = screen.getByRole("button", { name: "模型：Fast" });
+    expect(trigger.textContent).toBe("Fast");
+    fireEvent.keyDown(trigger, { key: "Enter" });
     await screen.findByRole("menuitemradio", { name: "Fast" });
     expect(screen.queryByRole("slider")).toBeNull();
   });

@@ -1,10 +1,14 @@
-import type {
-  AgentMessage,
-  AssistantContent,
-  AssistantMessage,
-  CoreRecord,
-  RpcCommand,
-  RpcResponse,
+import {
+  type AgentMessage,
+  type AssistantContent,
+  type AssistantMessage,
+  CONTEXT_STATS_COMMAND,
+  CONTEXT_STATS_WIDGET,
+  type ContextStatsData,
+  type CoreRecord,
+  type RpcCommand,
+  type RpcResponse,
+  type RpcSlashCommand,
 } from "@primus/protocol";
 import {
   AUTH_NOT_AVAILABLE,
@@ -115,6 +119,65 @@ function mockModel(key: string) {
     maxTokens: m.maxTokens,
   };
 }
+
+/** primus-context-stats 的示例分项（与真实扩展同形：字符数 / 4 估算） */
+export const MOCK_CONTEXT_STATS: ContextStatsData = {
+  estimator: "chars/4",
+  categories: [
+    { key: "systemPrompt", tokens: 3_180, items: [] },
+    {
+      key: "systemTools",
+      tokens: 11_840,
+      items: [
+        { name: "bash", tokens: 3_420 },
+        { name: "edit", tokens: 2_610 },
+        { name: "read", tokens: 1_980 },
+        { name: "write", tokens: 1_450 },
+        { name: "grep", tokens: 1_270 },
+        { name: "find", tokens: 1_110 },
+      ],
+    },
+    {
+      key: "mcpTools",
+      tokens: 6_420,
+      items: [
+        { name: "mcp__docs__search", tokens: 2_310 },
+        { name: "mcp__docs__fetch_page", tokens: 1_940 },
+        { name: "mcp__github__list_issues", tokens: 1_260 },
+        { name: "mcp__github__get_pull_request", tokens: 910 },
+      ],
+    },
+    {
+      key: "skills",
+      tokens: 1_920,
+      items: [
+        { name: "pdf", tokens: 640 },
+        { name: "xlsx", tokens: 610 },
+        { name: "docx", tokens: 380 },
+        { name: "frontend-design", tokens: 290 },
+      ],
+    },
+    {
+      key: "memoryFiles",
+      tokens: 2_640,
+      items: [
+        { name: "C:\\Users\\mock\\示例工作区\\AGENTS.md", tokens: 2_210 },
+        { name: "C:\\Users\\mock\\示例工作区\\web\\AGENTS.md", tokens: 430 },
+      ],
+    },
+  ],
+  deferredTools: ["mcp__browser__screenshot", "notebook_edit"],
+};
+
+/** 示例分项之和：mock 的上下文占用在消息之外加上这部分（与真实 Core 一样，占用含系统提示词与工具） */
+const MOCK_CONTEXT_BASE = MOCK_CONTEXT_STATS.categories.reduce((n, c) => n + c.tokens, 0);
+
+/** mock 内核注册的扩展命令（get_commands） */
+const MOCK_COMMANDS: RpcSlashCommand[] = ["primus-mode", CONTEXT_STATS_COMMAND].map((name) => ({
+  name,
+  source: "extension",
+  sourceInfo: { path: "primus-bundle.js", source: "local", scope: "user", origin: "top-level" },
+}));
 
 /** 队列项：记录本身，或推送时才生成的记录（get_messages 的响应在推送那一刻取历史快照） */
 type Queued = CoreRecord | (() => CoreRecord);
@@ -322,6 +385,17 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
         const message = String(cmd.message ?? "");
         // 扩展命令（如 primus-guard 的 /primus-mode）：与 Core 一致，直接执行、不调用模型，运行中也立即执行
         if (message.startsWith("/primus-")) {
+          // primus-context-stats：先推分项数据（setWidget），再回 handled，与 Core 中命令执行完才回响应一致；不写历史
+          if (message.trim() === `/${CONTEXT_STATS_COMMAND}`)
+            emit(s, {
+              type: "extension_ui_request",
+              id: `mock-widget-${now()}`,
+              method: "setWidget",
+              widgetKey: CONTEXT_STATS_WIDGET,
+              widgetLines: [
+                JSON.stringify({ v: 1, type: "context-stats", data: MOCK_CONTEXT_STATS }),
+              ],
+            });
           emit(s, respond(cmd, { disposition: "handled" }));
           return;
         }
@@ -396,7 +470,7 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
         // 粗略按 4 字符 1 token 估算上下文占用
         const window = MOCK_MODELS.find((m) => m.key === s.model)?.contextWindow ?? 128_000;
         emit(s, () => {
-          const tokens = Math.round(JSON.stringify(s.messages).length / 4);
+          const tokens = MOCK_CONTEXT_BASE + Math.round(JSON.stringify(s.messages).length / 4);
           // 累计用量也粗略估算：每轮输入约为上下文的两倍，缓存命中约为一半
           const input = tokens * 2;
           const output = Math.round(tokens / 4);
@@ -440,6 +514,9 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
         );
         return;
       }
+      case "get_commands":
+        emit(s, respond(cmd, { commands: MOCK_COMMANDS }));
+        return;
       case "get_messages":
         // 推送时才取快照：此前推送的事件都已计入历史；排在它前面、被 abort 丢弃的事件不会进入快照
         emit(s, () => respond(cmd, { messages: s.messages.slice() }));

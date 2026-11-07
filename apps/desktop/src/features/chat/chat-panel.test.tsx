@@ -547,7 +547,7 @@ describe("对话区（mock 事件流）", () => {
   it("上下文按钮在模型按钮旁，点开显示上下文卡片与本会话用量，可立即压缩", async () => {
     const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
     setPlatformForTesting(platform);
-    const records: { type: string }[] = [];
+    const records: { type: string; message?: string }[] = [];
     const coreSend = platform.coreSend.bind(platform);
     vi.spyOn(platform, "coreSend").mockImplementation((key, record) => {
       records.push(record as { type: string });
@@ -560,6 +560,8 @@ describe("对话区（mock 事件流）", () => {
     await waitFor(() => expect(screen.getByText(/你刚才说：「你好」/)).toBeTruthy());
     await waitFor(() => expect(screen.getByRole("button", { name: t.send })).toBeTruthy());
     const button = await screen.findByRole("button", { name: /^上下文 \d/ });
+    // 按钮只有小圆环，不显示百分比文字
+    expect(button.textContent).toBe("");
     fireEvent.click(button);
     const card = await screen.findByRole("dialog", { name: t.contextCard.title });
     expect(card.textContent).toContain(t.contextCard.usageTitle);
@@ -569,10 +571,20 @@ describe("对话区（mock 事件流）", () => {
       expect(records.filter((r) => r.type === "get_session_stats").length).toBeGreaterThan(1),
     );
     await waitFor(() => expect(card.textContent).toMatch(/\$\d/));
-    // 展开明细：已用与可用空间
+    // 打开时先确认扩展命令已注册，再请求分项统计；该命令不进入时间线
+    await waitFor(() =>
+      expect(
+        records.some((r) => r.type === "prompt" && r.message === "/primus-context-stats"),
+      ).toBe(true),
+    );
+    expect(records.some((r) => r.type === "get_commands")).toBe(true);
+    expect(screen.queryByText("/primus-context-stats")).toBeNull();
+    // 展开明细：分项（消息等）、延迟加载的工具与可用空间
     fireEvent.click(screen.getByRole("button", { name: t.contextCard.expand }));
+    expect(await screen.findByRole("list", { name: t.contextCard.groupsLabel })).toBeTruthy();
+    expect(screen.getByText(t.contextCard.categories.messages)).toBeTruthy();
+    expect(screen.getByText("notebook_edit")).toBeTruthy();
     expect(screen.getByText(t.contextCard.free)).toBeTruthy();
-    expect(screen.getByText(t.contextCard.used)).toBeTruthy();
     // 自动压缩开关与立即压缩
     fireEvent.click(screen.getByRole("switch", { name: t.contextCard.autoCompact }));
     await waitFor(() =>
@@ -670,7 +682,7 @@ describe("对话区（mock 事件流）", () => {
     // 滑杆松手后菜单保持打开，关掉再看按钮
     fireEvent.keyDown(slider, { key: "Escape" });
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: /模型：Mock 大模型，思考高/ })).toBeTruthy(),
+      expect(screen.getByRole("button", { name: /模型：Mock 大模型，思考程度高/ })).toBeTruthy(),
     );
     const input = screen.getByRole("textbox", { name: t.inputLabel });
     fireEvent.change(input, { target: { value: "你好" } });
@@ -682,7 +694,7 @@ describe("对话区（mock 事件流）", () => {
     );
     // 会话打开后切换模型：立即发 set_model，按钮随之更新（等这一轮回答结束、按钮解锁）
     await waitFor(() => expect(screen.getByText(/你刚才说：「你好」/)).toBeTruthy());
-    const second = await screen.findByRole("button", { name: /模型：Mock 大模型，思考高/ });
+    const second = await screen.findByRole("button", { name: /模型：Mock 大模型，思考程度高/ });
     await waitFor(() => expect(second.hasAttribute("disabled")).toBe(false));
     fireEvent.keyDown(second, { key: "Enter" });
     fireEvent.click(await screen.findByRole("menuitemradio", { name: "Mock 快速模型" }));

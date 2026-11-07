@@ -2,6 +2,7 @@ import type {
   AgentMessage,
   AssistantContent,
   AssistantMessageEvent,
+  ContextStatsData,
   ContextUsage,
   CoreRecord,
   ExtensionUiDialogRequest,
@@ -9,7 +10,7 @@ import type {
   SessionStats,
   ToolResult,
 } from "@primus/protocol";
-import { isDialogRequest } from "@primus/protocol";
+import { CONTEXT_STATS_WIDGET, isDialogRequest } from "@primus/protocol";
 import { produce } from "immer";
 import { createStore } from "zustand/vanilla";
 
@@ -66,6 +67,8 @@ export interface SessionState {
   contextUsage?: ContextUsage;
   /** 本会话累计用量（get_session_stats 的 tokens 与 cost） */
   sessionUsage?: Pick<SessionStats, "tokens" | "cost">;
+  /** 上下文分项估算（primus-context-stats 经 setWidget("primus:context-stats") 推送；打开上下文卡片时请求） */
+  contextStats?: ContextStatsData;
   /** 自动压缩开关（get_state 的 autoCompactionEnabled；set_auto_compaction 成功后更新） */
   autoCompaction?: boolean;
   /** 正在压缩（compaction_start 到 compaction_end） */
@@ -185,6 +188,49 @@ function endStream(draft: SessionState): void {
   draft.streamBroken = false;
 }
 
+/**
+ * 解析扩展经 setWidget 推来的 `primus:<主题>` 数据：`{ v: 1, type, data }`。
+ * 版本未知、主题不符或不是合法 JSON 时忽略并记日志（AGENTS.md 第 6 节）；返回 undefined
+ */
+export function parsePrimusData(
+  key: string,
+  lines: readonly string[] | undefined,
+): { type: string; data: unknown } | undefined {
+  const raw = lines?.[0];
+  if (raw === undefined) return undefined;
+  try {
+    const value = JSON.parse(raw) as { v?: unknown; type?: unknown; data?: unknown } | null;
+    if (value === null || typeof value !== "object") throw new Error("不是对象");
+    if (value.v !== 1) {
+      console.warn(`忽略 ${key}：未知的数据版本 v=${String(value.v)}`);
+      return undefined;
+    }
+    if (typeof value.type !== "string" || `primus:${value.type}` !== key) {
+      console.warn(`忽略 ${key}：数据主题不符（${String(value.type)}）`);
+      return undefined;
+    }
+    return { type: value.type, data: value.data };
+  } catch (e) {
+    console.warn(`忽略 ${key}：无法解析`, e);
+    return undefined;
+  }
+}
+
+/** 即发即弃的 setWidget：只处理前端认识的 `primus:*` 主题，其余忽略 */
+function applyWidget(draft: SessionState, key: string, lines: string[] | undefined): void {
+  if (key !== CONTEXT_STATS_WIDGET) return;
+  // 缺省 widgetLines 表示清除
+  if (lines === undefined) {
+    draft.contextStats = undefined;
+    return;
+  }
+  const parsed = parsePrimusData(key, lines);
+  const data = parsed?.data as ContextStatsData | undefined;
+  if (data && Array.isArray(data.categories) && Array.isArray(data.deferredTools))
+    draft.contextStats = data;
+  else if (parsed) console.warn(`忽略 ${key}：数据缺少 categories / deferredTools`);
+}
+
 function applyRecord(draft: SessionState, record: CoreRecord): void {
   switch (record.type) {
     case "response": {
@@ -226,7 +272,11 @@ function applyRecord(draft: SessionState, record: CoreRecord): void {
       return;
     }
     case "extension_ui_request":
-      // 对话框方法阻塞扩展、等前端回答；即发即弃的方法（setWidget 等）这里不处理
+      // 对话框方法阻塞扩展、等前端回答；即发即弃的方法里只处理 primus:* 数据（setWidget），其余这里不处理
+      if (record.method === "setWidget") {
+        applyWidget(draft, record.widgetKey, record.widgetLines);
+        return;
+      }
       if (isDialogRequest(record) && !draft.uiRequests.some((x) => x.id === record.id))
         draft.uiRequests.push(record);
       return;

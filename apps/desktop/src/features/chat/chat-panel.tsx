@@ -22,7 +22,7 @@ import { useMediaQuery } from "@/components/theme/appearance-controller";
 import { GlassButton } from "@/components/ui/glass-button";
 import { type ChatTab, useSessionsStore } from "@/features/sessions/sessions-store";
 import { getFileDrop, getPlatform, isTauriRuntime } from "@/lib/platform";
-import type { ModelsInfo, WorkspaceInfo } from "@/lib/platform/types";
+import type { ModelsInfo, SpeechSettingsPage, WorkspaceInfo } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
@@ -44,7 +44,7 @@ import { ThinkingIndicator } from "./message-content";
 import { type IndexItem, MessageIndex } from "./message-index";
 import { ModelPicker } from "./model-picker";
 import { useChatSession } from "./use-chat-session";
-import { useVoiceInput } from "./voice/use-voice-input";
+import { SETTINGS_URLS, useVoiceInput } from "./voice/use-voice-input";
 import { VoiceButton } from "./voice/voice-button";
 
 // 中央对话区：实色"纸面"上的时间线 + 悬浮在其上的玻璃输入框（滚动内容从玻璃下方折射穿过）。
@@ -188,6 +188,14 @@ function useModelConfigGate() {
   return { info, unavailable, reason: info?.error ?? null, retrying, retry };
 }
 
+/** 语音输入被系统隐私设置拒绝时打开对应的 Windows 设置页 */
+function openVoiceSettings(page: SpeechSettingsPage | undefined) {
+  if (!page) return;
+  void getPlatform()
+    .then((p) => p.openExternal(SETTINGS_URLS[page]))
+    .catch(() => {});
+}
+
 /** 路径最后一段（工作区显示名） */
 function baseName(path: string): string {
   return path.split(/[\\/]/).filter(Boolean).pop() ?? path;
@@ -213,6 +221,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     pendingModel,
     connected,
     refreshStats,
+    requestContextStats,
     compact,
     setAutoCompaction,
   } = useChatSession({
@@ -684,10 +693,25 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
             className="relative rounded-[24px] bg-surface shadow-[0_12px_40px_-12px_rgb(0_0_0/0.35)] ring-1 ring-border transition-[box-shadow] duration-200 focus-within:shadow-[0_14px_44px_-12px_rgb(0_0_0/0.4)] data-[drop]:ring-2 data-[drop]:ring-accent/45"
           >
             <form onSubmit={submit} className="flex flex-col gap-2 px-3.5 pt-3.5 pb-3">
-              {(pickError || voice.error) && (
+              {pickError ? (
                 <p role="alert" className="text-xs text-danger">
-                  {pickError ?? voice.error}
+                  {pickError}
                 </p>
+              ) : (
+                voice.error && (
+                  <p role="alert" className="flex items-center gap-2 text-xs text-danger">
+                    <span className="min-w-0">{voice.error.message}</span>
+                    {voice.error.settings && (
+                      <button
+                        type="button"
+                        onClick={() => openVoiceSettings(voice.error?.settings)}
+                        className="shrink-0 rounded-full px-2 py-0.5 font-medium text-danger underline-offset-2 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-danger/40"
+                      >
+                        {t.voice.openSettings}
+                      </button>
+                    )}
+                  </p>
+                )
               )}
               <AttachmentStrip
                 items={attachments.items}
@@ -812,15 +836,19 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                   onSelectModel={(model) => void selectModel({ model })}
                   onSelectThinking={(thinkingLevel) => void selectModel({ thinkingLevel })}
                 />
-                {/* 上下文：紧挨模型按钮的小圆环 + 百分比，点开是上下文卡片 */}
+                {/* 上下文：紧挨模型按钮的小圆环（百分比只在无障碍名称里），点开是上下文卡片 */}
                 <ContextButton
                   usage={state.contextUsage}
                   sessionUsage={state.sessionUsage}
                   autoCompaction={state.autoCompaction}
                   compacting={state.compacting}
+                  stats={state.contextStats}
                   connected={connected}
                   busy={state.running || submitting}
-                  onOpen={refreshStats}
+                  onOpen={() => {
+                    refreshStats();
+                    requestContextStats();
+                  }}
                   onCompact={() => void compact()}
                   onAutoCompactionChange={(enabled) => void setAutoCompaction(enabled)}
                 />

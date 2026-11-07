@@ -165,6 +165,9 @@ export interface AttachmentImage {
   height: number;
 }
 
+/** 语音输入被系统隐私设置拒绝时可以打开的设置页 */
+export type SpeechSettingsPage = "microphone" | "speech";
+
 /**
  * 语音输入事件（`speech_start` 的 Channel）。`interim` 为当前这一句的临时文本（随时替换），`final` 为定稿；
  * `level`（0–1）只有浏览器预览的 mock 会推送，真实薄壳的音量由前端 getUserMedia 计算
@@ -173,7 +176,8 @@ export type SpeechEvent =
   | { type: "interim"; text: string }
   | { type: "final"; text: string }
   | { type: "level"; level: number }
-  | { type: "error"; message: string }
+  /** settings：能解决这个错误的系统设置页（隐私 → 麦克风 / 语音），前端提供“打开设置” */
+  | { type: "error"; message: string; settings?: SpeechSettingsPage }
   | { type: "end" };
 
 export interface Platform {

@@ -5,12 +5,24 @@
 // 不丢用户说过的话。波形取 18 格音量历史：优先 WebView 麦克风实测音量，否则用平台推送的音量（mock）。
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getPlatform, isTauriRuntime } from "@/lib/platform";
-import type { SpeechEvent } from "@/lib/platform/types";
+import type { SpeechEvent, SpeechSettingsPage } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
 import { useMicLevel } from "./use-mic-level";
 
 export const WAVE_BARS = 18;
 const WAVE_STEP_MS = 80;
+
+/** 语音输入的错误；settings 为能解决它的系统设置页（界面上给出“打开设置”） */
+export interface VoiceError {
+  message: string;
+  settings?: SpeechSettingsPage;
+}
+
+/** 系统设置页（open_external 只接受这两个） */
+export const SETTINGS_URLS: Record<SpeechSettingsPage, string> = {
+  microphone: "ms-settings:privacy-microphone",
+  speech: "ms-settings:privacy-speech",
+};
 
 export interface VoiceInput {
   /** 平台支持语音输入（首帧为 false，不可用时隐藏按钮） */
@@ -22,7 +34,7 @@ export interface VoiceInput {
   levels: number[];
   /** 已录音秒数 */
   elapsed: number;
-  error: string | null;
+  error: VoiceError | null;
   start: () => void;
   stop: () => void;
 }
@@ -44,14 +56,17 @@ export function useVoiceInput({
   const [interim, setInterim] = useState("");
   const [levels, setLevels] = useState<number[]>(() => Array(WAVE_BARS).fill(0));
   const [elapsed, setElapsed] = useState(0);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<VoiceError | null>(null);
   const callbacks = useRef({ onStart, onFinal, onEnd });
   callbacks.current = { onStart, onFinal, onEnd };
   const interimRef = useRef("");
   const pushedLevel = useRef(0);
   // 每次开始一个会话一个令牌：旧会话迟到的事件不影响新会话
   const session = useRef<symbol | null>(null);
-  const readMic = useMicLevel(recording, isTauriRuntime());
+  // 只在桌面端读麦克风（浏览器预览不调用 getUserMedia，不弹浏览器权限框）
+  const readMic = useMicLevel(recording, isTauriRuntime(), () =>
+    setError((prev) => prev ?? { message: strings.chat.voice.micDenied, settings: "microphone" }),
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -96,13 +111,16 @@ export function useVoiceInput({
         setInterim("");
         callbacks.current.onFinal(e.text);
       } else if (e.type === "level") pushedLevel.current = e.level;
-      else if (e.type === "error") setError(`${strings.chat.voice.failed}：${e.message}`);
+      else if (e.type === "error")
+        setError({ message: `${strings.chat.voice.failed}：${e.message}`, settings: e.settings });
       else finish(token);
     };
     getPlatform()
       .then((p) => p.speechStart(onEvent))
       .catch((e: unknown) => {
-        setError(`${strings.chat.voice.failed}：${e instanceof Error ? e.message : String(e)}`);
+        setError({
+          message: `${strings.chat.voice.failed}：${e instanceof Error ? e.message : String(e)}`,
+        });
         finish(token);
       });
   }, [finish]);

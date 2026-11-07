@@ -1,11 +1,12 @@
 "use client";
 
-// 输入框右下角的模型按钮：显示当前模型与思考强度，点开可切换（第 9.5 节）。
+// 输入框右下角的模型按钮：纯文字“<模型短名> · <档位>”（不带图标与“思考”二字；档位未知或只有一档时只显示模型名），
+// 点开可切换（第 9.5 节）。
 // 模型列表来自账号下发的配置（models_get）；思考强度按模型支持的档位（get_available_thinking_levels）。
 // 弹层：“模型”分组，每行模型名 + 右侧单选圆点（选中为橙色圆环白芯，选中行的浅色底在行间滑动）；
 // 分隔线下是“思考程度”滑杆（两端“更快 / 更聪明”，拇指弹到档位上）。
 import type { ThinkingLevel } from "@primus/protocol";
-import { ChevronDown, Sparkles } from "lucide-react";
+import { ChevronDown } from "lucide-react";
 import { DropdownMenu as Menu } from "radix-ui";
 import {
   type KeyboardEvent,
@@ -69,22 +70,20 @@ export function ModelPicker({
   const levels = thinkingLevels ?? (model?.reasoning === false ? ["off"] : DEFAULT_THINKING_LEVELS);
   const showThinking = levels.length > 1;
   const name = model ? shortModelName(model.name) : current ? current.split("/").pop() : t.none;
+  // 按钮上只显示已知的档位；未知（会话还没报告）时不显示“默认”
+  const level =
+    showThinking && thinkingLevel ? (t.levels as Record<string, string>)[thinkingLevel] : undefined;
   return (
     <GlassPopover>
       <GlassPopoverTrigger asChild disabled={disabled || models.length === 0}>
         <button
           type="button"
-          aria-label={`${t.label}：${model?.name ?? name}${showThinking ? `，${t.thinking}${thinkingLabel(thinkingLevel)}` : ""}`}
+          aria-label={`${t.label}：${model?.name ?? name}${level ? `，${t.thinkingDegree}${level}` : ""}`}
           title={model?.name ?? name}
           className="flex h-8 max-w-64 items-center gap-1.5 rounded-full px-2.5 text-[12px] text-muted outline-none transition-colors hover:bg-hover hover:text-fg focus-visible:bg-hover disabled:opacity-40 data-[state=open]:bg-hover data-[state=open]:text-fg"
         >
-          <Sparkles aria-hidden size={13} className="shrink-0" />
           <span className="truncate">{name}</span>
-          {showThinking && (
-            <span className="shrink-0 text-muted/80">
-              · {t.thinking} {thinkingLabel(thinkingLevel)}
-            </span>
-          )}
+          {level && <span className="shrink-0">· {level}</span>}
           <ChevronDown aria-hidden size={12} className="shrink-0 opacity-70" />
         </button>
       </GlassPopoverTrigger>

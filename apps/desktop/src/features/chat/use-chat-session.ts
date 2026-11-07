@@ -1,6 +1,12 @@
 "use client";
 
-import type { CoreBatch, ExtensionUiResponse, ImageContent, ThinkingLevel } from "@primus/protocol";
+import {
+  CONTEXT_STATS_COMMAND,
+  type CoreBatch,
+  type ExtensionUiResponse,
+  type ImageContent,
+  type ThinkingLevel,
+} from "@primus/protocol";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { CORE_NOT_RUNNING, getPlatform, type Platform, PlatformError } from "@/lib/platform";
@@ -19,6 +25,13 @@ import {
 
 /** 设置权限模式的扩展命令（primus-guard）；作为 prompt 发送，Core 直接执行，不调用模型 */
 export const modeCommand = (mode: PermissionMode) => `/primus-mode ${mode}`;
+
+/**
+ * 请求上下文分项统计的扩展命令（primus-context-stats，只读）。Core 在 prompt 路径的最前面执行已注册的扩展命令
+ * （AgentSession.prompt → _tryExecuteExtensionCommand，早于输入处理、排队与 _startRun），
+ * 不写入会话历史、不调用模型；结果经 setWidget("primus:context-stats") 推送
+ */
+export const contextStatsCommand = `/${CONTEXT_STATS_COMMAND}`;
 
 // 一个会话的生命周期：新会话首次发送时打开；历史会话挂载后立即打开并用 get_messages + get_state 加载历史
 // （浏览器预览下由 mock 平台提供假 Core 事件流）。
@@ -54,6 +67,11 @@ export interface ChatSession {
   connected: boolean;
   /** 刷新上下文占用与本会话用量（get_session_stats）；会话未打开时什么也不做 */
   refreshStats: () => void;
+  /**
+   * 请求上下文分项统计（`/primus-context-stats`）。先用 get_commands 确认扩展命令已注册：
+   * 未注册时这段文字会被当作普通消息发给模型，因此不发送（卡片只显示已用与可用空间）
+   */
+  requestContextStats: () => void;
   /** 立即压缩（compact）；成功返回 true，失败设置 error 并返回 false */
   compact: () => Promise<boolean>;
   /** 开关自动压缩（set_auto_compaction）；成功返回 true */
@@ -128,6 +146,8 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
 
   const conn = useRef<{ platform: Platform; client: RpcClient }>(null);
   const [connected, setConnected] = useState(false);
+  // 当前内核是否注册了 primus-context-stats（每个连接、每次重启查一次 get_commands）
+  const statsCommandReady = useRef<Promise<boolean>>(null);
   // Core 里当前生效的权限模式（新进程默认“每次询问”，打开或重启后重新同步）
   const syncedMode = useRef<PermissionMode | null>(null);
   const [pendingModel, setPendingModel] = useState<{
@@ -273,6 +293,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
       });
       for (const batch of early) client.receive(batch);
       conn.current = { platform, client };
+      statsCommandReady.current = null;
       setConnected(true);
       syncedMode.current = null;
       optionsRef.current.onOpening?.(false);
@@ -444,6 +465,33 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     conn.current?.client.request("get_session_stats").catch(() => {});
   }, []);
 
+  const requestContextStats = useCallback(() => {
+    const c = conn.current;
+    if (!c) return;
+    const { client } = c;
+    if (!statsCommandReady.current) {
+      const query: Promise<boolean> = client
+        .request("get_commands")
+        .then(
+          (res) =>
+            res.success &&
+            res.data.commands.some(
+              (cmd) => cmd.source === "extension" && cmd.name === CONTEXT_STATS_COMMAND,
+            ),
+        )
+        .catch(() => {
+          // 查询失败（超时等）：下次打开卡片再查；只清掉自己（期间重连或重启已换成新的查询时不动）
+          if (statsCommandReady.current === query) statsCommandReady.current = null;
+          return false;
+        });
+      statsCommandReady.current = query;
+    }
+    void statsCommandReady.current.then((ready) => {
+      if (!ready || conn.current?.client !== client) return;
+      client.request("prompt", { message: contextStatsCommand }).catch(() => {});
+    });
+  }, []);
+
   const compact = useCallback(async (): Promise<boolean> => {
     const c = conn.current;
     if (!c) return false;
@@ -491,6 +539,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
       await c.platform.coreRestart(c.client.sessionKey);
       // 旧进程上等待的命令不会再有响应；新进程按会话文件恢复后重建状态
       c.client.reset();
+      statsCommandReady.current = null;
       lock.current.timeout = false;
       lock.current.stopped = false;
       // 新进程的权限模式回到默认：重新同步
@@ -527,6 +576,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     pendingModel,
     connected,
     refreshStats,
+    requestContextStats,
     compact,
     setAutoCompaction,
   };
