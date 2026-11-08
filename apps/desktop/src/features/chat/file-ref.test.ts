@@ -33,6 +33,13 @@ describe("链接地址识别为文件引用", () => {
     ],
     ["file:///C:/Users/me/a%20b.ts", "C:/Users/me/a b.ts", "a b.ts", undefined, undefined],
     ["file:///home/me/a.py#L3", "/home/me/a.py", "a.py", 3, undefined],
+    [
+      "file:///home/me/My%20Project/report.md",
+      "/home/me/My Project/report.md",
+      "report.md",
+      undefined,
+      undefined,
+    ],
     ["src/components/", "src/components/", "components", undefined, undefined],
   ])("%s", (href, path, name, line, endLine) => {
     const ref = fileRefFromHref(href);
@@ -57,6 +64,13 @@ describe("链接地址识别为文件引用", () => {
     "",
   ])("网址与其他协议不算：%s", (href) => {
     expect(fileRefFromHref(href)).toBeNull();
+  });
+
+  it("空格只在 Windows 绝对路径与 file:// 地址里允许，普通路径带空格不算", () => {
+    expect(fileRefFromHref("src/my file.ts")).toBeNull();
+    expect(fileRefFromHref("src/my%20file.ts")).toBeNull();
+    expect(fileRefFromHref("C:\\Program Files\\a.ts")?.name).toBe("a.ts");
+    expect(fileRefFromHref("file:///home/me/my%20file.ts")?.path).toBe("/home/me/my file.ts");
   });
 
   it("文件夹以斜杠结尾", () => {
@@ -161,5 +175,13 @@ describe("显示与复制", () => {
 
   it("文件夹用 folder 图标", () => {
     expect(fileRefIcon({ name: "src", isDir: true })).toBe("folder");
+  });
+
+  it("原型属性名当扩展名时回落到通用图标，行内代码也不认作文件", () => {
+    for (const name of ["a.constructor", "a.__proto__", "a.toString", "a.hasOwnProperty"]) {
+      expect(fileRefIcon({ name, isDir: false })).toBe("file");
+    }
+    expect(fileRefFromCode("a.toString")).toBeNull();
+    expect(fileRefFromCode("x.valueOf")).toBeNull();
   });
 });

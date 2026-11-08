@@ -68,7 +68,8 @@ function transform(children: Token[], TokenCtor: StateCore["Token"]): Token[] {
       let close = i + 1;
       while (close < children.length && children[close]?.type !== "link_close") close++;
       const href = tok.attrGet("href") ?? "";
-      // 自动识别出的链接（linkify）只会是网址，不当文件
+      // 自动识别出的链接（linkify）只会是网址、邮箱，不当文件：markdown-it 15 默认关闭 fuzzyLink，
+      // README.md、main.rs 这类不带协议的文字不会被识别成网址（见测试）
       const ref = tok.markup === "linkify" ? null : fileRefFromHref(href);
       if (ref && close < children.length) {
         const label = plainText(children.slice(i + 1, close));
@@ -107,8 +108,10 @@ export function renderFileRef(meta: FileRefMeta, escapeHtml: (s: string) => stri
 /** 安装插件：识别文件引用、标记外部链接 */
 export function linksPlugin(md: MarkdownIt): void {
   const validate = md.validateLink.bind(md);
-  // 默认不认 file:// 链接；这里放行，交给文件引用处理（渲染成按钮，不会跳转）
-  md.validateLink = (url) => /^file:/i.test(url.trim()) || validate(url);
+  // 默认不认 file:// 链接；能识别成文件引用的才放行（渲染成按钮，不会跳转），
+  // 识别不了的（如 file:///）仍不生成链接，避免出现可中键打开的 file: 地址
+  md.validateLink = (url) =>
+    /^file:/i.test(url.trim()) ? fileRefFromHref(url) !== null : validate(url);
   md.core.ruler.push("primus_links", (state) => {
     for (const block of state.tokens) {
       if (block.type === "inline" && block.children)

@@ -108,6 +108,32 @@ describe("回复中的文件引用与网页链接", () => {
     expect(screen.queryByRole("button")).toBeNull();
   });
 
+  it("原型属性名当扩展名的链接也能渲染（通用文件图标）", () => {
+    const html = renderMarkdown("[x](a.constructor) [y](b.__proto__)");
+    expect(html).toContain('data-file-ref="a.constructor"');
+    expect(html).toContain('data-file-ref="b.__proto__"');
+    expect(html).toContain('data-icon="file"');
+  });
+
+  it("含空格（%20）的 file:// 地址渲染成文件引用", () => {
+    const html = renderMarkdown("[报告](file:///home/me/My%20Project/report.md)");
+    expect(html).toContain('data-file-ref="/home/me/My Project/report.md"');
+    expect(html).not.toContain("<a");
+  });
+
+  it("识别不了的 file: 地址不生成链接", () => {
+    const html = renderMarkdown("[根](file:///) [空](file://)");
+    expect(html).not.toContain("<a");
+    expect(html).not.toContain("data-file-ref");
+  });
+
+  it("不带协议的文件名不会被自动识别成网址", () => {
+    const html = renderMarkdown("改 README.md、main.rs 与 app.py，见 www.example.com");
+    expect(html).not.toContain('href="http://README.md"');
+    expect(html).not.toContain("main.rs</a>");
+    expect(html).not.toContain("app.py</a>");
+  });
+
   it("文件引用里的内容会转义", () => {
     const html = renderMarkdown('[<img src=x onerror="1">](src/a&b.ts)');
     expect(html).not.toContain("<img");

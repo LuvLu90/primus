@@ -17,8 +17,8 @@ export interface FileRef {
   isDir: boolean;
 }
 
-/** 有扩展名时按扩展名选文件图标 */
-const ICON_BY_EXT: Record<string, IconName> = {};
+/** 有扩展名时按扩展名选文件图标（Map 查表：constructor、__proto__ 这类扩展名不会命中原型属性） */
+const ICON_BY_EXT = new Map<string, IconName>();
 const groups: [IconName, string][] = [
   [
     "file-code",
@@ -38,7 +38,7 @@ const groups: [IconName, string][] = [
   // 可执行文件、库与数据文件：认作文件，用通用图标
   ["file", "exe dll so dylib lib bin dat db sqlite wasm pdb"],
 ];
-for (const [icon, list] of groups) for (const ext of list.split(" ")) ICON_BY_EXT[ext] = icon;
+for (const [icon, list] of groups) for (const ext of list.split(" ")) ICON_BY_EXT.set(ext, icon);
 
 /** 不带扩展名但一看就是文件的名字 */
 const KNOWN_BARE = new Set([
@@ -62,7 +62,7 @@ export function fileRefIcon(ref: Pick<FileRef, "name" | "isDir">): IconName {
   const ext =
     dot > 0 ? lower.slice(dot + 1) : lower === "dockerfile" || lower === "makefile" ? lower : "";
   if (ext === "makefile") return "file-code";
-  return ICON_BY_EXT[ext] ?? "file";
+  return ICON_BY_EXT.get(ext) ?? "file";
 }
 
 /** 名称是否带一个合理的扩展名（字母开头，1–10 位字母数字） */
@@ -123,11 +123,14 @@ function build(path: string, pos: Position): FileRef | null {
   return { path, name, isDir, ...pos };
 }
 
-/** 控制字符、Windows 不允许的字符不行；空格只允许出现在 Windows 绝对路径里（C:\\Program Files\\…） */
-function plausibleChars(p: string): boolean {
+/**
+ * 控制字符、Windows 不允许的字符不行；空格只允许出现在 Windows 绝对路径（C:\\Program Files\\…）
+ * 与 file:// 地址（`allowSpace`，已解码的 `My%20Project`）里
+ */
+function plausibleChars(p: string, allowSpace = false): boolean {
   // biome-ignore lint/suspicious/noControlCharactersInRegex: 排除控制字符
   if (/[\u0000-\u001f<>"|*]/.test(p)) return false;
-  if (/\s/.test(p) && !WIN_ABS.test(p) && !/^file:/i.test(p)) return false;
+  if (/\s/.test(p) && !allowSpace && !WIN_ABS.test(p) && !/^file:/i.test(p)) return false;
   return true;
 }
 
@@ -143,7 +146,8 @@ const isAnchored = (p: string) =>
 export function fileRefFromHref(href: string): FileRef | null {
   let raw = href.trim();
   if (!raw || raw.startsWith("#") || raw.startsWith("//")) return null;
-  if (/^file:/i.test(raw)) {
+  const isFileUri = /^file:/i.test(raw);
+  if (isFileUri) {
     raw = safeDecode(raw.replace(/^file:(?:\/\/(?:localhost)?)?/i, ""));
     // file:///C:/x → C:/x
     if (/^\/[A-Za-z]:[\\/]/.test(raw)) raw = raw.slice(1);
@@ -155,7 +159,7 @@ export function fileRefFromHref(href: string): FileRef | null {
     if (/^www\./i.test(raw)) return null;
     raw = safeDecode(raw);
   }
-  if (!plausibleChars(raw)) return null;
+  if (!plausibleChars(raw, isFileUri)) return null;
   let pos: Position = {};
   const hashAt = raw.indexOf("#");
   if (hashAt >= 0) {
@@ -210,7 +214,7 @@ export function fileRefFromCode(code: string): FileRef | null {
     return isAnchored(raw) && segments.length >= 2 ? ref : null;
   }
   if (KNOWN_BARE.has(ref.name.toLowerCase())) return ref;
-  if (!ext || ext === "log" || !(ext in ICON_BY_EXT)) return null;
+  if (!ext || ext === "log" || !ICON_BY_EXT.has(ext)) return null;
   return ref;
 }
 
