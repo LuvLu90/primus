@@ -14,20 +14,15 @@ import {
 import { getPlatform } from "@/lib/platform";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
+import { COPIED_MS } from "./copy-button";
+import { linksPlugin } from "./markdown-links";
 
 // 不渲染原始 HTML（回复内容不可信，html: false 时所有 HTML 标签按文本转义）；链接自动识别
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true, typographer: false });
 // 不加载远程图片（技术方案：Markdown 禁用原始 HTML、不加载远程图片）：图片语法按普通文本显示
 md.disable("image");
-// 链接不在应用窗口内跳转：点击时由 MarkdownText 拦截，确认后交给系统浏览器（open_external）
-const defaultLinkOpen =
-  md.renderer.rules.link_open ??
-  ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
-md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
-  tokens[idx]?.attrSet("target", "_blank");
-  tokens[idx]?.attrSet("rel", "noreferrer noopener");
-  return defaultLinkOpen(tokens, idx, options, env, self);
-};
+// 文件引用胶囊、外部链接图标（见 markdown-links.ts）
+linksPlugin(md);
 
 export function renderMarkdown(text: string): string {
   return md.render(text);
@@ -105,6 +100,28 @@ export function useSmoothText(text: string, animate: boolean): string {
   return text.slice(0, Math.min(shown, text.length));
 }
 
+/**
+ * 点击文件引用：平台还没有“打开 / 在文件夹中显示”的接口，先复制路径（带行号）。
+ * 成功后图标换成对勾、无障碍名称换成“已复制路径”约 1.5 秒；剪贴板不可用时不打扰用户。
+ */
+function copyFileRef(el: HTMLElement) {
+  const text = el.dataset.fileRef ?? "";
+  if (!text) return;
+  void navigator.clipboard?.writeText(text).then(
+    () => {
+      const label = el.dataset.label ?? el.getAttribute("aria-label") ?? "";
+      el.dataset.label = label;
+      el.dataset.copied = "";
+      el.setAttribute("aria-label", strings.chat.fileRef.copied);
+      setTimeout(() => {
+        delete el.dataset.copied;
+        el.setAttribute("aria-label", label);
+      }, COPIED_MS);
+    },
+    () => {},
+  );
+}
+
 /** Markdown 正文；`streaming` 时平滑揭示新内容 */
 export const MarkdownText = memo(function MarkdownText({
   text,
@@ -129,6 +146,12 @@ export const MarkdownText = memo(function MarkdownText({
 
   // 回复内容不可信：只处理 http/https 链接，打开前先确认（技术方案：点击外部链接前先确认）
   const onClick = (e: MouseEvent<HTMLDivElement>) => {
+    const fileRef = (e.target as HTMLElement).closest?.<HTMLElement>("[data-file-ref]");
+    if (fileRef) {
+      e.preventDefault();
+      copyFileRef(fileRef);
+      return;
+    }
     const anchor = (e.target as HTMLElement).closest?.("a");
     if (!anchor) return;
     e.preventDefault();
@@ -151,7 +174,7 @@ export const MarkdownText = memo(function MarkdownText({
 
   return (
     <>
-      {/* biome-ignore lint/a11y/useKeyWithClickEvents lint/a11y/noStaticElementInteractions: 只拦截内部链接的点击，链接本身可用键盘聚焦并以 Enter 触发 click */}
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents lint/a11y/noStaticElementInteractions: 只拦截内部链接与文件引用按钮的点击，它们本身可用键盘聚焦并以 Enter 触发 click */}
       <div
         className={cn("md", className)}
         onClick={onClick}

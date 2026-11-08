@@ -81,6 +81,22 @@ const TYPOGRAPHY_ANSWER = [
   "> 注：咨询类工单不计入客诉。",
 ].join("\n");
 
+/** 消息里带 `#引用` 时，最终回答换成文件引用与网页链接混排的示例，用于检查两者的区分 */
+export const REFERENCES_TAG = "#引用";
+const REFERENCES_ANSWER = [
+  "## 改动位置",
+  "",
+  "发送逻辑在 [chat-panel.tsx](apps/desktop/src/features/chat/chat-panel.tsx#L42-L58)，回复渲染在 `apps/desktop/src/features/chat/message-content.tsx:120`。",
+  "",
+  "- 样式：`apps/desktop/src/app/globals.css`；文案：[strings.ts](apps/desktop/src/lib/strings.ts:55)",
+  "- 安装包：`C:\\Program Files\\Primus\\Primus.exe`，配置目录 `apps/desktop/src-tauri/`",
+  "- 数据与报告：`complaints_2026.csv`、`docs/用户手册.pdf`、`assets/icon.png`、[发布说明](docs/release-notes.md)",
+  "",
+  "参考资料：[Markdown 规范](https://spec.commonmark.org/0.31.2/) 与 https://github.com/markdown-it/markdown-it 。",
+  "",
+  "普通代码不会被当成文件：`console.log`、`pnpm install`、`rows.filter`。",
+].join("\n");
+
 /** 为一次 prompt 生成完整事件序列 */
 export function promptScenario(prompt: string, now: number): ScenarioResult {
   const records: CoreRecord[] = [];
@@ -92,7 +108,9 @@ export function promptScenario(prompt: string, now: number): ScenarioResult {
   const toolOutput = "# 示例工作区\n\n这是 mock 平台返回的假文件内容。";
   const answer = prompt.includes(TYPOGRAPHY_TAG)
     ? TYPOGRAPHY_ANSWER
-    : `这是来自 mock 平台的模拟回答（浏览器预览模式，没有连接真实内核）。\n\n你刚才说：「${prompt}」\n\n工作区里有一个 README.md，内容是示例文本。`;
+    : prompt.includes(REFERENCES_TAG)
+      ? REFERENCES_ANSWER
+      : `这是来自 mock 平台的模拟回答（浏览器预览模式，没有连接真实内核）。\n\n你刚才说：「${prompt}」\n\n工作区里有一个 README.md，内容是示例文本。`;
 
   const user: AgentMessage = { role: "user", content: prompt, timestamp: now };
   messages.push(user);

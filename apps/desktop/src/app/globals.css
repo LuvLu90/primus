@@ -592,9 +592,93 @@ html.window-effects.glass-clear body {
 .md li > ol {
   margin: 0.2em 0;
 }
+/* 链接：普通文字链接，细下划线从文字色混出，悬停时加深；外部链接末尾一个弱化的外链小图标 */
 .md a {
   text-decoration: underline;
-  text-underline-offset: 2px;
+  text-decoration-thickness: 1px;
+  text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
+  text-underline-offset: 3px;
+  transition: text-decoration-color 0.15s ease;
+}
+.md a:hover {
+  text-decoration-color: currentColor;
+}
+.md a:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 45%, transparent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+.md-link-icon {
+  display: inline-block;
+  width: 0.78em;
+  height: 0.78em;
+  margin-left: 0.18em;
+  vertical-align: -0.04em;
+  color: var(--color-muted);
+}
+/* 文件引用：小胶囊，类型图标 + 文件名 + 行号（等宽数字、弱化）。
+   用界面无衬线字体，与衬线正文和等宽行内代码都区分开；尺寸全按 em 跟随正文，思考内容里同比缩小。
+   底色与描边从文字色混出，深浅主题与玻璃背景下都成立；长文件名省略号截断，完整路径在提示里 */
+.md-file {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+  max-width: 100%;
+  margin: 0 0.1em;
+  padding: 0.04em 0.5em 0.04em 0.38em;
+  vertical-align: -0.2em;
+  border-radius: 0.45em;
+  font-family: var(--font-sans);
+  font-size: 0.875em;
+  font-weight: 450;
+  line-height: 1.5;
+  color: inherit;
+  background: color-mix(in srgb, currentColor 5%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 10%, transparent);
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+.md-file:hover {
+  background: color-mix(in srgb, currentColor 9%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 16%, transparent);
+}
+.md-file:focus-visible {
+  outline: none;
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, currentColor 16%, transparent),
+    0 0 0 2px color-mix(in srgb, var(--color-accent) 45%, transparent);
+}
+.md-file-icon,
+.md-file-done {
+  flex-shrink: 0;
+  width: 1.15em;
+  height: 1.15em;
+  color: var(--color-muted);
+}
+.md-file-done {
+  display: none;
+  color: var(--color-success);
+}
+.md-file[data-copied] .md-file-icon {
+  display: none;
+}
+.md-file[data-copied] .md-file-done {
+  display: block;
+}
+.md-file-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.md-file-line {
+  flex-shrink: 0;
+  margin-left: -0.2em;
+  color: var(--color-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 /* 行内代码（code span）：浅底色小胶囊，不加描边、不加粗。
    等宽字体的字面比正文字体宽，0.875em 时与周围文字视觉等大（14px 正文里约 12.25px）；

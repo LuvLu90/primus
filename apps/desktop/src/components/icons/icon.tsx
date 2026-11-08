@@ -51,21 +51,32 @@ export function strokeExtra(size: IconSize): number {
   return extra > 0.01 ? Math.round(extra * 100) / 100 : 0;
 }
 
+/** 按 strokeExtra 调整一个元素的属性（React 属性名） */
+export function adjustStroke(
+  tag: string,
+  attrs: Readonly<Record<string, string>>,
+  extra: number,
+): Readonly<Record<string, string>> {
+  if (extra <= 0 || tag === "g") return attrs;
+  if (attrs.strokeWidth) return { ...attrs, strokeWidth: String(SOURCE_STROKE + extra) };
+  if (attrs.fill === "currentColor")
+    return {
+      ...attrs,
+      stroke: "currentColor",
+      strokeWidth: String(extra),
+      strokeLinejoin: "round",
+    };
+  return attrs;
+}
+
 function render(nodes: readonly IconNode[], extra: number): ReactNode[] {
-  return nodes.map(([tag, attrs, children], i) => {
-    let props: Record<string, string> = attrs;
-    if (extra > 0 && tag !== "g") {
-      if (attrs.strokeWidth) props = { ...attrs, strokeWidth: String(SOURCE_STROKE + extra) };
-      else if (attrs.fill === "currentColor")
-        props = {
-          ...attrs,
-          stroke: "currentColor",
-          strokeWidth: String(extra),
-          strokeLinejoin: "round",
-        };
-    }
-    return createElement(tag, { key: i, ...props }, children ? render(children, extra) : undefined);
-  });
+  return nodes.map(([tag, attrs, children], i) =>
+    createElement(
+      tag,
+      { key: i, ...adjustStroke(tag, attrs, extra) },
+      children ? render(children, extra) : undefined,
+    ),
+  );
 }
 
 /**

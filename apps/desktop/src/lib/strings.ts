@@ -57,6 +57,16 @@ export const strings = {
     linkOpen: "打开",
     linkCancel: "取消",
     linkFailed: "无法打开链接",
+    /** 回复里的外部链接（附在链接文字后的屏幕阅读器提示） */
+    linkExternal: "（外部链接）",
+    /** 回复里的文件引用：点击复制路径（平台还没有打开文件的接口） */
+    fileRef: {
+      label: "文件 {name}，点击复制路径",
+      labelLine: "文件 {name}，第 {line} 行，点击复制路径",
+      labelRange: "文件 {name}，第 {line}–{end} 行，点击复制路径",
+      folder: "文件夹 {name}，点击复制路径",
+      copied: "已复制路径",
+    },
     inputLabel: "输入消息",
     inputPlaceholder: "问乾元任何事，Enter 发送，Shift+Enter 换行",
     send: "发送",

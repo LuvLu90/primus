@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { Icon, strokeExtra } from "./icon";
+import { iconHtml } from "./icon-html";
 import { ICON_NODES } from "./icons.generated";
 
 describe("Icon", () => {
@@ -54,5 +55,26 @@ describe("Icon", () => {
     const path = container.querySelector("path");
     expect(path?.getAttribute("stroke")).toBe("currentColor");
     expect(path?.getAttribute("stroke-width")).toBe(String(strokeExtra("xs")));
+  });
+});
+
+describe("iconHtml", () => {
+  it("输出装饰性 SVG 字符串，属性名转成 SVG 写法，颜色只用 currentColor", () => {
+    const html = iconHtml("external-link", "md-link-icon", "xs");
+    expect(html.startsWith("<svg ")).toBe(true);
+    expect(html).toContain('aria-hidden="true"');
+    expect(html).toContain('class="md-link-icon"');
+    expect(html).toContain('data-icon="external-link"');
+    expect(html).not.toMatch(/strokeWidth|fillRule|clipRule/);
+    expect(html).not.toMatch(/#[0-9a-f]{3,6}"/i);
+  });
+
+  it("线宽与 <Icon> 同一规则", () => {
+    const { container } = render(<Icon name="file-code" size="sm" />);
+    const host = document.createElement("div");
+    host.innerHTML = iconHtml("file-code", "x", "sm");
+    const a = container.querySelector("path");
+    const b = host.querySelector("path");
+    expect(b?.getAttribute("stroke-width")).toBe(a?.getAttribute("stroke-width"));
   });
 });

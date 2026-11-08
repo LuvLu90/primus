@@ -15,7 +15,7 @@ describe("回复中的链接", () => {
     const openExternal = vi.fn(async () => {});
     setPlatformForTesting({ ...createMockPlatform(), openExternal });
     render(<MarkdownText text="看 [文档](https://example.com/doc)" streaming={false} />);
-    fireEvent.click(screen.getByRole("link", { name: "文档" }));
+    fireEvent.click(screen.getByRole("link", { name: `文档${t.linkExternal}` }));
     expect(openExternal).not.toHaveBeenCalled();
     fireEvent.click(await screen.findByRole("button", { name: t.linkOpen }));
     await waitFor(() => expect(openExternal).toHaveBeenCalledWith("https://example.com/doc"));
@@ -45,5 +45,93 @@ describe("回复中的链接", () => {
 
   it("不渲染图片，避免加载远程资源", () => {
     expect(renderMarkdown("![x](https://example.com/a.png)")).not.toContain("<img");
+  });
+});
+
+describe("回复中的文件引用与网页链接", () => {
+  afterEach(() => {
+    setPlatformForTesting(undefined);
+    vi.useRealTimers();
+  });
+
+  it("文件链接渲染成带类型图标、文件名与行号的按钮，完整路径在提示里", () => {
+    render(
+      <MarkdownText
+        text="见 [chat-panel.tsx](apps/desktop/src/chat-panel.tsx#L42-L58)"
+        streaming={false}
+      />,
+    );
+    const ref = screen.getByRole("button", {
+      name: t.fileRef.labelRange
+        .replace("{name}", "chat-panel.tsx")
+        .replace("{line}", "42")
+        .replace("{end}", "58"),
+    });
+    expect(ref.textContent).toBe("chat-panel.tsx:42–58");
+    expect(ref.getAttribute("title")).toBe("apps/desktop/src/chat-panel.tsx:42–58");
+    expect(ref.querySelector('[data-icon="file-code"]')).not.toBeNull();
+    expect(screen.queryByRole("link")).toBeNull();
+  });
+
+  it("链接文字与路径不同时显示链接文字", () => {
+    render(<MarkdownText text="[发送逻辑](src/chat-panel.tsx:42)" streaming={false} />);
+    const ref = screen.getByRole("button", {
+      name: t.fileRef.labelLine.replace("{name}", "发送逻辑").replace("{line}", "42"),
+    });
+    expect(ref.textContent).toBe("发送逻辑:42");
+  });
+
+  it("行内代码里的路径渲染成文件引用，普通代码保持代码样式", () => {
+    const html = renderMarkdown("改 `src/lib/strings.ts`，再跑 `pnpm test`，`console.log` 不算");
+    expect(html).toContain('data-file-ref="src/lib/strings.ts"');
+    expect(html).toContain("<code>pnpm test</code>");
+    expect(html).toContain("<code>console.log</code>");
+  });
+
+  it("Windows 路径与 file:// 链接都识别", () => {
+    const html = renderMarkdown(
+      "[a](C:\\Users\\me\\a.ts) [b](file:///C:/Users/me/b.pdf) `D:\\data\\c.xlsx:3`",
+    );
+    expect(html).toContain('data-file-ref="C:\\Users\\me\\a.ts"');
+    expect(html).toContain('data-file-ref="C:/Users/me/b.pdf"');
+    expect(html).toContain('data-icon="file-pdf"');
+    expect(html).toContain('data-file-ref="D:\\data\\c.xlsx:3"');
+    expect(html).toContain('data-icon="file-sheet"');
+  });
+
+  it("网页链接保持文字链接，末尾带外链图标与屏幕阅读器提示", () => {
+    render(<MarkdownText text="看 [文档](https://example.com/a.ts)" streaming={false} />);
+    const link = screen.getByRole("link");
+    expect(link.getAttribute("href")).toBe("https://example.com/a.ts");
+    expect(link.querySelector('[data-icon="external-link"]')).not.toBeNull();
+    expect(link.textContent).toBe(`文档${t.linkExternal}`);
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("文件引用里的内容会转义", () => {
+    const html = renderMarkdown('[<img src=x onerror="1">](src/a&b.ts)');
+    expect(html).not.toContain("<img");
+    expect(html).toContain("&lt;img");
+  });
+
+  it("点击文件引用复制路径（带行号），短暂显示已复制，不弹出链接确认", async () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const openExternal = vi.fn(async () => {});
+    setPlatformForTesting({ ...createMockPlatform(), openExternal });
+    render(<MarkdownText text="`src/a.ts:42`" streaming={false} />);
+    const ref = screen.getByRole("button");
+    ref.focus();
+    expect(document.activeElement).toBe(ref);
+    fireEvent.click(ref);
+    expect(writeText).toHaveBeenCalledWith("src/a.ts:42");
+    await waitFor(() => expect(ref.getAttribute("aria-label")).toBe(t.fileRef.copied));
+    expect(ref.hasAttribute("data-copied")).toBe(true);
+    expect(screen.queryByRole("button", { name: t.linkOpen })).toBeNull();
+    expect(openExternal).not.toHaveBeenCalled();
+    await waitFor(() => expect(ref.hasAttribute("data-copied")).toBe(false), { timeout: 2500 });
+    expect(ref.getAttribute("aria-label")).toBe(
+      t.fileRef.labelLine.replace("{name}", "a.ts").replace("{line}", "42"),
+    );
   });
 });

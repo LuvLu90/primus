@@ -2,7 +2,7 @@ import type { CoreBatch, CoreRecord } from "@primus/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { COMMANDS } from "../types";
 import { compareSemver, createMockPlatform } from "./index";
-import { chunk, promptScenario, TYPOGRAPHY_TAG } from "./scenario";
+import { chunk, promptScenario, REFERENCES_TAG, TYPOGRAPHY_TAG } from "./scenario";
 
 const types = (records: CoreRecord[]) => records.map((r) => r.type);
 
@@ -572,6 +572,14 @@ describe("假事件流脚本", () => {
     for (const piece of ["## ", "### ", "**", "`", "- ", "| ", "```"])
       expect(sample).toContain(piece);
     expect(answerOf("你好")).toContain("你刚才说");
+  });
+
+  it("#引用：最终回答换成文件引用与网页链接混排的示例", () => {
+    const { messages } = promptScenario(`看看 ${REFERENCES_TAG}`, 0);
+    const last = messages.at(-1) as { content: { type: string; text?: string }[] };
+    const sample = last.content[0]?.text ?? "";
+    for (const piece of ["#L42-L58", ".tsx:120", "C:\\Program Files", "https://", "`console.log`"])
+      expect(sample).toContain(piece);
   });
 });
 
