@@ -22,6 +22,7 @@ import { GlassSurface } from "@/components/ui/glass-surface";
 import { Switch } from "@/components/ui/switch";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
+import { composerGhostClass } from "./composer-ghost";
 import {
   type BreakdownKey,
   type BreakdownRow,
@@ -110,7 +111,7 @@ export function ContextButton(props: ContextCardProps) {
           type="button"
           aria-label={`${t.context} ${shown}`}
           title={`${t.context} ${shown}`}
-          className="flex size-8 items-center justify-center rounded-full text-muted outline-none transition-colors hover:bg-hover hover:text-fg focus-visible:bg-hover data-[state=open]:bg-hover data-[state=open]:text-fg"
+          className={composerGhostClass({ icon: true })}
         >
           <svg aria-hidden width="14" height="14" viewBox="0 0 14 14" className="-rotate-90">
             <circle

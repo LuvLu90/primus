@@ -33,6 +33,7 @@ import type { ModelSummary } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 import type { CoreModelCaps } from "@/stores/session-store";
+import { composerGhostClass } from "./composer-ghost";
 import { rowClass, separatorClass } from "./composer-menus";
 
 const t = strings.chat.model;
@@ -156,7 +157,7 @@ export function ModelPicker({
           type="button"
           aria-label={`${t.label}：${model?.name ?? name}${level ? `，${t.thinkingDegree}${level}` : ""}`}
           title={model?.name ?? name}
-          className="flex h-8 max-w-64 items-center gap-1.5 rounded-full px-2.5 text-xs text-muted outline-none transition-colors hover:bg-hover hover:text-fg focus-visible:bg-hover disabled:opacity-40 data-[state=open]:bg-hover data-[state=open]:text-fg"
+          className={composerGhostClass({ className: "max-w-64" })}
         >
           <span className="truncate">{name}</span>
           {level && <span className="shrink-0">· {level}</span>}

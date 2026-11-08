@@ -1030,6 +1030,26 @@ html.window-effects.glass-clear body {
   backdrop-filter: blur(6px);
 }
 
+/*
+ * 时间线底部渐隐：滚动容器自身加遮罩，正文在悬浮输入框上沿之上 --composer-fade 的高度内淡出，
+ * 唇条与输入框后面完全透明（只露出底下的纸面），不会透出文字，也没有硬分隔线。
+ * 遮罩露出的是真实的纸面层，浅色 / 深色自动一致；只影响绘制，不拦截指针、不改变滚动位置。
+ * --composer-h（输入框整体高度）与 --composer-fade 由 chat-panel 写在 style 上
+ */
+.composer-fade {
+  --composer-fade-end: calc(100% - var(--composer-h, 128px));
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    black calc(var(--composer-fade-end) - var(--composer-fade, 20px)),
+    transparent var(--composer-fade-end)
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    black calc(var(--composer-fade-end) - var(--composer-fade, 20px)),
+    transparent var(--composer-fade-end)
+  );
+}
+
 /* 唇条：输入框上沿后面的灰色小舌，挂载时轻轻上滑淡入 */
 @keyframes lip-in {
   from {

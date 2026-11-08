@@ -4,6 +4,7 @@ import { type AgentMessage, type ImageContent, splitFileTags } from "@primus/pro
 import { useRouter } from "next/navigation";
 import {
   type ClipboardEvent,
+  type CSSProperties,
   type DragEvent,
   type FormEvent,
   Fragment,
@@ -31,6 +32,7 @@ import { AgentTurn } from "./agent-turn";
 import { ApprovalCard } from "./approval-card";
 import { AttachmentStrip } from "./attachments/attachment-strip";
 import { useAttachments } from "./attachments/use-attachments";
+import { composerGhostClass } from "./composer-ghost";
 import { ComposerLip } from "./composer-lip";
 import {
   failure,
@@ -128,8 +130,8 @@ const STICK_THRESHOLD_PX = 48;
 const INPUT_LINE_PX = 22;
 const INPUT_MIN_LINES = 2;
 const INPUT_MAX_LINES = 6;
-/** 时间线底部在悬浮输入框之上再留出的间距 */
-const COMPOSER_GAP_PX = 16;
+/** 时间线底部在悬浮输入框之上再留出的间距；也是输入框上沿渐隐带的高度（滚到底时最后一行不被淡化） */
+const COMPOSER_GAP_PX = 20;
 /** 首帧（尚未量到输入框高度）时的底部留白，约等于两行输入框的静止高度 */
 const COMPOSER_FALLBACK_PX = 128;
 
@@ -222,7 +224,6 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [composerRef, composerHeight] = useElementHeight<HTMLDivElement>();
   const reducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
-  const glass = useGlassStyle();
   const workspace = useAppStore((s) => s.workspace);
   const setWorkspace = useAppStore((s) => s.setWorkspace);
   const permissionMode = useAppStore((s) => s.permissionMode);
@@ -594,11 +595,19 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
         aria-hidden
         className="pointer-events-none absolute inset-x-0 top-0 z-10 h-12 bg-linear-to-b from-[var(--paper)] from-40% to-transparent"
       />
+      {/* 底部渐隐（.composer-fade）：时间线在输入框上沿之上淡出、输入框后面完全不显示，
+          唇条与输入框底下只露出纸面；遮罩只作用于绘制，不拦截指针、不影响滚动与“停在底部” */}
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        className="scroll-none flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pt-12 text-base"
-        style={{ paddingBottom: (composerHeight ?? COMPOSER_FALLBACK_PX) + COMPOSER_GAP_PX }}
+        className="composer-fade scroll-none flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pt-12 text-base"
+        style={
+          {
+            paddingBottom: (composerHeight ?? COMPOSER_FALLBACK_PX) + COMPOSER_GAP_PX,
+            "--composer-h": `${composerHeight ?? COMPOSER_FALLBACK_PX}px`,
+            "--composer-fade": `${COMPOSER_GAP_PX}px`,
+          } as CSSProperties
+        }
       >
         <div
           ref={timelineRef}
@@ -843,40 +852,33 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
               <div className="flex items-center gap-2.5 text-xs text-muted">
                 {/* 附件：系统文件对话框选文件，只引用本地路径；薄壳未接入对话框时隐藏 */}
                 {canPickFiles && (
-                  <GlassButton
-                    size={30}
-                    {...glass}
+                  <button
+                    type="button"
                     aria-label={t.attach}
                     title={t.attach}
                     disabled={submitting}
                     onClick={() => void pickFiles()}
-                    className={glassButtonClass}
+                    className={composerGhostClass({ icon: true })}
                   >
-                    <Icon name="plus" />
-                  </GlassButton>
+                    <Icon name="plus" size="sm" />
+                  </button>
                 )}
                 <PermissionPicker mode={permissionMode} onChange={setPermissionMode}>
-                  <GlassButton
-                    variant="capsule"
-                    size={30}
-                    {...glass}
+                  {/* 完全访问：文字与图标用警示色；其他档位是普通的弱化幽灵按钮 */}
+                  <button
+                    type="button"
                     aria-label={`${t.permissionMode}：${t.permissions[permissionMode].label}`}
-                    className={glassButtonClass}
+                    className={composerGhostClass({
+                      tone: permissionMode === "full" ? "warning" : "muted",
+                    })}
                   >
                     <Icon
                       name={permissionMeta[permissionMode].icon}
                       size="sm"
                       className={permissionMeta[permissionMode].tone}
                     />
-                    <span
-                      className={cn(
-                        "text-xs font-normal",
-                        permissionMode === "full" && permissionMeta.full.tone,
-                      )}
-                    >
-                      {t.permissions[permissionMode].short}
-                    </span>
-                  </GlassButton>
+                    <span>{t.permissions[permissionMode].short}</span>
+                  </button>
                 </PermissionPicker>
                 <span className="flex-1" />
                 <ModelPicker

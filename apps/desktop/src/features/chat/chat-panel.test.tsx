@@ -1021,8 +1021,12 @@ describe("对话区（mock 事件流）", () => {
       const scroller = screen
         .getByRole("heading", { name: t.welcomeTitle })
         .closest(".overflow-y-auto") as HTMLElement;
-      // 输入框 150px + 间距 16px
-      expect(scroller.style.paddingBottom).toBe("166px");
+      // 输入框 150px + 间距 20px
+      expect(scroller.style.paddingBottom).toBe("170px");
+      // 底部渐隐遮罩：输入框上沿之上 20px 内淡出，输入框后面不透出正文
+      expect(scroller.className).toContain("composer-fade");
+      expect(scroller.style.getPropertyValue("--composer-h")).toBe("150px");
+      expect(scroller.style.getPropertyValue("--composer-fade")).toBe("20px");
     } finally {
       spy.mockRestore();
     }
