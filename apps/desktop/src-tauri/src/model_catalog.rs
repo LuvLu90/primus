@@ -2,10 +2,12 @@
 //!
 //! - 能力表 `model_capabilities.json` 由 `scripts/generate-model-capabilities.mjs` 从 Core 锁定的模型目录
 //!   （`agent-core/nix/model-catalog.json` 的修订版）生成后提交，编译时嵌入；`--check` 核对与锁定目录一致。
-//! - 匹配顺序：规范化 ID 精确匹配（小写，去掉 `厂商/` 前缀与 `:变体`，`.` `_` 换成 `-`）→ 逐个去掉末尾的
-//!   推理强度 / 变体 / 日期后缀（`-high`、`-thinking`、`-latest`、`-20251001` 等）再查 → 按模型系列的规则推断
-//!   （claude、gpt-5 / o 系列、gpt-4.1 / 4o、gemini 2.5 以后、deepseek 推理模型、glm 4.5 以后）。都不匹配时返回 None，
-//!   由调用方用默认参数。
+//! - 匹配顺序（只用于查表，模型 ID 本身不改）：规范化 ID（小写，去掉 `~`、`厂商/` 前缀与 `:变体`，`.` `_` 换成 `-`）
+//!   精确匹配 → 逐个去掉末尾的推理强度 / 档位 / 日期后缀（`-high`、`-thinking`、`-pro`、`-mini`、`-turbo`、`-20251001`
+//!   等）再查 → 按模型系列的规则推断（claude、gpt-5 / o 系列、gpt-4.1 / 4o、gemini 2.5 以后、deepseek 推理模型、
+//!   glm 4.5 以后、kimi k2.5 以后；系列规则先于逐段去尾，避免 `kimi-k2-9` 退到旧的 `kimi-k2`）→ 逐段去掉末尾一段
+//!   再查（`grok-4-20-reasoning-x` → `grok-4-20-reasoning`；剩下的部分必须仍含数字，不会退到 `grok` 这样的系列名）。
+//!   都不匹配时返回 None，由调用方用默认参数。
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -59,7 +61,7 @@ pub(crate) fn normalize_model_id(id: &str) -> String {
     s.replace(['.', '_'], "-")
 }
 
-/// 可去掉的末尾后缀：推理强度、思考开关、别名与渠道变体。
+/// 可去掉的末尾后缀：推理强度、思考开关、档位、别名与渠道变体（只用于查表）。
 const VARIANT_SUFFIXES: &[&str] = &[
     "xhigh",
     "high",
@@ -77,6 +79,13 @@ const VARIANT_SUFFIXES: &[&str] = &[
     "exp",
     "batch",
     "fast",
+    "highspeed",
+    "pro",
+    "mini",
+    "turbo",
+    "plus",
+    "ultra",
+    "lite",
 ];
 
 /// 去掉一个末尾后缀（变体或日期 `-20251001` / `-2025-10-01` / `-0514` / `-250514`）；没有可去的返回 None。
@@ -155,13 +164,38 @@ fn family(key: &str) -> Option<Capabilities> {
     {
         return caps(200_000, 131_072, false, true);
     }
+    // Kimi：k3 起 1M 上下文；k2.5 起能看图、支持思考（k2 / k2-0905 不支持，已在能力表里）
+    if starts("kimi-k3") || starts("kimi-k4") {
+        return caps(1_048_576, 131_072, true, true);
+    }
+    if [
+        "kimi-k2-5",
+        "kimi-k2-6",
+        "kimi-k2-7",
+        "kimi-k2-8",
+        "kimi-k2-9",
+    ]
+    .iter()
+    .any(|p| starts(p))
+    {
+        return caps(262_144, 98_304, true, true);
+    }
     None
+}
+
+/// 去掉末尾一段（`a-b-c` → `a-b`）；剩下的部分不含数字（只剩系列名）时返回 None。
+fn strip_segment(key: &str) -> Option<String> {
+    let (rest, _) = key.rsplit_once('-')?;
+    rest.bytes()
+        .any(|b| b.is_ascii_digit())
+        .then(|| rest.to_owned())
 }
 
 /// 查一个模型 ID 的已知能力；不认识时返回 None。
 pub(crate) fn lookup(id: &str) -> Option<Capabilities> {
     let table = table();
     let mut key = normalize_model_id(id);
+    // 1. 精确匹配，逐个去掉已知后缀再查
     loop {
         if let Some(caps) = table.get(&key) {
             return Some(*caps);
@@ -171,7 +205,25 @@ pub(crate) fn lookup(id: &str) -> Option<Capabilities> {
             None => break,
         }
     }
-    family(&key)
+    // 2. 系列规则（比逐段去尾更可靠：kimi-k2-9 不应退到不能看图的 kimi-k2）
+    if let Some(caps) = family(&key) {
+        return Some(caps);
+    }
+    // 3. 逐段去尾直到命中（每次去尾后仍先去已知后缀）
+    while let Some(shorter) = strip_segment(&key) {
+        key = shorter;
+        let mut candidate = key.clone();
+        loop {
+            if let Some(caps) = table.get(&candidate) {
+                return Some(*caps);
+            }
+            match strip_suffix(&candidate) {
+                Some(shorter) => candidate = shorter,
+                None => break,
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -221,7 +273,13 @@ mod tests {
         assert_eq!(strip_suffix("m-2025-10-01").as_deref(), Some("m"));
         assert_eq!(strip_suffix("gpt-4o-0513").as_deref(), Some("gpt-4o"));
         assert_eq!(strip_suffix("gpt-5-5"), None);
+        assert_eq!(strip_suffix("kimi-k3-1-pro").as_deref(), Some("kimi-k3-1"));
+        assert_eq!(
+            strip_suffix("kimi-k2-6-turbo").as_deref(),
+            Some("kimi-k2-6")
+        );
         assert_eq!(strip_suffix("high"), None);
+        assert_eq!(strip_suffix("pro"), None);
         assert_eq!(strip_suffix("qwen3-coder"), None);
     }
 
@@ -256,8 +314,54 @@ mod tests {
         );
         assert_eq!(lookup("o4-mini-high").map(|c| c.reasoning), Some(true));
         assert_eq!(lookup("omni-1"), None);
-        // 不认识的模型
+        // 不认识的模型（逐段去尾不会退到不含数字的系列名）
+        assert_eq!(strip_segment("model-v2-beta").as_deref(), Some("model-v2"));
+        assert_eq!(strip_segment("my-private-model-v2"), None);
         assert_eq!(lookup("my-private-model-v2"), None);
         assert_eq!(lookup("auto"), None);
+    }
+
+    #[test]
+    fn kimi_versions_and_tiers_fall_back_to_their_base_model() {
+        let k3 = table()["kimi-k3"];
+        assert!(k3.image && k3.reasoning && k3.context_window == 1_048_576);
+        // 能力表里没有的 k3.1-pro：去掉 -pro 后按 kimi 系列规则（1M 上下文、能看图、支持思考）
+        let k31 = Capabilities {
+            context_window: 1_048_576,
+            max_tokens: 131_072,
+            image: true,
+            reasoning: true,
+        };
+        assert_eq!(lookup("kimi-k3.1-pro"), Some(k31));
+        assert_eq!(lookup("Kimi-K3.1"), Some(k31));
+        assert_eq!(lookup("openrouter/moonshotai/kimi-k3.1-pro"), Some(k31));
+        // 带厂商前缀的 ID
+        assert_eq!(lookup("moonshotai/kimi-k3"), Some(k3));
+        // 档位后缀：去掉 -turbo 命中 kimi-k2-6
+        let k26 = table()["kimi-k2-6"];
+        assert_eq!(lookup("kimi-k2.6-turbo"), Some(k26));
+        assert!(k26.image && k26.reasoning);
+        // 编程套餐
+        assert!(lookup("kimi-for-coding").is_some_and(|c| c.image && c.reasoning));
+        // 已收录的旧版本保持原样：k2 不能看图、不支持思考
+        assert_eq!(lookup("kimi-k2"), Some(table()["kimi-k2"]));
+        assert!(!table()["kimi-k2"].image);
+        // 系列规则：表里没有的新版本
+        assert!(lookup("kimi-k4-preview").is_some_and(|c| c.image && c.reasoning));
+        assert!(lookup("kimi-k2.9").is_some_and(|c| c.image && c.reasoning));
+    }
+
+    #[test]
+    fn strips_trailing_segments_until_a_known_model() {
+        let base = table()["grok-4-20-reasoning"];
+        assert_eq!(lookup("grok-4.20-reasoning-custom"), Some(base));
+        assert_eq!(lookup("x-ai/grok-4.20-reasoning-custom-v2"), Some(base));
+        // -beta 不在后缀表里：去掉 -custom 一段后命中带 -beta 的条目
+        assert_eq!(
+            lookup("grok-4-20-reasoning-beta-custom"),
+            Some(table()["grok-4-20-reasoning-beta"])
+        );
+        // 不会退到不含数字的系列名
+        assert_eq!(lookup("grok-next-preview"), None);
     }
 }

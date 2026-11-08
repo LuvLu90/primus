@@ -5,7 +5,7 @@
 //! - 密钥按渠道存进 DPAPI 保险库（`provider:<id>`），文件、日志、命令行与返回给 WebView 的数据里都没有明文，
 //!   界面只拿到 `hasKey` 与 `keyHint`（末 4 位）。
 //! - 模型列表获取（`provider_fetch_models`）：openai-responses 为 `GET {baseUrl}/models`（Bearer），
-//!   anthropic-messages 为 `GET {baseUrl}/v1/models`（`x-api-key` + `anthropic-version`）。取 `data[].id` 与名称，
+//!   anthropic-messages 为 `GET {baseUrl}/v1/models`（`x-api-key` + `anthropic-version`）。取 `data[].id`（可含 `/`）与名称，
 //!   接口给出能力信息时一并识别（上下文长度、最大输出、图片输入、思考；字段见 [`parse_models_response`]），
 //!   没给的用默认参数（文本输入、不支持思考、128000 / 32000）。
 
@@ -120,6 +120,14 @@ impl ProviderModel {
     pub(crate) fn image(&self) -> bool {
         self.input.contains(&Input::Image)
     }
+
+    /// 能力仍是默认参数（不思考、仅文本、128000 / 32000）：多半是当时没识别出来，而不是用户改的。
+    pub(crate) fn has_default_capabilities(&self) -> bool {
+        !self.reasoning
+            && self.input == [Input::Text]
+            && self.context_window == DEFAULT_CONTEXT_WINDOW
+            && self.max_tokens == DEFAULT_MAX_TOKENS
+    }
 }
 
 /// 一个渠道（`providers.json` 中的一项）。
@@ -165,9 +173,13 @@ pub(crate) fn secret_name(id: &str) -> String {
     format!("{SECRET_PREFIX}{id}")
 }
 
-/// 模型 ID：非空、不含 `/`（`provider/modelId` 的分隔符）与控制字符。
+/// 模型 ID：非空、不含控制字符；可以含 `/`（聚合网关的 `厂商/模型`，如 `moonshotai/kimi-k3`），但不能以 `/` 开头或结尾、
+/// 不能有空段。`provider/modelId` 只按第一个 `/` 拆分（Core 的 `set_model` 分开传两项，`settings.json` 分开存
+/// `defaultProvider` / `defaultModel`，模型引用按第一个 `/` 取渠道），渠道 ID 本身不含 `/`，所以不会歧义。
 pub(crate) fn is_valid_model_id(id: &str) -> bool {
-    (1..=200).contains(&id.len()) && !id.contains('/') && !id.chars().any(char::is_control)
+    (1..=200).contains(&id.len())
+        && !id.chars().any(char::is_control)
+        && id.split('/').all(|segment| !segment.is_empty())
 }
 
 /// `baseUrl` 必须是 HTTP(S) 地址（内置渠道为内网 HTTP）。
@@ -326,19 +338,20 @@ pub(crate) fn write_atomic(file: &Path, text: &str) -> io::Result<()> {
 }
 
 /// 用获取到的模型列表生成新的模型清单：已保存的模型保留用户改过的参数，新模型用接口给出的能力（没给的用默认参数）；
-/// 顺序按获取结果。
+/// 顺序按获取结果。已保存但能力仍是默认参数的模型（当时没识别出来）按现在的规则重新识别，名称保留。
 pub(crate) fn merge_models(
     saved: &[ProviderModel],
     fetched: &[FetchedModel],
 ) -> Vec<ProviderModel> {
     fetched
         .iter()
-        .map(|f| {
-            saved
-                .iter()
-                .find(|m| m.id == f.id)
-                .cloned()
-                .unwrap_or_else(|| ProviderModel::from_fetched(f))
+        .map(|f| match saved.iter().find(|m| m.id == f.id) {
+            Some(m) if !m.has_default_capabilities() => m.clone(),
+            Some(m) => ProviderModel {
+                name: m.name.clone(),
+                ..ProviderModel::from_fetched(f)
+            },
+            None => ProviderModel::from_fetched(f),
         })
         .collect()
 }
@@ -668,7 +681,13 @@ mod tests {
             ("ftp", Box::new(|p| p.base_url = "ftp://x".into())),
             ("空主机", Box::new(|p| p.base_url = "https://".into())),
             ("空白", Box::new(|p| p.base_url = "https://a b".into())),
-            ("模型 id", Box::new(|p| p.models[0].id = "a/b".into())),
+            ("模型 id", Box::new(|p| p.models[0].id = "a//b".into())),
+            ("模型 id 开头 /", Box::new(|p| p.models[0].id = "/b".into())),
+            ("模型 id 结尾 /", Box::new(|p| p.models[0].id = "a/".into())),
+            (
+                "模型 id 控制字符",
+                Box::new(|p| p.models[0].id = "a\nb".into()),
+            ),
             ("模型重复", Box::new(|p| p.models.push(p.models[0].clone()))),
             (
                 "无文本",
@@ -786,6 +805,18 @@ mod tests {
         // 已保存的模型：保留用户的值（含 reasoning=false）
         let kept = merge_models(std::slice::from_ref(&saved), &[detected]);
         assert_eq!(kept[0], saved);
+        // 已保存但仍是默认参数（当时没识别出来）：按现在的规则重新识别，名称保留
+        let mut unrecognized = ProviderModel::with_defaults("kimi-k3.1-pro", None);
+        unrecognized.name = "我的 Kimi".into();
+        assert!(unrecognized.has_default_capabilities());
+        let fetched_kimi = FetchedModel {
+            id: "kimi-k3.1-pro".into(),
+            ..FetchedModel::default()
+        };
+        let again = merge_models(std::slice::from_ref(&unrecognized), &[fetched_kimi]);
+        assert_eq!(again[0].name, "我的 Kimi");
+        assert!(again[0].reasoning && again[0].image());
+        assert_eq!(again[0].context_window, 1_048_576);
         // 最大输出大于上下文长度时收窄
         let wide = ProviderModel::from_fetched(&FetchedModel {
             id: "w".into(),
@@ -1017,7 +1048,7 @@ mod tests {
         let body = br#"{"object":"list","data":[
             {"id":"gpt-x","object":"model"},
             {"id":"claude-y","display_name":"Claude Y","type":"model"},
-            {"id":"gpt-x"},{"id":"org/model"},{"id":""},{"object":"model"}
+            {"id":"gpt-x"},{"id":"org/model"},{"id":"/bad"},{"id":""},{"object":"model"}
         ],"has_more":false}"#;
         let models = parse_models_response(body).unwrap();
         assert_eq!(
@@ -1031,6 +1062,11 @@ mod tests {
                 FetchedModel {
                     id: "claude-y".into(),
                     display_name: Some("Claude Y".into()),
+                    ..FetchedModel::default()
+                },
+                FetchedModel {
+                    id: "org/model".into(),
+                    display_name: None,
                     ..FetchedModel::default()
                 },
             ]

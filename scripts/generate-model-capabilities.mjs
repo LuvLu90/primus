@@ -21,7 +21,7 @@ export const OUTPUT = join(root, "apps/desktop/src-tauri/src/model_capabilities.
 
 /**
  * 收录的供应商，按优先级：同一个规范化 ID 以先出现的为准。
- * 先是各家官方渠道，再是聚合网关（ID 带 `厂商/` 前缀，规范化时去掉）。
+ * 先是各家官方渠道（含 Kimi 编程套餐 kimi-coding 的 kimi-for-coding 等），再是聚合网关（ID 带 `厂商/` 前缀，规范化时去掉）。
  * 不收 Bedrock / Azure 等改写了模型 ID 的云渠道。
  */
 export const PROVIDERS = [
@@ -30,6 +30,7 @@ export const PROVIDERS = [
   "google",
   "deepseek",
   "moonshotai",
+  "kimi-coding",
   "zai",
   "xai",
   "mistral",
@@ -50,6 +51,9 @@ export function normalizeModelId(id) {
   return s.replace(/[._]/g, "-");
 }
 
+/** ID 不含版本号也收录的供应商：它的 ID 是固定的产品名（kimi-for-coding），不是路由别名 */
+export const NAMED_ID_PROVIDERS = new Set(["kimi-coding"]);
+
 const positive = (n) => (Number.isInteger(n) && n > 0 ? n : null);
 
 /** 由模型目录生成能力表：规范化 ID → [上下文长度, 最大输出, 图片 0/1, 思考 0/1] */
@@ -61,8 +65,9 @@ export function buildTable(catalog) {
       const key = normalizeModelId(m.id);
       const ctx = positive(m.contextWindow);
       const max = positive(m.maxTokens);
-      // 不含数字的是路由别名（如 auto），容易与网关里的同名模型混淆，不收
-      if (!/\d/.test(key) || key in models || !ctx || !max) continue;
+      // 不含数字的是路由别名（如 auto），容易与网关里的同名模型混淆，不收（NAMED_ID_PROVIDERS 的产品名除外）
+      if (!(/\d/.test(key) || NAMED_ID_PROVIDERS.has(provider)) || key in models || !ctx || !max)
+        continue;
       const image = Array.isArray(m.input) && m.input.includes("image") ? 1 : 0;
       models[key] = [ctx, Math.min(max, ctx), image, m.reasoning === true ? 1 : 0];
     }

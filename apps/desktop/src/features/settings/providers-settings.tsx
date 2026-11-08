@@ -286,16 +286,28 @@ function toModel(d: DraftModel): ProviderModel {
   };
 }
 
+/** 能力仍是默认参数（不思考、仅文本、128000 / 32000，与薄壳一致）：多半是当时没识别出来，而不是用户改的 */
+function hasDefaultCapabilities(d: DraftModel): boolean {
+  return (
+    !d.reasoning &&
+    !d.image &&
+    d.contextWindow.trim() === "128000" &&
+    d.maxTokens.trim() === "32000"
+  );
+}
+
 /**
- * 合并获取结果：对话框里已有的模型保留勾选与改过的参数；新模型在还没有任何模型时默认全选，否则不选；
- * 已勾选但接口没列出的模型保留（标“接口未列出”），未勾选的丢弃
+ * 合并获取结果：对话框里已有的模型保留勾选与改过的参数（能力仍是默认参数的按这次获取的结果重新识别，名称与勾选保留）；
+ * 新模型在还没有任何模型时默认全选，否则不选；已勾选但接口没列出的模型保留（标“接口未列出”），未勾选的丢弃
  */
 export function mergeFetched(prev: DraftModel[], fetched: ProviderModel[]): DraftModel[] {
   const byId = new Map(prev.map((d) => [d.id, d]));
   const selectNew = prev.length === 0;
   const merged = fetched.map((m) => {
     const old = byId.get(m.id);
-    return old ? { ...old, listed: true } : toDraft(m, selectNew);
+    if (!old) return toDraft(m, selectNew);
+    if (!hasDefaultCapabilities(old)) return { ...old, listed: true };
+    return { ...toDraft(m, old.selected), name: old.name };
   });
   const fetchedIds = new Set(fetched.map((m) => m.id));
   for (const d of prev) {

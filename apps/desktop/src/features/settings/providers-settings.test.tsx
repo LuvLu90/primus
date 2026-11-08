@@ -342,4 +342,49 @@ describe("设置·模型渠道", () => {
     ]);
     expect(merged[0]?.contextWindow).toBe("99");
   });
+
+  it("获取时，能力仍是默认参数的已有模型按新结果重新识别（名称与勾选保留），改过的不动", () => {
+    const recognized = {
+      id: "kimi-k3.1-pro",
+      name: "kimi-k3.1-pro",
+      reasoning: true,
+      input: ["text" as const, "image" as const],
+      contextWindow: 1_048_576,
+      maxTokens: 131_072,
+    };
+    const prev = [
+      {
+        id: "kimi-k3.1-pro",
+        name: "我的 Kimi",
+        reasoning: false,
+        image: false,
+        contextWindow: "128000",
+        maxTokens: "32000",
+        selected: true,
+        listed: true,
+      },
+      {
+        id: "edited",
+        name: "Edited",
+        reasoning: false,
+        image: false,
+        contextWindow: "64000",
+        maxTokens: "32000",
+        selected: false,
+        listed: true,
+      },
+    ];
+    const merged = mergeFetched(prev, [recognized, { ...recognized, id: "edited", name: "E" }]);
+    expect(merged[0]).toEqual({
+      id: "kimi-k3.1-pro",
+      name: "我的 Kimi",
+      reasoning: true,
+      image: true,
+      contextWindow: "1048576",
+      maxTokens: "131072",
+      selected: true,
+      listed: true,
+    });
+    expect(merged[1]).toEqual({ ...prev[1], listed: true });
+  });
 });

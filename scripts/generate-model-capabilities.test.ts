@@ -50,4 +50,21 @@ describe("已知模型能力表", () => {
     });
     expect(table).toEqual({ "claude-x-1-5": [200000, 200000, 1, 1] });
   });
+
+  it("收录 Kimi 编程套餐（kimi-coding）：ID 是固定的产品名，不含版本号也收", () => {
+    const table = buildTable({
+      "kimi-coding": [
+        {
+          id: "kimi-for-coding",
+          contextWindow: 1048576,
+          maxTokens: 32768,
+          input: ["text", "image"],
+          reasoning: true,
+        },
+      ],
+      openrouter: [{ id: "openrouter/auto", contextWindow: 9, maxTokens: 9, input: ["text"] }],
+    });
+    expect(table).toEqual({ "kimi-for-coding": [1048576, 32768, 1, 1] });
+    expect(JSON.parse(committed).models["kimi-for-coding"]).toEqual([1048576, 32768, 1, 1]);
+  });
 });
