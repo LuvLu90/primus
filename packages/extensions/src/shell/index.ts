@@ -11,6 +11,9 @@ export const POWERSHELL_PROMPT = `
 - 串联命令用 \`;\`，不要用 \`&&\` / \`||\`（5.1 不支持）；需要“前一条成功才继续”时写 \`cmd1; if ($LASTEXITCODE -eq 0) { cmd2 }\`（cmdlet 用 \`$?\` 判断）。
 - 文件操作用 cmdlet：\`Get-ChildItem -Force\`、\`Remove-Item -Recurse -Force\`、\`New-Item -ItemType Directory -Force\`、\`Copy-Item\`、\`Move-Item\`；不要用 \`rm -rf\`、\`ls -la\`、\`mkdir -p\`、\`touch\`。
 - 环境变量写 \`$env:NAME\`，设置写 \`$env:NAME = "值"\`；路径用 Windows 形式（\`D:\\work\\x\`），不要用 \`/d/work/x\`。
+- Windows PowerShell 5.1 读 UTF-8 文件要写 \`Get-Content -Encoding UTF8\`；写文件优先用 write / edit 工具，必须用命令时写 \`Set-Content -Encoding UTF8\`（\`>\` 与 \`Out-File\` 写出 UTF-16LE）。
+- 引号与转义：反引号 \` 是转义符；单引号内原样不展开，双引号内会展开 \`$\` 变量。
+- 查找程序用 \`where.exe\` 或 \`Get-Command\`，不要写 \`where\`（它是 \`Where-Object\` 的别名）。
 - 搜索文本用 \`Select-String\`，查看文件用 \`Get-Content\`；下载用 \`Invoke-WebRequest -UseBasicParsing\`（5.1 里 \`curl\` 是它的别名，参数与 curl 不同，要用真正的 curl 时写 \`curl.exe\`）。
 - 含空格的路径加引号，运行带空格路径的程序写 \`& "C:\\Program Files\\x\\x.exe" 参数\`。`;
 

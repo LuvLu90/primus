@@ -45,6 +45,21 @@ describe("primus-shell", () => {
     expect(() => shell(null)).not.toThrow();
   });
 
+  it("写法要点包含 5.1 的编码、引号与 where 提示", () => {
+    for (const hint of [
+      "Get-Content -Encoding UTF8",
+      "Set-Content -Encoding UTF8",
+      "UTF-16LE",
+      "write / edit 工具",
+      "反引号",
+      "单引号",
+      "where.exe",
+      "Get-Command",
+    ]) {
+      expect(POWERSHELL_PROMPT).toContain(hint);
+    }
+  });
+
   it("powershellOnly", () => {
     expect(powershellOnly(["powershell"])).toBe(true);
     expect(powershellOnly(["powershell", "bash"])).toBe(false);
