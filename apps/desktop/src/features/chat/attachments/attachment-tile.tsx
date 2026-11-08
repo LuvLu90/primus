@@ -4,25 +4,14 @@
 // 排队/读取中外圈有进度环、右上角是加载点（排队时为静止的点）；落地后加载点模糊消失、删除键在同一位置去模糊出现。
 // 读取失败：环变红并抖动一次，保留删除键，悬停看原因。移除：先缩小淡出，再收起宽度让邻居滑过来。
 import { type CSSProperties, useEffect } from "react";
-import { Icon, type IconName } from "@/components/icons";
+import { FileIcon, Icon } from "@/components/icons";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
-import type { AttachmentKind } from "./attachment-kind";
+import { fileIconForName } from "../file-ref";
 import { ProgressRing } from "./progress-ring";
 import type { AttachmentView } from "./use-attachments";
 
 const t = strings.chat;
-
-/** 非图片附件的图标（输入框图块与时间线里的附件标签共用） */
-export const ICONS: Record<AttachmentKind, IconName> = {
-  image: "file-image",
-  document: "file-text",
-  spreadsheet: "file-sheet",
-  presentation: "file-slides",
-  code: "file-code",
-  video: "file-video",
-  other: "file",
-};
 
 /** 移除动画（160ms + 140ms）没有触发 animationend 时（如元素被隐藏）的兜底 */
 const REMOVE_FALLBACK_MS = 450;
@@ -78,10 +67,10 @@ export function AttachmentTile({
               // biome-ignore lint/performance/noImgElement: 静态导出，缩略图是内存里的 data URL
               <img src={item.thumb} alt={item.name} draggable={false} />
             ) : isImage ? (
-              <Icon name="file-image" size="xl" className="text-muted" />
+              <FileIcon name="image" size="xl" />
             ) : (
               <>
-                <Icon name={ICONS[item.kind]} size="xl" className="text-muted" />
+                <FileIcon name={fileIconForName(item.name)} size="xl" />
                 <span className="max-w-12 truncate text-3xs text-muted">{item.name}</span>
               </>
             )}

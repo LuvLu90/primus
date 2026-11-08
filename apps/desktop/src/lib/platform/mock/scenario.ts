@@ -91,6 +91,8 @@ const REFERENCES_ANSWER = [
   "- 样式：`apps/desktop/src/app/globals.css`；文案：[strings.ts](apps/desktop/src/lib/strings.ts:55)",
   "- 安装包：`C:\\Program Files\\Primus\\Primus.exe`，配置目录 `apps/desktop/src-tauri/`",
   "- 数据与报告：`complaints_2026.csv`、`docs/用户手册.pdf`、`assets/icon.png`、[发布说明](docs/release-notes.md)",
+  "- 各类文件：`src-tauri/src/main.rs`、`scripts/render.py`、`package.json`、`Cargo.toml`、`.github/workflows/ci.yml`、`scripts/install.ps1`、`scripts/build.sh`、`db/schema.sql`、`public/index.html`",
+  "- 办公与媒体：`docs/方案.docx`、`reports/月报.xlsx`、`slides/汇报.pptx`、`release/primus.zip`、`media/demo.mp4`、`media/提示音.mp3`、`assets/logo.svg`、`notes.txt`、`src/`",
   "",
   "参考资料：[Markdown 规范](https://spec.commonmark.org/0.31.2/) 与 https://github.com/markdown-it/markdown-it 。",
   "",

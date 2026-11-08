@@ -1,7 +1,9 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
+import { FileIcon } from "./file-icon";
+import { FILE_ICONS, type FileIconName } from "./file-icons.generated";
 import { Icon, strokeExtra } from "./icon";
-import { iconHtml } from "./icon-html";
+import { fileIconHtml, iconHtml } from "./icon-html";
 import { ICON_NODES } from "./icons.generated";
 
 describe("Icon", () => {
@@ -70,11 +72,58 @@ describe("iconHtml", () => {
   });
 
   it("线宽与 <Icon> 同一规则", () => {
-    const { container } = render(<Icon name="file-code" size="sm" />);
+    const { container } = render(<Icon name="file-text" size="sm" />);
     const host = document.createElement("div");
-    host.innerHTML = iconHtml("file-code", "x", "sm");
+    host.innerHTML = iconHtml("file-text", "x", "sm");
     const a = container.querySelector("path");
     const b = host.querySelector("path");
     expect(b?.getAttribute("stroke-width")).toBe(a?.getAttribute("stroke-width"));
+  });
+});
+
+describe("FileIcon", () => {
+  it("装饰性、尺寸用令牌类、viewBox 取自源图标", () => {
+    const { container } = render(<FileIcon name="typescript" size="sm" className="ml-1" />);
+    const svg = container.querySelector("svg");
+    expect(svg?.getAttribute("aria-hidden")).toBe("true");
+    expect(svg?.getAttribute("class")).toBe("shrink-0 size-icon-sm ml-1");
+    expect(svg?.getAttribute("viewBox")).toBe(FILE_ICONS.typescript.viewBox);
+    expect(svg?.getAttribute("data-file-icon")).toBe("typescript");
+  });
+
+  it("所有文件类型图标的颜色都是 --color-file-* 令牌，不写字面色值", () => {
+    const { container } = render(
+      <div>
+        {(Object.keys(FILE_ICONS) as FileIconName[]).map((name) => (
+          <FileIcon key={name} name={name} />
+        ))}
+      </div>,
+    );
+    const painted = container.querySelectorAll("svg *");
+    expect(painted.length).toBeGreaterThan(Object.keys(FILE_ICONS).length - 1);
+    for (const el of painted) {
+      const fill = el.getAttribute("fill");
+      if (el.tagName !== "g") expect(fill).toMatch(/^var\(--color-file-[a-z0-9-]+\)$/);
+      expect(el.getAttribute("stroke")).toBeNull();
+    }
+  });
+
+  it("多色图标保留各自的颜色（Python 蓝黄、Vue 绿与深蓝）", () => {
+    const fills = (name: FileIconName) =>
+      new Set(FILE_ICONS[name].nodes.map(([, attrs]) => attrs.fill));
+    expect(fills("python").size).toBe(2);
+    expect(fills("vue")).toEqual(
+      new Set(["var(--color-file-vue-green)", "var(--color-file-vue-navy)"]),
+    );
+  });
+
+  it("fileIconHtml 与 <FileIcon> 输出同样的图形", () => {
+    const { container } = render(<FileIcon name="pdf" />);
+    const host = document.createElement("div");
+    host.innerHTML = fileIconHtml("pdf", "md-file-icon");
+    const svg = host.querySelector("svg");
+    expect(svg?.getAttribute("class")).toBe("md-file-icon");
+    expect(svg?.getAttribute("data-file-icon")).toBe("pdf");
+    expect(svg?.innerHTML).toBe(container.querySelector("svg")?.innerHTML);
   });
 });

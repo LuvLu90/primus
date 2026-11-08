@@ -580,6 +580,18 @@ describe("假事件流脚本", () => {
     const sample = last.content[0]?.text ?? "";
     for (const piece of ["#L42-L58", ".tsx:120", "C:\\Program Files", "https://", "`console.log`"])
       expect(sample).toContain(piece);
+    // 多种文件类型，用来检查彩色文件类型图标
+    for (const piece of [
+      "main.rs`",
+      ".py`",
+      ".docx`",
+      ".xlsx`",
+      ".pptx`",
+      ".zip`",
+      ".mp4`",
+      "`src/`",
+    ])
+      expect(sample).toContain(piece);
   });
 });
 

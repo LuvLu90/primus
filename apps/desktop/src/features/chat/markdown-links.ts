@@ -4,7 +4,7 @@
 // 文件引用渲染成 <button data-file-ref>，点击由 MarkdownText 统一处理（复制路径）。
 import type MarkdownIt from "markdown-it";
 import type { StateCore, Token } from "markdown-it";
-import { iconHtml } from "@/components/icons";
+import { fileIconHtml, iconHtml } from "@/components/icons";
 import { strings } from "@/lib/strings";
 import {
   type FileRef,
@@ -97,7 +97,7 @@ export function renderFileRef(meta: FileRefMeta, escapeHtml: (s: string) => stri
   return [
     `<button type="button" class="md-file" data-file-ref="${escapeHtml(copy)}"`,
     ` title="${escapeHtml(ref.path + line)}" aria-label="${escapeHtml(fileRefAriaLabel(ref, name))}">`,
-    iconHtml(fileRefIcon(ref), "md-file-icon"),
+    fileIconHtml(fileRefIcon(ref), "md-file-icon"),
     iconHtml("check", "md-file-done"),
     `<span class="md-file-name">${escapeHtml(name)}</span>`,
     line ? `<span class="md-file-line">${escapeHtml(line)}</span>` : "",

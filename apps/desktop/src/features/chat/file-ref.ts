@@ -1,6 +1,6 @@
 // 回复里的文件引用识别：Markdown 链接的地址、行内代码里的路径。
 // 只做字符串判断，不访问文件系统；宁可漏判也不把网址、普通代码当成文件。
-import type { IconName } from "@/components/icons";
+import type { FileIconName } from "@/components/icons";
 
 export interface FileRef {
   /** 去掉行号、片段与 file:// 后的路径（保持原样的分隔符） */
@@ -17,52 +17,106 @@ export interface FileRef {
   isDir: boolean;
 }
 
-/** 有扩展名时按扩展名选文件图标（Map 查表：constructor、__proto__ 这类扩展名不会命中原型属性） */
-const ICON_BY_EXT = new Map<string, IconName>();
-const groups: [IconName, string][] = [
-  [
-    "file-code",
-    "ts tsx js jsx mjs cjs mts cts json jsonc json5 rs py pyi rb go java kt kts swift c h cc cpp cxx hpp hh cs fs vb php lua dart scala clj ex exs erl hs ml zig nim r jl pl sh bash zsh fish ps1 psm1 psd1 bat cmd vue svelte astro html htm css scss sass less styl xml xsl yaml yml toml ini cfg conf env lock gradle cmake mk sql graphql gql proto wxs wxi nsi plist sln csproj vcxproj props targets patch diff dockerfile tf hcl prisma",
-  ],
-  ["file-text", "md mdx markdown txt text log rst adoc org tex bib srt vtt"],
-  ["file-doc", "doc docx odt rtf pages wps"],
-  ["file-pdf", "pdf"],
-  ["file-image", "png jpg jpeg gif webp bmp svg ico icns tif tiff heic avif psd ai sketch fig"],
-  ["file-sheet", "csv tsv xls xlsx xlsm ods numbers parquet"],
-  [
-    "file-zip",
-    "zip 7z rar tar gz tgz bz2 xz zst msi msix dmg pkg deb rpm appx cab jar war whl nupkg",
-  ],
-  ["file-video", "mp4 mov mkv avi webm wmv flv m4v mp3 wav flac aac ogg m4a opus"],
-  ["file-slides", "ppt pptx odp key"],
-  // 可执行文件、库与数据文件：认作文件，用通用图标
-  ["file", "exe dll so dylib lib bin dat db sqlite wasm pdb"],
+/** 有扩展名时按扩展名选彩色文件类型图标（Map 查表：constructor、__proto__ 这类扩展名不会命中原型属性） */
+const ICON_BY_EXT = new Map<string, FileIconName>();
+const groups: [FileIconName, string][] = [
+  // 代码
+  ["typescript", "ts mts cts"],
+  ["react-ts", "tsx"],
+  ["javascript", "js mjs cjs"],
+  ["react", "jsx"],
+  ["json", "json jsonc json5"],
+  ["rust", "rs"],
+  ["python", "py pyi"],
+  ["ruby", "rb"],
+  ["go", "go"],
+  ["java", "java"],
+  ["c", "c h"],
+  ["cpp", "cc cpp cxx hpp hh"],
+  ["csharp", "cs"],
+  ["swift", "swift"],
+  ["php", "php"],
+  ["lua", "lua"],
+  ["dart", "dart"],
+  ["scala", "scala"],
+  ["vue", "vue"],
+  ["svelte", "svelte"],
+  ["html", "html htm"],
+  ["css", "css less styl"],
+  ["sass", "scss sass"],
+  ["console", "sh bash zsh fish bat cmd"],
+  ["powershell", "ps1 psm1 psd1"],
+  ["xml", "xml xsl wxs wxi plist csproj vcxproj props targets"],
+  ["yaml", "yaml yml"],
+  ["toml", "toml"],
+  ["settings", "ini cfg conf env sln nsi cmake gradle tf hcl prisma"],
+  ["lock", "lock"],
+  ["makefile", "mk"],
+  ["database", "sql db sqlite"],
+  ["graphql", "graphql gql"],
+  ["diff", "patch diff"],
+  ["docker", "dockerfile"],
+  // 没有专属图标的语言：认作文件，用通用图标
+  ["file", "kt kts fs vb clj ex exs erl hs ml zig nim r jl pl astro proto"],
+  // 文档
+  ["markdown", "md mdx markdown"],
+  ["document", "txt text rst adoc org bib srt vtt"],
+  ["log", "log"],
+  ["tex", "tex"],
+  ["word", "doc docx odt rtf pages wps"],
+  ["pdf", "pdf"],
+  ["table", "csv tsv xls xlsx xlsm ods numbers parquet"],
+  ["powerpoint", "ppt pptx odp key"],
+  // 媒体、字体、归档与安装包
+  ["image", "png jpg jpeg gif webp bmp ico icns tif tiff heic avif psd ai sketch fig"],
+  ["svg", "svg"],
+  ["video", "mp4 mov mkv avi webm wmv flv m4v"],
+  ["audio", "mp3 wav flac aac ogg m4a opus"],
+  ["font", "ttf otf woff woff2"],
+  ["zip", "zip 7z rar tar gz tgz bz2 xz zst cab deb rpm jar war whl nupkg"],
+  ["exe", "exe msi msix dmg pkg appx"],
+  // 库与数据文件：认作文件，用通用图标
+  ["file", "dll so dylib lib bin dat wasm pdb"],
 ];
 for (const [icon, list] of groups) for (const ext of list.split(" ")) ICON_BY_EXT.set(ext, icon);
 
-/** 不带扩展名但一看就是文件的名字 */
-const KNOWN_BARE = new Set([
-  "makefile",
-  "dockerfile",
-  "license",
-  "readme",
-  "changelog",
-  "gemfile",
-  "rakefile",
-  "procfile",
-  "justfile",
-  "cargo.lock",
+/** 不带扩展名但一看就是文件的名字（小写）→ 图标 */
+const KNOWN_BARE = new Map<string, FileIconName>([
+  ["makefile", "makefile"],
+  ["dockerfile", "docker"],
+  ["license", "license"],
+  ["readme", "readme"],
+  ["changelog", "document"],
+  ["gemfile", "ruby"],
+  ["rakefile", "ruby"],
+  ["procfile", "settings"],
+  ["justfile", "makefile"],
+  ["cargo.lock", "lock"],
 ]);
 
-/** 文件引用的图标 */
-export function fileRefIcon(ref: Pick<FileRef, "name" | "isDir">): IconName {
-  if (ref.isDir) return "folder";
-  const lower = ref.name.toLowerCase();
+/** 以点开头的配置文件（.gitignore、.env…）→ 图标 */
+const DOTFILES = new Map<string, FileIconName>([
+  [".gitignore", "git"],
+  [".gitattributes", "git"],
+  [".gitmodules", "git"],
+  [".env", "settings"],
+  [".editorconfig", "settings"],
+  [".npmrc", "settings"],
+  [".dockerignore", "docker"],
+]);
+
+/** 按文件名选彩色文件类型图标（附件、工具行与文件引用共用）；认不出的用通用 file */
+export function fileIconForName(fileName: string): FileIconName {
+  const lower = fileName.toLowerCase();
+  const bare = KNOWN_BARE.get(lower) ?? DOTFILES.get(lower);
+  if (bare) return bare;
   const dot = lower.lastIndexOf(".");
-  const ext =
-    dot > 0 ? lower.slice(dot + 1) : lower === "dockerfile" || lower === "makefile" ? lower : "";
-  if (ext === "makefile") return "file-code";
-  return ICON_BY_EXT.get(ext) ?? "file";
+  return (dot > 0 && ICON_BY_EXT.get(lower.slice(dot + 1))) || "file";
+}
+
+/** 文件引用的图标 */
+export function fileRefIcon(ref: Pick<FileRef, "name" | "isDir">): FileIconName {
+  return ref.isDir ? "folder" : fileIconForName(ref.name);
 }
 
 /** 名称是否带一个合理的扩展名（字母开头，1–10 位字母数字） */

@@ -2,6 +2,7 @@
 // 图标检查（技术方案第 16.1.1 节“图标”）：
 // 1. 前端只用 @/components/icons 的 <Icon>：不得 import lucide-react 等图标库；
 // 2. 图标数据（components/icons/ 下的文件）里的颜色只能是 currentColor / none；
+//    唯一例外是彩色文件类型图标的数据（file-icons.generated.ts）：只能用 var(--color-file-*) 设计令牌，不写十六进制等字面色值；
 // 3. <Icon> 上不写透明度、任意颜色或旧的 size / strokeWidth / fill 数值属性，颜色用 text-muted 等令牌类。
 import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
@@ -11,6 +12,9 @@ import { fileURLToPath } from "node:url";
 export const SCAN_DIRS = ["apps/desktop/src", "packages/ui"];
 /** 图标数据所在目录（相对仓库根） */
 export const ICON_DIR = "apps/desktop/src/components/icons";
+/** 彩色文件类型图标的数据（scripts/vendor-file-icons.mjs 生成），颜色只能是 --color-file-* 令牌 */
+export const FILE_ICON_DATA = `${ICON_DIR}/file-icons.generated.ts`;
+const FILE_TOKEN = /^var\(--color-file-[a-z0-9-]+\)$/;
 const EXTENSIONS = /\.(?:[cm]?[jt]sx?)$/;
 const TEST_FILE = /\.test\.[cm]?[jt]sx?$/;
 const SKIP_DIRS = new Set(["node_modules", "dist", "out", ".next"]);
@@ -59,13 +63,16 @@ export function findForbiddenImports(code) {
   return out;
 }
 
-/** 图标数据里出现 currentColor / none 之外的颜色 */
-export function findIconDataColors(code) {
+/**
+ * 图标数据里出现 currentColor / none 之外的颜色。
+ * `fileTokens`：彩色文件类型图标的数据，另外允许 var(--color-file-*) 令牌（字面色值仍不允许）。
+ */
+export function findIconDataColors(code, { fileTokens = false } = {}) {
   const clean = stripComments(code);
   const out = [];
   const re = /\b(fill|stroke|stop-color|stopColor|color)["']?\s*[:=]\s*["']([^"']*)["']/g;
   for (const m of clean.matchAll(re)) {
-    if (m[2] !== "currentColor" && m[2] !== "none")
+    if (m[2] !== "currentColor" && m[2] !== "none" && !(fileTokens && FILE_TOKEN.test(m[2])))
       out.push({ line: lineOf(clean, m.index), kind: "图标颜色", what: `${m[1]}="${m[2]}"` });
   }
   for (const m of clean.matchAll(/#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?|oklch)\(/g))
@@ -140,7 +147,8 @@ export function run(root) {
       const code = readFileSync(file, "utf8");
       scanned += 1;
       const found = [...findForbiddenImports(code), ...findIconUsageIssues(code)];
-      if (rel.startsWith(`${ICON_DIR}/`)) found.push(...findIconDataColors(code));
+      if (rel.startsWith(`${ICON_DIR}/`))
+        found.push(...findIconDataColors(code, { fileTokens: rel === FILE_ICON_DATA }));
       for (const v of found.sort((a, b) => a.line - b.line))
         findings.push(`${rel}:${v.line} ${v.kind} ${v.what}`);
     }

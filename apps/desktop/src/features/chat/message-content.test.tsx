@@ -69,7 +69,7 @@ describe("回复中的文件引用与网页链接", () => {
     });
     expect(ref.textContent).toBe("chat-panel.tsx:42–58");
     expect(ref.getAttribute("title")).toBe("apps/desktop/src/chat-panel.tsx:42–58");
-    expect(ref.querySelector('[data-icon="file-code"]')).not.toBeNull();
+    expect(ref.querySelector('[data-file-icon="react-ts"]')).not.toBeNull();
     expect(screen.queryByRole("link")).toBeNull();
   });
 
@@ -94,9 +94,9 @@ describe("回复中的文件引用与网页链接", () => {
     );
     expect(html).toContain('data-file-ref="C:\\Users\\me\\a.ts"');
     expect(html).toContain('data-file-ref="C:/Users/me/b.pdf"');
-    expect(html).toContain('data-icon="file-pdf"');
+    expect(html).toContain('data-file-icon="pdf"');
     expect(html).toContain('data-file-ref="D:\\data\\c.xlsx:3"');
-    expect(html).toContain('data-icon="file-sheet"');
+    expect(html).toContain('data-file-icon="table"');
   });
 
   it("网页链接保持文字链接，末尾带外链图标与屏幕阅读器提示", () => {
@@ -112,7 +112,7 @@ describe("回复中的文件引用与网页链接", () => {
     const html = renderMarkdown("[x](a.constructor) [y](b.__proto__)");
     expect(html).toContain('data-file-ref="a.constructor"');
     expect(html).toContain('data-file-ref="b.__proto__"');
-    expect(html).toContain('data-icon="file"');
+    expect(html).toContain('data-file-icon="file"');
   });
 
   it("含空格（%20）的 file:// 地址渲染成文件引用", () => {

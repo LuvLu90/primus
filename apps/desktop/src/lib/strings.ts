@@ -155,7 +155,6 @@ export const strings = {
     work: {
       running: "正在工作",
       elapsed: "用时",
-      thought: "思考",
       thinkingNow: "正在思考",
       expand: "展开工作过程",
       collapse: "收起工作过程",

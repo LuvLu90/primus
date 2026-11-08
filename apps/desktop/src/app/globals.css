@@ -107,6 +107,48 @@
   --spacing-icon-xl: 24px;
 }
 
+@theme static {
+  /*
+   * 文件类型图标（components/icons 的 <FileIcon>，Material Icon Theme）：图标规范里唯一允许多色的一组。
+   * 令牌按 Material Design 调色板命名，值取自上游图标；浅色背景下太淡、深色背景下太暗的几种在各自主题里调整
+   * （blue-grey-100 浅色下加深、light-blue-900 / vue-navy 深色下提亮）。scripts/vendor-file-icons.mjs 生成时核对这里齐全。
+   * 用 static：这些令牌只在图标数据的 var() 里引用，没有对应的工具类，默认会被 Tailwind 当作未使用而不输出。
+   */
+  --color-file-amber-300: #ffd54f;
+  --color-file-amber-400: #ffca28;
+  --color-file-amber-600: #ffb300;
+  --color-file-blue-300: #64b5f6;
+  --color-file-blue-400: #42a5f5;
+  --color-file-blue-500: #2196f3;
+  --color-file-blue-600: #1e88e5;
+  --color-file-blue-grey-100: #78909c;
+  --color-file-blue-grey-300: #90a4ae;
+  --color-file-cyan-500: #00bcd4;
+  --color-file-cyan-600: #00acc1;
+  --color-file-deep-orange-400: #ff7043;
+  --color-file-deep-orange-500: #ff5722;
+  --color-file-deep-orange-700: #e64a19;
+  --color-file-deep-orange-a200: #ff6e40;
+  --color-file-deep-purple-400: #7e57c2;
+  --color-file-light-blue-300: #4fc3f7;
+  --color-file-light-blue-500: #03a9f4;
+  --color-file-light-blue-700: #0288d1;
+  --color-file-light-blue-900: #01579b;
+  --color-file-light-green-500: #8bc34a;
+  --color-file-lime-700: #afb42b;
+  --color-file-orange-500: #ff9800;
+  --color-file-orange-900: #e65100;
+  --color-file-pink-400: #ec407a;
+  --color-file-red-400: #ef5350;
+  --color-file-red-500: #f44336;
+  --color-file-red-a200: #ff5252;
+  --color-file-teal-400: #26a69a;
+  --color-file-vue-green: #41b883;
+  --color-file-vue-navy: #35495e;
+  --color-file-yellow-600: #fdd835;
+  --color-file-yellow-800: #f9a825;
+}
+
 :root {
   /* 浏览器预览用的纯色底（不用渐变） */
   --wallpaper: #e6e6ee;
@@ -135,6 +177,9 @@
   --color-chart-4: #ff9f0a;
   --color-chart-5: #30d158;
   --color-chart-6: #64d2ff;
+  --color-file-blue-grey-100: #cfd8dc;
+  --color-file-light-blue-900: #1e88e5;
+  --color-file-vue-navy: #8fa6bf;
   --color-tile: rgb(255 255 255 / 0.07);
   --color-tile-ring: rgb(255 255 255 / 0.07);
   --color-lip: rgb(255 255 255 / 0.06);
@@ -489,38 +534,51 @@ html.window-effects.glass-clear body {
   animation: text-pulse 1.8s ease-in-out infinite;
 }
 
-@keyframes dot-bounce {
-  0%,
-  80%,
+/*
+ * 正在思考：星光图标（Reicon Sparkles：右上小星、主星、右下小星三个 path）。
+ * 参考 Claude 旋转的星芒、Gemini 的星光与 Cursor / Codex 的进行中流光：主星缓慢旋转并呼吸缩放，
+ * 两颗小星交替闪烁，文字配 text-pulse 的透明度呼吸。只动 transform / opacity：
+ * 流光文字（background-clip:text 的渐变平移）每帧重绘，叠在磨砂玻璃上会让 WebView2 的 GPU 持续高占用，所以不用。
+ */
+@keyframes spark-main {
+  0% {
+    transform: rotate(0deg) scale(1);
+  }
+  50% {
+    transform: rotate(45deg) scale(0.78);
+  }
   100% {
-    opacity: 0.3;
-    translate: 0 0;
+    transform: rotate(90deg) scale(1);
   }
-  40% {
+}
+
+@keyframes spark-twinkle {
+  0%,
+  100% {
     opacity: 1;
-    translate: 0 -3px;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.15;
+    transform: scale(0.35);
   }
 }
 
-.thinking-dots {
-  display: inline-flex;
-  gap: 3px;
+.think-spark > path {
+  transform-box: fill-box;
+  transform-origin: center;
 }
 
-.thinking-dots i {
-  width: 5px;
-  height: 5px;
-  border-radius: 9999px;
-  background: var(--color-muted);
-  animation: dot-bounce 1.2s ease-in-out infinite;
+.think-spark > path:nth-child(2) {
+  animation: spark-main 2.4s cubic-bezier(0.45, 0, 0.55, 1) infinite;
 }
 
-.thinking-dots i:nth-child(2) {
-  animation-delay: 0.15s;
+.think-spark > path:nth-child(1) {
+  animation: spark-twinkle 1.2s ease-in-out infinite;
 }
 
-.thinking-dots i:nth-child(3) {
-  animation-delay: 0.3s;
+.think-spark > path:nth-child(3) {
+  animation: spark-twinkle 1.2s ease-in-out 0.6s infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -529,7 +587,7 @@ html.window-effects.glass-clear body {
   .text-pulse,
   .shimmer-text,
   .step-in,
-  .thinking-dots i {
+  .think-spark > path {
     animation: none;
   }
 }

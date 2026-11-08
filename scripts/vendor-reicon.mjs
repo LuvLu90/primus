@@ -18,7 +18,7 @@ export const REICON_VERSION = "1.2.6";
 /**
  * 应用内图标名 → Reicon 图标。weight 默认 Outline（O）；只有"停止"这种实心语义用 Filled（F）。
  * mirror：水平镜像（Reicon 只有一侧的图标）。
- * extra：在源图标上追加的元素（同样只能用 currentColor、线宽 1.5），用于 Reicon 缺少的文件类型。
+ * extra：在源图标上追加的元素（同样只能用 currentColor、线宽 1.5），用于 Reicon 缺少的图形。
  */
 export const ICONS = {
   // 通用操作
@@ -44,7 +44,7 @@ export const ICONS = {
   retry: { source: "Restart" },
   archive: { source: "Archive" },
   "archive-restore": { source: "ArchiveUp" },
-  mic: { source: "Mic" },
+  mic: { source: "Microphone" },
   link: { source: "Link" },
   "external-link": { source: "ArrowUpRightSquare" },
   // 状态
@@ -58,7 +58,8 @@ export const ICONS = {
   key: { source: "Key" },
   gauge: { source: "Speedometer" },
   server: { source: "Server" },
-  hand: { source: "Hand" },
+  // 权限模式“询问”：会先问你（对话气泡）
+  ask: { source: "ChatRoundDots" },
   "shield-check": { source: "ShieldCheck" },
   "shield-alert": { source: "ShieldAlert" },
   "shield-user": { source: "ShieldUser" },
@@ -79,25 +80,13 @@ export const ICONS = {
   // 工作过程（工具调用）
   terminal: { source: "Programming" },
   tool: { source: "Sledgehammer" },
-  thinking: { source: "Lightbulb" },
+  // 思考：主星 + 两颗小星（三个 path，顺序：右上小星、主星、右下小星），进行中由 CSS 分别做动画
+  thinking: { source: "Sparkles" },
   "pen-edit": { source: "Pen2" },
-  // 文件类型
-  file: { source: "File" },
+  // 工具行“已读取”（彩色文件类型图标另见 scripts/vendor-file-icons.mjs）
   "file-text": { source: "FileText" },
-  "file-doc": { source: "FileContent" },
-  "file-code": { source: "CodeFile" },
-  "file-pdf": { source: "FilePdf" },
-  "file-zip": { source: "FileZip" },
-  "file-image": { source: "Gallery" },
-  "file-video": { source: "Video" },
-  "file-slides": { source: "Presentation" },
-  // Reicon 没有表格文件：在 File 上加 2×2 表格（与其他线条同为 1.5）
-  "file-sheet": {
-    source: "File",
-    extra:
-      '<path d="M7.75 12.75h8.5v5h-8.5zM12 12.75v5M7.75 15.25h8.5" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>',
-  },
-  folder: { source: "Folder" },
+  // 文件夹（工作区）
+  folder: { source: "Folder2" },
   "folder-open": { source: "FolderOpen" },
   // Windows 标题栏按钮
   "window-maximize": { source: "Stop3" },
@@ -210,7 +199,7 @@ export function build(pkgDir) {
     const svg = readSource(pkgDir, spec.source, spec.weight) + (spec.extra ?? "");
     let nodes = normalize(parseSvg(svg), name);
     if (spec.mirror) nodes = [["g", { transform: MIRROR }, nodes]];
-    const from = `${spec.source}${spec.weight === "F" ? "（Filled）" : ""}${spec.mirror ? "（水平镜像）" : ""}${spec.extra ? " + 表格线" : ""}`;
+    const from = `${spec.source}${spec.weight === "F" ? "（Filled）" : ""}${spec.mirror ? "（水平镜像）" : ""}${spec.extra ? " + 追加图形" : ""}`;
     lines.push(`  // ${from}`);
     lines.push(`  ${JSON.stringify(name)}: ${JSON.stringify(nodes)},`);
   }

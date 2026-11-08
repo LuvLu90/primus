@@ -4,7 +4,7 @@
 import { appendFileTags } from "@primus/protocol";
 import { DropdownMenu as Menu } from "radix-ui";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
-import { Icon, type IconName } from "@/components/icons";
+import { FileIcon, Icon, type IconName } from "@/components/icons";
 import {
   GlassPopover,
   GlassPopoverContent,
@@ -15,6 +15,7 @@ import type { WorkspaceInfo } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 import type { PermissionMode } from "@/stores/app-store";
+import { fileIconForName } from "./file-ref";
 import { TrustDialog } from "./trust-dialog";
 
 const t = strings.chat;
@@ -209,7 +210,7 @@ export function WorkspacePicker({
 
 /** 各权限模式的图标与强调色：完全访问用警示色，提醒风险 */
 export const permissionMeta: Record<PermissionMode, { icon: IconName; tone: string }> = {
-  ask: { icon: "hand", tone: "" },
+  ask: { icon: "ask", tone: "" },
   edit: { icon: "shield-check", tone: "text-success" },
   full: { icon: "shield-alert", tone: "text-warning" },
 };
@@ -288,7 +289,7 @@ export function AttachmentChips({
           title={p}
           className="group flex h-7 max-w-56 items-center gap-1.5 rounded-[9px] bg-tile pl-2 pr-1 text-xs ring-1 ring-tile-ring"
         >
-          <Icon name="file-text" size="sm" className="text-muted" />
+          <FileIcon name={fileIconForName(baseName(p))} size="sm" />
           <span className="min-w-0 truncate">{baseName(p)}</span>
           <button
             type="button"

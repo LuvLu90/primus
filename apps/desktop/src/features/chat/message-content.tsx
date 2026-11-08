@@ -4,6 +4,7 @@
 import MarkdownIt from "markdown-it";
 import { usePathname } from "next/navigation";
 import { type MouseEvent, memo, useEffect, useMemo, useRef, useState } from "react";
+import { Icon } from "@/components/icons";
 import {
   GlassDialog,
   GlassDialogClose,
@@ -211,19 +212,15 @@ export const MarkdownText = memo(function MarkdownText({
   );
 });
 
-/** 等待回复时的提示：流光文字 + 跳动的三个点 */
+/** 等待回复时的提示：与工作过程里“正在思考”同一个星光动画 + 呼吸文字 */
 export function ThinkingIndicator({ label = strings.chat.thinkingNow }: { label?: string }) {
   return (
     <div
       role="status"
       aria-live="polite"
-      className="msg-in flex items-center gap-2 self-start text-sm"
+      className="msg-in flex items-center gap-2 self-start text-sm text-muted"
     >
-      <span className="thinking-dots" aria-hidden>
-        <i />
-        <i />
-        <i />
-      </span>
+      <Icon name="thinking" size="sm" className="think-spark" />
       <span className="shimmer-text">{label}</span>
     </div>
   );

@@ -73,6 +73,23 @@ describe("findIconDataColors", () => {
       [5, "rgb("],
     ]);
   });
+
+  it("彩色文件类型图标的数据另外允许 var(--color-file-*) 令牌，字面色值与其他令牌仍不允许", () => {
+    const code = [
+      'ts: { nodes: [["path", { d: "M0 0", fill: "var(--color-file-light-blue-700)" }]] },',
+      'js: { nodes: [["path", { fill: "#ffca28" }]] },',
+      'x: { nodes: [["path", { fill: "var(--color-accent)" }]] },',
+    ].join("\n");
+    expect(brief(findIconDataColors(code, { fileTokens: true }))).toEqual([
+      [2, 'fill="#ffca28"'],
+      [2, "#ffca28"],
+      [3, 'fill="var(--color-accent)"'],
+    ]);
+    expect(brief(findIconDataColors(code))).toContainEqual([
+      1,
+      'fill="var(--color-file-light-blue-700)"',
+    ]);
+  });
 });
 
 describe("findIconUsageIssues", () => {
@@ -115,11 +132,13 @@ describe("run", () => {
       "apps/desktop/src/a.tsx": 'import { X } from "lucide-react";',
       "apps/desktop/src/a.test.tsx": 'import { X } from "lucide-react";',
       "apps/desktop/src/components/icons/icons.generated.ts": 'a: [["path", { fill: "#000" }]],',
+      "apps/desktop/src/components/icons/file-icons.generated.ts":
+        'ts: [["path", { fill: "var(--color-file-blue-400)" }]],',
       "apps/desktop/src/b.tsx": 'const fill = "#000";',
       "packages/ui/c.tsx": 'import { Check } from "react-icons/fa";',
     });
     const { findings, scanned } = run(root);
-    expect(scanned).toBe(4);
+    expect(scanned).toBe(5);
     expect(findings).toEqual([
       "apps/desktop/src/a.tsx:1 图标库导入 lucide-react",
       'apps/desktop/src/components/icons/icons.generated.ts:1 图标颜色 fill="#000"',

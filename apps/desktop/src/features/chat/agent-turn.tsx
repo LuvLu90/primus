@@ -11,12 +11,13 @@ import {
   useRef,
   useState,
 } from "react";
-import { Icon, type IconName } from "@/components/icons";
+import { FileIcon, Icon, type IconName } from "@/components/icons";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 import type { SessionState, TimelineContent, ToolRun } from "@/stores/session-store";
 import { CopyButton, revealOnTurnHover } from "./copy-button";
 import { type ErrorActions, ErrorCard, RetryNotice } from "./error-card";
+import { fileIconForName } from "./file-ref";
 import { MarkdownText } from "./message-content";
 
 // 一轮回复（一条用户消息之后的全部助手消息与工具结果）按“工作过程 + 总结”展示：
@@ -24,6 +25,7 @@ import { MarkdownText } from "./message-content";
 // assistant-ui 的 GroupedParts、Codex 桌面版的“Worked for 8m 28s”）。
 // 中间的思考、过程说明、工具调用按顺序放进可折叠的工作过程，运行中展开、实时追加；
 // 结束后自动收起成“用时 8m 28s”，最后一条不带工具调用的回复作为总结显示在下面。
+// 思考只在进行中显示（动画图标 +“正在思考”与最新几行）；思考结束后这一行从时间线上移除，不留“思考”记录。
 //
 // 性能：运行中只有计时器每秒刷新（独立组件），流光等动画只用 opacity/transform，交给合成器，
 // 不触发重绘（WebView2 下背景裁剪文字的渐变动画会让 GPU 持续重绘磨砂玻璃）。
@@ -67,7 +69,7 @@ interface CallInfo {
 
 type Step =
   | { kind: "note"; key: string; text: string; live: boolean }
-  | { kind: "thought"; key: string; text: string; live: boolean }
+  | { kind: "thought"; key: string; text: string }
   | { kind: "tools"; key: string; calls: ToolCallBlock[] };
 
 interface TurnLayout {
@@ -118,8 +120,9 @@ function layoutTurn(messages: AgentMessage[], streaming: boolean): TurnLayout {
         if (isLast && lastIsAnswer) answer.push({ key, text: block.text, live });
         else steps.push({ kind: "note", key, text: block.text, live });
       } else if (block.type === "thinking") {
-        if (!block.thinking.trim()) return;
-        steps.push({ kind: "thought", key, text: block.thinking, live });
+        // 只显示进行中的思考：后面一出现正文或工具调用（或这一轮结束），思考行就消失
+        if (!live || !block.thinking.trim()) return;
+        steps.push({ kind: "thought", key, text: block.thinking });
       } else if (block.type === "toolCall") {
         const prev = steps.at(-1);
         if (prev?.kind === "tools") prev.calls.push(block);
@@ -197,6 +200,11 @@ function argOf(call: ToolCallBlock): string {
 
 const firstLine = (s: string) => (s.split("\n")[0] ?? "").trim();
 
+/** 参数是文件路径的工具 */
+const FILE_KINDS = new Set<ToolKind>(["read", "edit", "write"]);
+
+const baseName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+
 /** 输出最多显示这么多字符（取末尾）：长输出只看结尾 */
 const OUTPUT_LIMIT = 6000;
 
@@ -208,6 +216,7 @@ function StepButton({
   children,
   live,
   failed,
+  iconClass,
 }: {
   open: boolean;
   onToggle: () => void;
@@ -216,6 +225,8 @@ function StepButton({
   children: ReactNode;
   live?: boolean;
   failed?: boolean;
+  /** 图标的额外类（思考进行中的动画） */
+  iconClass?: string;
 }) {
   return (
     <button
@@ -225,7 +236,7 @@ function StepButton({
       onClick={onToggle}
       className="group/step -mx-1.5 flex max-w-full items-center gap-2 rounded-lg px-1.5 py-[3px] text-left text-sm text-muted outline-none transition-colors duration-200 hover:bg-hover/60 hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40"
     >
-      <Icon name={icon} size="sm" className={cn(failed && "text-danger")} />
+      <Icon name={icon} size="sm" className={cn(failed && "text-danger", iconClass)} />
       <span className={cn("min-w-0 truncate", live && "text-pulse")}>{children}</span>
       <Icon
         name="chevron-right"
@@ -247,6 +258,8 @@ function ToolCallRow({ call, info }: { call: ToolCallBlock; info: CallInfo }) {
   const running = info.status === "running";
   const verb = running ? t.tools[kind].running : t.tools[kind].done;
   const arg = firstLine(argOf(call));
+  // 读取 / 编辑 / 写入文件：路径前加彩色文件类型图标
+  const fileIcon = FILE_KINDS.has(kind) && arg ? fileIconForName(baseName(arg)) : undefined;
   const output = useMemo(() => {
     if (!open) return "";
     const text = textOfContent(info.content);
@@ -262,7 +275,14 @@ function ToolCallRow({ call, info }: { call: ToolCallBlock; info: CallInfo }) {
         failed={info.status === "error"}
       >
         {kind === "other" ? `${verb} ${call.name}` : verb}
-        {arg && <span className="ml-1.5 font-mono text-xs opacity-80">{arg}</span>}
+        {fileIcon && (
+          <FileIcon name={fileIcon} size="sm" className="ml-1.5 inline-block align-[-3px]" />
+        )}
+        {arg && (
+          <span className={cn("font-mono text-xs opacity-80", fileIcon ? "ml-1" : "ml-1.5")}>
+            {arg}
+          </span>
+        )}
       </StepButton>
       <Collapse open={open} id={id}>
         <div className="mt-1 mb-1.5 overflow-hidden rounded-xl bg-hover/70 ring-1 ring-border/60">
@@ -343,38 +363,38 @@ function ToolGroup({
   );
 }
 
-/** 思考：进行中展开，实时滚动显示最新几行；结束后收起，可再展开 */
-function ThoughtStep({ text, live }: { text: string; live: boolean }) {
-  const [userOpen, setUserOpen] = useState<boolean | null>(null);
-  const open = userOpen ?? live;
+/**
+ * 进行中的思考：星光图标动画（主星呼吸旋转、小星交替闪烁）+“正在思考”呼吸，默认展开显示最新几行，可收起。
+ * 思考结束后这一步不再出现在时间线上（layoutTurn 只收进行中的思考）。
+ */
+function ThoughtStep({ text }: { text: string }) {
+  const [open, setOpen] = useState(true);
   const id = useId();
   const tailRef = useRef<HTMLDivElement>(null);
-  // 进行中贴着最新内容
+  // 贴着最新内容
   // biome-ignore lint/correctness/useExhaustiveDependencies: 内容变长时（text）也要滚到底
   useLayoutEffect(() => {
     const el = tailRef.current;
-    if (live && open && el) el.scrollTop = el.scrollHeight;
-  }, [text, live, open]);
+    if (open && el) el.scrollTop = el.scrollHeight;
+  }, [text, open]);
   return (
     <div>
       <StepButton
         open={open}
-        onToggle={() => setUserOpen(!open)}
+        onToggle={() => setOpen(!open)}
         controls={id}
         icon="thinking"
-        live={live}
+        iconClass="think-spark"
+        live
       >
-        {live ? t.thinkingNow : t.thought}
+        {t.thinkingNow}
       </StepButton>
       <Collapse open={open} id={id}>
         <div
           ref={tailRef}
-          className={cn(
-            "mt-1 mb-1 ml-[7px] overflow-y-auto border-border/80 border-l pl-3 text-xs text-muted leading-relaxed",
-            live ? "thought-live max-h-[7.5em]" : "max-h-80",
-          )}
+          className="thought-live mt-1 mb-1 ml-[7px] max-h-[7.5em] overflow-y-auto border-border/80 border-l pl-3 text-xs text-muted leading-relaxed"
         >
-          <MarkdownText text={text} streaming={live} />
+          <MarkdownText text={text} streaming />
         </div>
       </Collapse>
     </div>
@@ -392,7 +412,7 @@ function StepView({
 }) {
   if (step.kind === "tools")
     return <ToolGroup calls={step.calls} infoOf={infoOf} turnRunning={turnRunning} />;
-  if (step.kind === "thought") return <ThoughtStep text={step.text} live={step.live} />;
+  if (step.kind === "thought") return <ThoughtStep text={step.text} />;
   return (
     <MarkdownText text={step.text} streaming={step.live} className="py-0.5 text-base text-fg/85" />
   );
