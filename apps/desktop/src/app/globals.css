@@ -764,6 +764,101 @@ html.window-effects.glass-clear body {
   display: none;
 }
 
+/* 对话索引刻度：--index-base 是静止长度（px），--index-mag 是指针“划过”时的放大量 0–1（脚本每帧写入）。
+   两者都注册为数字，transition 直接作用在变量上，长度、粗细、颜色跟着一起平滑变化；只动 transform 与颜色 */
+@property --index-mag {
+  syntax: "<number>";
+  inherits: false;
+  initial-value: 0;
+}
+
+@property --index-base {
+  syntax: "<number>";
+  inherits: false;
+  initial-value: 10;
+}
+
+.index-rail {
+  /* 放大到顶时的长度；放大对长度/粗细/颜色的作用强度（减少动态效果时把前两项清零） */
+  --index-peak: 26;
+  --index-stretch: 1;
+  --index-thicken: 0.4;
+  --index-tint: 88%;
+  /* 跟随指针：短而快的缓出，像弹簧追随目标 */
+  --index-follow: 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+  --index-settle-base: 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* 指针离开：刻度带一点回弹地落回原位（阻尼约 0.65 的弹簧曲线） */
+.index-rail:not([data-scrub]) {
+  --index-follow: 0.56s
+    linear(
+      0,
+      0.057,
+      0.191,
+      0.359,
+      0.531,
+      0.687,
+      0.816,
+      0.916,
+      0.987,
+      1.032,
+      1.057,
+      1.067,
+      1.065,
+      1.058,
+      1.047,
+      1.035,
+      1.025,
+      1.015,
+      1.008,
+      1.002,
+      1
+    );
+}
+
+.index-tick {
+  --index-amount: clamp(0, var(--index-mag), 1);
+  display: block;
+  /* 元素本身固定 28px，用 scaleX 缩到目标长度，不改宽度、不触发布局 */
+  width: 28px;
+  height: 1.5px;
+  border-radius: 9999px;
+  transform-origin: left center;
+  transform: scale(
+    calc(
+      (
+        var(--index-base) +
+        (var(--index-peak) - var(--index-base)) *
+        var(--index-mag) *
+        var(--index-stretch)
+      ) /
+      28
+    ),
+    calc(1 + var(--index-thicken) * var(--index-amount))
+  );
+  background-color: color-mix(
+    in oklab,
+    var(--color-fg) calc(var(--index-amount) * var(--index-tint)),
+    color-mix(in oklab, var(--color-muted) 38%, transparent)
+  );
+  transition:
+    --index-mag var(--index-follow),
+    --index-base var(--index-settle-base);
+  will-change: transform;
+}
+
+[aria-current] > .index-tick,
+.index-tick[data-near],
+:focus-visible > .index-tick {
+  background-color: var(--color-fg);
+}
+
+/* 预览卡片：锚点跟着最近的刻度上下滑，卡片只在出现时轻弹一下 */
+.index-pop-anchor {
+  transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
 @keyframes index-pop {
   from {
     opacity: 0;
@@ -783,6 +878,18 @@ html.window-effects.glass-clear body {
   }
   .index-pop {
     animation: none;
+  }
+  /* 减少动态效果：不放大、不滑动，只高亮最近的一道 */
+  .index-rail,
+  .index-rail:not([data-scrub]) {
+    --index-stretch: 0;
+    --index-thicken: 0;
+    --index-tint: 0%;
+    --index-follow: 0s;
+    --index-settle-base: 0s;
+  }
+  .index-pop-anchor {
+    transition: none;
   }
 }
 
