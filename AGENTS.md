@@ -66,7 +66,8 @@ Tauri 只加载本地静态文件，没有 Node 服务器：
 - 流式渲染性能：每批事件一次 `setState`（`requestAnimationFrame` 内）；selector 订阅最小切片；已定稿消息不再更新；列表用虚拟滚动。
 - Markdown 用 markdown-it 且**禁用原始 HTML**。
 - 界面文案集中管理（首版中文），不要散落硬编码。
-- 组件放 `src/components/`，基础交互用 `radix-ui`（按需 `import { Toggle } from "radix-ui"`），图标用 `lucide-react`，配色只用 `globals.css` 中 `@theme` 定义的设计令牌。
+- 组件放 `src/components/`，基础交互用 `radix-ui`（按需 `import { Toggle } from "radix-ui"`），配色只用 `globals.css` 中 `@theme` 定义的设计令牌。
+- 图标只用 `@/components/icons` 的 `<Icon name="…" size="sm|md|…" />`（Reicon Outline，仓库内收录，**不要引入任何图标库依赖**，`pnpm check:icons` 检查）：尺寸只用 `size` 令牌，颜色只继承文字颜色（`text-muted`、`text-danger` 等令牌加在图标或父元素上），不写 `opacity-*`、`text-fg/75`、`fill`/`stroke` 颜色；缺图标时在 `scripts/vendor-reicon.mjs` 的 `ICONS` 里加映射后重新生成（见 `components/icons/NOTICE.md`）。
 - 字号只用 `globals.css` `@theme` 的字号令牌：`text-2xs` 11 / `text-xs` 12 / `text-sm` 13（界面控件）/ `text-base` 14（阅读正文：用户气泡、助手回复、输入框）/ `text-md` 15 / `text-lg` 16 / `text-xl` 18 / `text-2xl` 24 / `text-3xl` 28（另有 `text-3xs` 9 只给附件角标）。不写 `text-[13px]`、`leading-[22px]`、内联 `fontSize` 这类任意值（`pnpm check:type-scale` 检查）；Markdown 标题、行内代码的字号在 `.md` 样式里按 em 跟随正文。
 - 前端单测：`apps/desktop/vitest.config.mts`（jsdom + React Testing Library，`@/` 别名）；测试文件与源码同目录 `*.test.ts(x)`，优先按角色/可访问名称查询元素。
 
@@ -98,7 +99,7 @@ pnpm build:extensions   # 构建 primus-bundle.js
 pnpm lint && pnpm test  # Biome + Vitest
 pnpm test:e2e           # 端到端冒烟（仅 Windows：先 pnpm build，需 tauri-driver 与匹配 WebView2 的 msedgedriver）
 cd apps/desktop/src-tauri && cargo nextest run --all-targets   # Rust 单测（CI 用 --profile ci 输出 JUnit）
-pnpm check:versions && pnpm check:tauri-imports && pnpm check:forbidden-sdk && pnpm check:naming && pnpm check:type-scale
+pnpm check:versions && pnpm check:tauri-imports && pnpm check:forbidden-sdk && pnpm check:naming && pnpm check:type-scale && pnpm check:icons
 ```
 
 ## 8. 完成一项改动的标准

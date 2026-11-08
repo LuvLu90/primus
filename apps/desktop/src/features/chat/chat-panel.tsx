@@ -1,7 +1,6 @@
 "use client";
 
 import { type AgentMessage, type ImageContent, splitFileTags } from "@primus/protocol";
-import { ArrowUp, Maximize2, Minimize2, Plus, Square } from "lucide-react";
 import { useRouter } from "next/navigation";
 import {
   type ClipboardEvent,
@@ -17,6 +16,7 @@ import {
   useState,
 } from "react";
 import { LogoMark } from "@/components/brand/logo";
+import { Icon } from "@/components/icons";
 import { glassButtonClass, useGlassStyle } from "@/components/layout/glass-panel";
 import { useMediaQuery } from "@/components/theme/appearance-controller";
 import { GlassButton } from "@/components/ui/glass-button";
@@ -230,7 +230,6 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
   // 提交中（等待会话打开与 prompt 响应）：阻止重复提交，并锁定输入，避免成功后清掉期间新增的内容
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false);
-  const PermissionIcon = permissionMeta[permissionMode].icon;
   // 当前模型：Core 报告的 > 打开前选的 > 账号配置的默认模型
   const currentModel = state.model
     ? `${state.model.provider}/${state.model.id}`
@@ -834,9 +833,9 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                     className="absolute top-0 right-0 grid size-7 place-items-center rounded-lg text-muted outline-none transition-colors hover:bg-hover hover:text-fg"
                   >
                     {expanded ? (
-                      <Minimize2 aria-hidden size={14} />
+                      <Icon name="minimize" size="sm" />
                     ) : (
-                      <Maximize2 aria-hidden size={14} />
+                      <Icon name="maximize" size="sm" />
                     )}
                   </button>
                 )}
@@ -853,7 +852,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                     onClick={() => void pickFiles()}
                     className={glassButtonClass}
                   >
-                    <Plus aria-hidden size={16} />
+                    <Icon name="plus" />
                   </GlassButton>
                 )}
                 <PermissionPicker mode={permissionMode} onChange={setPermissionMode}>
@@ -864,10 +863,9 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                     aria-label={`${t.permissionMode}：${t.permissions[permissionMode].label}`}
                     className={glassButtonClass}
                   >
-                    <PermissionIcon
-                      aria-hidden
-                      size={14}
-                      strokeWidth={1.9}
+                    <Icon
+                      name={permissionMeta[permissionMode].icon}
+                      size="sm"
                       className={permissionMeta[permissionMode].tone}
                     />
                     <span
@@ -931,7 +929,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                     onClick={stop}
                     className="grid size-8 place-items-center rounded-full bg-fg text-surface transition-opacity disabled:opacity-40"
                   >
-                    <Square aria-hidden size={12} fill="currentColor" />
+                    <Icon name="stop" size="xs" />
                   </button>
                 ) : (
                   <button
@@ -948,7 +946,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                     }
                     className="grid size-8 place-items-center rounded-full bg-fg text-surface transition-[opacity,transform] active:scale-95 disabled:opacity-20 disabled:active:scale-100"
                   >
-                    <ArrowUp aria-hidden size={16} strokeWidth={2.5} />
+                    <Icon name="arrow-up" />
                   </button>
                 )}
               </div>

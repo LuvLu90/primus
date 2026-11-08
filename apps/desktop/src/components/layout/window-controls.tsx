@@ -1,7 +1,7 @@
 "use client";
 
-import { Copy, Minus, Square, X } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
+import { Icon } from "@/components/icons";
 import { type WindowControls as Controls, getWindowControls } from "@/lib/platform";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
@@ -38,7 +38,7 @@ function CaptionButton({
         "flex h-9 w-[46px] items-center justify-center text-fg transition-colors duration-100",
         "focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent",
         danger
-          ? "hover:bg-caption-close hover:text-white active:bg-caption-close-pressed active:text-white"
+          ? "hover:bg-caption-close hover:text-on-danger active:bg-caption-close-pressed active:text-on-danger"
           : "hover:bg-hover active:bg-[var(--color-border)]",
         className,
       )}
@@ -77,16 +77,16 @@ export function WindowControls({ className }: { className?: string }) {
   return (
     <div className={cn("flex shrink-0 self-start", className)}>
       <CaptionButton label={t.minimize} onClick={() => void controls.minimize()}>
-        <Minus aria-hidden size={16} strokeWidth={1.25} />
+        <Icon name="minus" />
       </CaptionButton>
       <CaptionButton
         label={maximized ? t.restore : t.maximize}
         onClick={() => void controls.toggleMaximize()}
       >
         {maximized ? (
-          <Copy aria-hidden size={12} strokeWidth={1.5} className="-scale-x-100" />
+          <Icon name="window-restore" size="xs" />
         ) : (
-          <Square aria-hidden size={12} strokeWidth={1.5} />
+          <Icon name="window-maximize" size="xs" />
         )}
       </CaptionButton>
       <CaptionButton
@@ -96,7 +96,7 @@ export function WindowControls({ className }: { className?: string }) {
         className={maximized ? undefined : "rounded-tr-lg"}
         onClick={() => void controls.close()}
       >
-        <X aria-hidden size={18} strokeWidth={1.25} />
+        <Icon name="x" />
       </CaptionButton>
     </div>
   );

@@ -19,6 +19,8 @@
   --color-accent: #3a3a3c;
   --color-bubble: #ededf0;
   --color-danger: #d70015;
+  /* 实心危险色按钮（录音停止）上的文字与图标，浅深色一致 */
+  --color-on-danger: #ffffff;
   --color-warning: #c93400;
   --color-success: #248a3d;
   /* 选中指示（模型选择的单选圆点）：唯一的彩色强调，取系统橙 */
@@ -90,6 +92,19 @@
   --text-3xl--line-height: 36px;
   /* 输入框行高固定 22px：与 chat-panel 里计算 2–6 行高度用的 INPUT_LINE_PX 保持一致 */
   --leading-input: 22px;
+
+  /*
+   * 图标尺寸阶梯（components/icons 的 <Icon size>，生成 size-icon-* 工具类）。
+   * 图标统一用 Reicon Outline（24px 网格），颜色只继承 currentColor（弱化 / 危险 / 警告用 text-muted 等颜色令牌）。
+   *   2xs 10px · xs 12px（配 11px 文字）· sm 14px（配 12–13px 文字）· md 16px（配 14–15px 文字，默认）· lg 20px · xl 24px
+   * 渲染线宽统一约 1.25px（小尺寸由 <Icon> 按尺寸加粗，见 components/icons/icon.tsx 的 ICON_STROKE_PX）。
+   */
+  --spacing-icon-2xs: 10px;
+  --spacing-icon-xs: 12px;
+  --spacing-icon-sm: 14px;
+  --spacing-icon-md: 16px;
+  --spacing-icon-lg: 20px;
+  --spacing-icon-xl: 24px;
 }
 
 :root {

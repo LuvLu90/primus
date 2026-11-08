@@ -2,8 +2,8 @@
 
 // 时间线里的复制按钮：助手回复、用户消息与错误卡片共用。复制成功后图标换成对勾约 1.5 秒，
 // 无障碍名称同步换成“已复制”。剪贴板不可用或写入失败时保持原样（不打扰用户）。
-import { Check, Copy } from "lucide-react";
 import { useEffect, useState } from "react";
+import { Icon } from "@/components/icons";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 
@@ -37,7 +37,6 @@ export function CopyButton({
     return () => clearTimeout(id);
   }, [copied]);
   const name = copied ? strings.chat.copied : label;
-  const icon = size === "sm" ? 13 : 14;
   return (
     <button
       type="button"
@@ -55,9 +54,9 @@ export function CopyButton({
       )}
     >
       {copied ? (
-        <Check aria-hidden size={icon} className="step-in" />
+        <Icon name="check" size="sm" className="step-in" />
       ) : (
-        <Copy aria-hidden size={icon} />
+        <Icon name="copy" size="sm" />
       )}
     </button>
   );

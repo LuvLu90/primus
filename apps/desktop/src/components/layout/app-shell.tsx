@@ -1,6 +1,5 @@
 "use client";
 
-import { PanelLeft, PanelRight } from "lucide-react";
 import {
   type CSSProperties,
   type ReactNode,
@@ -9,6 +8,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { Icon } from "@/components/icons";
 import { ChatPanel } from "@/features/chat/chat-panel";
 import { useSessionsStore } from "@/features/sessions/sessions-store";
 import { getWindowControls, type WindowControls } from "@/lib/platform";
@@ -479,7 +479,6 @@ function PanelToggle({
   /** 一次开关动画进行中禁用，避免叠加 */
   disabled?: boolean;
 }) {
-  const Icon = side === "left" ? PanelLeft : PanelRight;
   return (
     <button
       type="button"
@@ -495,7 +494,7 @@ function PanelToggle({
         side === "left" ? "left-1.5" : "right-1.5",
       )}
     >
-      <Icon className="size-4" strokeWidth={1.75} />
+      <Icon name={side === "left" ? "sidebar-left" : "sidebar-right"} />
     </button>
   );
 }

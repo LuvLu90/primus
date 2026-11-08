@@ -2,16 +2,6 @@
 
 import type { AgentMessage } from "@primus/protocol";
 import {
-  Brain,
-  ChevronRight,
-  FilePen,
-  FileText,
-  type LucideIcon,
-  Search,
-  SquareTerminal,
-  Wrench,
-} from "lucide-react";
-import {
   memo,
   type ReactNode,
   useEffect,
@@ -21,6 +11,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { Icon, type IconName } from "@/components/icons";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 import type { SessionState, TimelineContent, ToolRun } from "@/stores/session-store";
@@ -53,13 +44,13 @@ const toolKinds: Record<string, ToolKind> = {
   glob: "search",
 };
 
-const toolIcons: Record<ToolKind, LucideIcon> = {
-  read: FileText,
-  bash: SquareTerminal,
-  edit: FilePen,
-  write: FilePen,
-  search: Search,
-  other: Wrench,
+const toolIcons: Record<ToolKind, IconName> = {
+  read: "file-text",
+  bash: "terminal",
+  edit: "pen-edit",
+  write: "pen-edit",
+  search: "search",
+  other: "tool",
 };
 
 const kindOf = (name: string): ToolKind => toolKinds[name] ?? "other";
@@ -213,7 +204,7 @@ function StepButton({
   open,
   onToggle,
   controls,
-  icon: Icon,
+  icon,
   children,
   live,
   failed,
@@ -221,7 +212,7 @@ function StepButton({
   open: boolean;
   onToggle: () => void;
   controls: string;
-  icon: LucideIcon;
+  icon: IconName;
   children: ReactNode;
   live?: boolean;
   failed?: boolean;
@@ -234,19 +225,14 @@ function StepButton({
       onClick={onToggle}
       className="group/step -mx-1.5 flex max-w-full items-center gap-2 rounded-lg px-1.5 py-[3px] text-left text-sm text-muted outline-none transition-colors duration-200 hover:bg-hover/60 hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40"
     >
-      <Icon
-        aria-hidden
-        size={14}
-        strokeWidth={1.75}
-        className={cn("shrink-0", failed && "text-danger")}
-      />
+      <Icon name={icon} size="sm" className={cn(failed && "text-danger")} />
       <span className={cn("min-w-0 truncate", live && "text-pulse")}>{children}</span>
-      <ChevronRight
-        aria-hidden
-        size={13}
+      <Icon
+        name="chevron-right"
+        size="sm"
         className={cn(
-          "shrink-0 opacity-0 transition-[rotate,opacity] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover/step:opacity-60 group-focus-visible/step:opacity-60",
-          open && "rotate-90 opacity-60",
+          "text-muted opacity-0 transition-[rotate,opacity] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover/step:opacity-100 group-focus-visible/step:opacity-100",
+          open && "rotate-90 opacity-100",
         )}
       />
     </button>
@@ -375,7 +361,7 @@ function ThoughtStep({ text, live }: { text: string; live: boolean }) {
         open={open}
         onToggle={() => setUserOpen(!open)}
         controls={id}
-        icon={Brain}
+        icon="thinking"
         live={live}
       >
         {live ? t.thinkingNow : t.thought}
@@ -504,9 +490,9 @@ export const AgentTurn = memo(function AgentTurn({
             <span className={cn(running && "text-pulse")}>{running ? t.running : t.elapsed}</span>
             <Elapsed start={start} end={end} running={running} />
             {steps.length > 0 && (
-              <ChevronRight
-                aria-hidden
-                size={14}
+              <Icon
+                name="chevron-right"
+                size="sm"
                 className={cn(
                   "transition-[rotate] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
                   open && "rotate-90",

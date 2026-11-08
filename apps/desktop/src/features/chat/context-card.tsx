@@ -14,9 +14,9 @@ import type {
   ContextUsage,
   SessionStats,
 } from "@primus/protocol";
-import { ChevronDown } from "lucide-react";
 import { Popover } from "radix-ui";
 import { type CSSProperties, useState } from "react";
+import { Icon } from "@/components/icons";
 import { useGlassStyle } from "@/components/layout/glass-panel";
 import { GlassSurface } from "@/components/ui/glass-surface";
 import { Switch } from "@/components/ui/switch";
@@ -205,9 +205,9 @@ function ContextCard({
               ? `${known ? formatTokens(used) : "—"} / ${formatTokens(b.contextWindow)} (${known ? formatPercent(percent) : "—"})`
               : c.noData}
           </span>
-          <ChevronDown
-            aria-hidden
-            size={13}
+          <Icon
+            name="chevron-down"
+            size="sm"
             className="ctx-chevron text-muted"
             data-open={expanded || undefined}
           />
@@ -396,10 +396,10 @@ function ContextGroup({ row, index, known }: { row: BreakdownRow; index: number;
         <span className="text-muted">{count}</span>
         <span className="flex-1" />
         <span className="tabular-nums text-muted">{formatEstimate(row.tokens, row.estimated)}</span>
-        <ChevronDown
-          aria-hidden
-          size={12}
-          className={cn("ctx-chevron shrink-0 text-muted", empty && "opacity-0")}
+        <Icon
+          name="chevron-down"
+          size="xs"
+          className={cn("ctx-chevron text-muted", empty && "invisible")}
           data-open={open || undefined}
         />
       </button>
@@ -445,10 +445,10 @@ function UsedToolsGroup({ tools, index }: { tools: ContextStatsUsedTool[]; index
         <span className="text-muted">{count}</span>
         <span className="flex-1" />
         <span className="tabular-nums text-muted">{c.callCount.replace("{n}", String(total))}</span>
-        <ChevronDown
-          aria-hidden
-          size={12}
-          className="ctx-chevron shrink-0 text-muted"
+        <Icon
+          name="chevron-down"
+          size="xs"
+          className="ctx-chevron text-muted"
           data-open={open || undefined}
         />
       </button>

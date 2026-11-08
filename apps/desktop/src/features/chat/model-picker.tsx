@@ -10,7 +10,6 @@
 // 分隔线下是固定在底部的“思考程度”滑杆（两端“更快 / 更聪明”，拇指弹到档位上）。
 // 还没有任何模型时弹层只有一句说明和“去设置添加渠道”。
 import type { ThinkingLevel } from "@primus/protocol";
-import { Check, ChevronDown } from "lucide-react";
 import { DropdownMenu as Menu } from "radix-ui";
 import {
   type KeyboardEvent,
@@ -23,6 +22,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { Icon } from "@/components/icons";
 import {
   GlassPopover,
   GlassPopoverContent,
@@ -160,7 +160,7 @@ export function ModelPicker({
         >
           <span className="truncate">{name}</span>
           {level && <span className="shrink-0">· {level}</span>}
-          <ChevronDown aria-hidden size={12} className="shrink-0 opacity-70" />
+          <Icon name="chevron-down" size="xs" />
         </button>
       </GlassPopoverTrigger>
       <GlassPopoverContent
@@ -258,7 +258,7 @@ function ModelList({
                 </span>
                 <span aria-hidden className="flex w-3.5 shrink-0 justify-center">
                   <Menu.ItemIndicator>
-                    <Check size={14} />
+                    <Icon name="check" size="sm" />
                   </Menu.ItemIndicator>
                 </span>
               </Menu.RadioItem>

@@ -20,6 +20,8 @@ reviews:
     - "!apps/desktop/src/components/ui/glass-button.tsx"
     - "!apps/desktop/src/components/ui/glass-switch.tsx"
     - "!apps/desktop/src/components/ui/glass-slider.tsx"
+    # Reicon 图标数据（MIT），由 scripts/vendor-reicon.mjs 生成，来源与许可见 apps/desktop/src/components/icons/NOTICE.md
+    - "!apps/desktop/src/components/icons/icons.generated.ts"
     # agent-core/ 是上游源码（git subtree），不逐行审查；本项目的改动统一登记在 agent-core/PATCHES.md
     - "!agent-core/packages/**"
     - "!agent-core/package-lock.json"

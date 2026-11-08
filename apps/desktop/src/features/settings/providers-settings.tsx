@@ -1,7 +1,7 @@
 "use client";
 
-import { ChevronDown, Pencil, Plus, Trash2 } from "lucide-react";
 import { type FormEvent, useEffect, useId, useRef, useState } from "react";
+import { Icon } from "@/components/icons";
 import {
   GlassDialog,
   GlassDialogClose,
@@ -179,7 +179,7 @@ export function ProviderSettings() {
                   onClick={() => setEditing(p)}
                   className={iconButtonClass}
                 >
-                  <Pencil aria-hidden size={15} />
+                  <Icon name="pen" />
                 </button>
                 <button
                   type="button"
@@ -189,7 +189,7 @@ export function ProviderSettings() {
                   onClick={() => setPendingDelete(p)}
                   className={cn(iconButtonClass, "hover:text-danger")}
                 >
-                  <Trash2 aria-hidden size={15} />
+                  <Icon name="trash" />
                 </button>
               </li>
             ))}
@@ -202,7 +202,7 @@ export function ProviderSettings() {
             disabled={busy !== null}
             className={buttonClass}
           >
-            <Plus aria-hidden size={14} />
+            <Icon name="plus" size="sm" />
             {t.add}
           </button>
         </div>
@@ -675,9 +675,9 @@ function ModelRow({
             onClick={onToggleOpen}
             className={cn(iconButtonClass, "size-7")}
           >
-            <ChevronDown
-              aria-hidden
-              size={14}
+            <Icon
+              name="chevron-down"
+              size="sm"
               className={cn(
                 "transition-transform duration-200 motion-reduce:transition-none",
                 open && "rotate-180",

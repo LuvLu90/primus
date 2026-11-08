@@ -2,19 +2,9 @@
 
 // 输入框周边的弹出菜单：选择工作区、权限模式；以及附件（本地路径引用）小标签。
 import { appendFileTags } from "@primus/protocol";
-import {
-  Check,
-  FileText,
-  Folder,
-  Hand,
-  Plus,
-  Search,
-  ShieldAlert,
-  ShieldCheck,
-  X,
-} from "lucide-react";
 import { DropdownMenu as Menu } from "radix-ui";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { Icon, type IconName } from "@/components/icons";
 import {
   GlassPopover,
   GlassPopoverContent,
@@ -156,7 +146,7 @@ export function WorkspacePicker({
           className="max-w-80"
         >
           <div className="-mt-0.5 flex items-center gap-2 px-4 pb-2 pt-0.5">
-            <Search aria-hidden size={14} className="shrink-0 text-muted" />
+            <Icon name="search" size="sm" className="text-muted" />
             <input
               // biome-ignore lint/a11y/noAutofocus: 打开菜单即可输入筛选
               autoFocus
@@ -192,16 +182,9 @@ export function WorkspacePicker({
                   title={ws.path}
                   onSelect={() => void open(ws.path)}
                 >
-                  <Folder
-                    aria-hidden
-                    size={15}
-                    strokeWidth={1.75}
-                    className="shrink-0 text-muted"
-                  />
+                  <Icon name="folder" size="sm" className="text-muted" />
                   <span className="min-w-0 flex-1 truncate">{ws.name}</span>
-                  {current?.path === ws.path && (
-                    <Check aria-hidden size={14} className="shrink-0" />
-                  )}
+                  {current?.path === ws.path && <Icon name="check" size="sm" />}
                 </Menu.Item>
               ))
             )}
@@ -213,7 +196,7 @@ export function WorkspacePicker({
                 className={cn(rowClass, "text-muted data-[highlighted]:text-fg")}
                 onSelect={() => void browse()}
               >
-                <Plus aria-hidden size={15} strokeWidth={1.75} className="shrink-0" />
+                <Icon name="plus" size="sm" />
                 <span>{strings.layout.openFolder}</span>
               </Menu.Item>
             </>
@@ -225,10 +208,10 @@ export function WorkspacePicker({
 }
 
 /** 各权限模式的图标与强调色：完全访问用警示色，提醒风险 */
-export const permissionMeta: Record<PermissionMode, { icon: typeof Hand; tone: string }> = {
-  ask: { icon: Hand, tone: "" },
-  edit: { icon: ShieldCheck, tone: "text-success" },
-  full: { icon: ShieldAlert, tone: "text-warning" },
+export const permissionMeta: Record<PermissionMode, { icon: IconName; tone: string }> = {
+  ask: { icon: "hand", tone: "" },
+  edit: { icon: "shield-check", tone: "text-success" },
+  full: { icon: "shield-alert", tone: "text-warning" },
 };
 
 const MODES: PermissionMode[] = ["ask", "edit", "full"];
@@ -255,7 +238,7 @@ export function PermissionPicker({
       >
         <Menu.RadioGroup value={mode} onValueChange={(v) => onChange(v as PermissionMode)}>
           {MODES.map((m) => {
-            const { icon: Icon, tone } = permissionMeta[m];
+            const { icon, tone } = permissionMeta[m];
             const p = t.permissions[m];
             return (
               <Menu.RadioItem
@@ -264,12 +247,7 @@ export function PermissionPicker({
                 textValue={p.label}
                 className={cn(rowClass, "items-start gap-3 py-2", m === "full" && tone)}
               >
-                <Icon
-                  aria-hidden
-                  size={16}
-                  strokeWidth={1.75}
-                  className={cn("mt-0.5 shrink-0", tone || "text-muted")}
-                />
+                <Icon name={icon} className={cn("mt-0.5", tone || "text-muted")} />
                 <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                   <span className="font-medium leading-snug">{p.label}</span>
                   <span
@@ -282,7 +260,7 @@ export function PermissionPicker({
                   </span>
                 </span>
                 <Menu.ItemIndicator className="mt-0.5 shrink-0">
-                  <Check aria-hidden size={14} />
+                  <Icon name="check" size="sm" />
                 </Menu.ItemIndicator>
               </Menu.RadioItem>
             );
@@ -308,17 +286,17 @@ export function AttachmentChips({
         <li
           key={p}
           title={p}
-          className="group flex h-7 max-w-56 items-center gap-1.5 rounded-[9px] bg-black/[0.045] pl-2 pr-1 text-xs ring-1 ring-black/[0.05] dark:bg-white/[0.07] dark:ring-white/[0.06]"
+          className="group flex h-7 max-w-56 items-center gap-1.5 rounded-[9px] bg-tile pl-2 pr-1 text-xs ring-1 ring-tile-ring"
         >
-          <FileText aria-hidden size={13} className="shrink-0 text-muted" />
+          <Icon name="file-text" size="sm" className="text-muted" />
           <span className="min-w-0 truncate">{baseName(p)}</span>
           <button
             type="button"
             aria-label={`${t.removeAttachment} ${baseName(p)}`}
             onClick={() => onRemove(p)}
-            className="grid size-5 shrink-0 place-items-center rounded-md text-muted outline-none hover:bg-black/[0.07] hover:text-fg dark:hover:bg-white/[0.1]"
+            className="grid size-5 shrink-0 place-items-center rounded-md text-muted outline-none hover:bg-hover hover:text-fg"
           >
-            <X aria-hidden size={12} />
+            <Icon name="x" size="xs" />
           </button>
         </li>
       ))}

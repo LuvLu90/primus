@@ -1,8 +1,8 @@
 "use client";
 
-import { ChevronLeft } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useId, useState } from "react";
+import { Icon } from "@/components/icons";
 import { GlassPanel } from "@/components/layout/glass-panel";
 import {
   centerSeamStyle,
@@ -138,7 +138,7 @@ export function SettingsView() {
                   onClick={() => router.push("/")}
                   className="inline-flex size-8 items-center justify-center rounded-full text-muted transition-colors hover:bg-hover hover:text-fg"
                 >
-                  <ChevronLeft aria-hidden size={18} />
+                  <Icon name="chevron-left" size="lg" />
                 </button>
                 <h1 className="text-sm font-semibold">{t.title}</h1>
               </div>
