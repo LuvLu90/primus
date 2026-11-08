@@ -190,49 +190,25 @@ function mockModel(key: string, m: ModelSummary | undefined) {
   };
 }
 
-/** primus-context-stats 的示例分项（与真实扩展同形：字符数 / 4 估算） */
+/** primus-context-stats 的示例清单（与真实扩展同形：只有名称，不含估算） */
 export const MOCK_CONTEXT_STATS: ContextStatsData = {
-  estimator: "chars/4",
-  categories: [
-    { key: "systemPrompt", tokens: 3_180, items: [] },
-    {
-      key: "systemTools",
-      tokens: 11_840,
-      items: [
-        { name: "bash", tokens: 3_420 },
-        { name: "edit", tokens: 2_610 },
-        { name: "read", tokens: 1_980 },
-        { name: "write", tokens: 1_450 },
-        { name: "grep", tokens: 1_270 },
-        { name: "find", tokens: 1_110 },
-      ],
-    },
+  groups: [
+    { key: "systemTools", items: ["bash", "edit", "find", "grep", "read", "write"] },
     {
       key: "mcpTools",
-      tokens: 6_420,
       items: [
-        { name: "mcp__docs__search", tokens: 2_310 },
-        { name: "mcp__docs__fetch_page", tokens: 1_940 },
-        { name: "mcp__github__list_issues", tokens: 1_260 },
-        { name: "mcp__github__get_pull_request", tokens: 910 },
+        "mcp__docs__fetch_page",
+        "mcp__docs__search",
+        "mcp__github__get_pull_request",
+        "mcp__github__list_issues",
       ],
     },
-    {
-      key: "skills",
-      tokens: 1_920,
-      items: [
-        { name: "pdf", tokens: 640 },
-        { name: "xlsx", tokens: 610 },
-        { name: "docx", tokens: 380 },
-        { name: "frontend-design", tokens: 290 },
-      ],
-    },
+    { key: "skills", items: ["docx", "frontend-design", "pdf", "xlsx"] },
     {
       key: "memoryFiles",
-      tokens: 2_640,
       items: [
-        { name: "C:\\Users\\mock\\示例工作区\\AGENTS.md", tokens: 2_210 },
-        { name: "C:\\Users\\mock\\示例工作区\\web\\AGENTS.md", tokens: 430 },
+        "C:\\Users\\mock\\示例工作区\\AGENTS.md",
+        "C:\\Users\\mock\\示例工作区\\web\\AGENTS.md",
       ],
     },
   ],
@@ -244,8 +220,8 @@ export const MOCK_CONTEXT_STATS: ContextStatsData = {
   ],
 };
 
-/** 示例分项之和：mock 的上下文占用在消息之外加上这部分（与真实 Core 一样，占用含系统提示词与工具） */
-const MOCK_CONTEXT_BASE = MOCK_CONTEXT_STATS.categories.reduce((n, c) => n + c.tokens, 0);
+/** mock 的系统提示词与工具声明占用（与真实 Core 一样，上下文占用含系统提示词与工具；mock 里取一个固定值） */
+const MOCK_CONTEXT_BASE = 26_000;
 
 /** mock 内核注册的扩展命令（get_commands） */
 const MOCK_COMMANDS: RpcSlashCommand[] = ["primus-mode", CONTEXT_STATS_COMMAND].map((name) => ({
@@ -501,7 +477,7 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
         const message = String(cmd.message ?? "");
         // 扩展命令（如 primus-guard 的 /primus-mode）：与 Core 一致，直接执行、不调用模型，运行中也立即执行
         if (message.startsWith("/primus-")) {
-          // primus-context-stats：先推分项数据（setWidget），再回 handled，与 Core 中命令执行完才回响应一致；不写历史
+          // primus-context-stats：先推清单数据（setWidget），再回 handled，与 Core 中命令执行完才回响应一致；不写历史
           if (message.trim() === `/${CONTEXT_STATS_COMMAND}`)
             emit(s, {
               type: "extension_ui_request",

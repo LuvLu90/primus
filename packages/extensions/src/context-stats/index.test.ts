@@ -3,7 +3,6 @@ import { describe, expect, it, vi } from "vitest";
 import contextStats, {
   collectContextStats,
   countUsedTools,
-  estimateTokens,
   isMcpTool,
   type StatsContext,
   type StatsEntry,
@@ -65,13 +64,7 @@ const TOOLS: StatsTools = {
   getActiveTools: () => ["read", "bash", "search"],
 };
 
-describe("primus-context-stats 上下文分项统计", () => {
-  it("按字符数 / 4 估算（与 Core 压缩一致）", () => {
-    expect(estimateTokens("")).toBe(0);
-    expect(estimateTokens("abcd")).toBe(1);
-    expect(estimateTokens("abcde")).toBe(2);
-  });
-
+describe("primus-context-stats 上下文清单", () => {
   it("区分 MCP 工具与其他工具", () => {
     expect(isMcpTool({ name: "x", namespace: { name: "mcp__docs" } })).toBe(true);
     expect(isMcpTool({ name: "x", sourceInfo: { path: "builtin:mcp" } })).toBe(true);
@@ -79,26 +72,17 @@ describe("primus-context-stats 上下文分项统计", () => {
     expect(isMcpTool({ name: "read", sourceInfo: { path: "builtin:read" } })).toBe(false);
   });
 
-  it("系统提示词扣除记忆文件与技能；工具只算声明给模型的，未启用的不列出", () => {
+  it("只列名称、不给 token 数；工具只列声明给模型的，未启用的不列出", () => {
     const data = collectContextStats(ctx(), TOOLS);
-    expect(data.estimator).toBe("chars/4");
-    const get = (key: string) => data.categories.find((c) => c.key === key);
-    expect(data.categories.map((c) => c.key)).toEqual([
-      "systemPrompt",
-      "systemTools",
-      "mcpTools",
-      "skills",
-      "memoryFiles",
+    expect(data.groups).toEqual([
+      { key: "systemTools", items: ["bash", "read"] },
+      { key: "mcpTools", items: ["search"] },
+      // 不给模型调用的技能不在系统提示词里
+      { key: "skills", items: ["pdf"] },
+      { key: "memoryFiles", items: ["AGENTS.md"] },
     ]);
-    const memory = get("memoryFiles");
-    expect(memory?.items.map((i) => i.name)).toEqual(["AGENTS.md"]);
-    expect(memory?.tokens).toBe(estimateTokens(`AGENTS.md\n${AGENTS}`));
-    // 不给模型调用的技能不在系统提示词里
-    expect(get("skills")?.items.map((i) => i.name)).toEqual(["pdf"]);
-    const sys = get("systemPrompt")?.tokens ?? 0;
-    expect(sys).toBe(estimateTokens(PROMPT) - (memory?.tokens ?? 0) - (get("skills")?.tokens ?? 0));
-    expect(get("systemTools")?.items.map((i) => i.name)).toEqual(["bash", "read"]);
-    expect(get("mcpTools")?.items.map((i) => i.name)).toEqual(["search"]);
+    // 不含任何估算字段
+    expect(JSON.stringify(data)).not.toMatch(/tokens|estimat/);
     expect(data).not.toHaveProperty("deferredTools");
     // 只列本会话实际调用过的工具（含后来经 tool_search 加载的），按次数从多到少
     expect(data.usedTools).toEqual([
@@ -125,9 +109,9 @@ describe("primus-context-stats 上下文分项统计", () => {
     expect(countUsedTools({ ui: {} })).toEqual([]);
   });
 
-  it("扩展 API 缺项时退化为空分项，不抛错", () => {
+  it("扩展 API 缺项时退化为空清单，不抛错", () => {
     const data = collectContextStats({ ui: {} });
-    expect(data.categories.every((c) => c.tokens === 0 && c.items.length === 0)).toBe(true);
+    expect(data.groups.every((g) => g.items.length === 0)).toBe(true);
     expect(data.usedTools).toEqual([]);
   });
 
@@ -144,7 +128,7 @@ describe("primus-context-stats 上下文分项统计", () => {
     expect(setWidget).toHaveBeenCalledWith(CONTEXT_STATS_WIDGET, [expect.any(String)]);
     const payload = JSON.parse(setWidget.mock.calls[0]?.[1][0]);
     expect(payload).toMatchObject({ v: 1, type: "context-stats" });
-    expect(payload.data.categories).toHaveLength(5);
+    expect(payload.data.groups).toHaveLength(4);
     expect(payload.data.usedTools[0]).toEqual({ name: "read", count: 2 });
   });
 
@@ -171,8 +155,8 @@ describe("primus-context-stats 上下文分项统计", () => {
     handlers.get("model_select")?.({}, eventCtx);
     expect(setWidget).toHaveBeenCalledTimes(2);
     const payload = JSON.parse(setWidget.mock.calls[0]?.[1][0]);
-    const memory = payload.data.categories.find((c: { key: string }) => c.key === "memoryFiles");
-    expect(memory.items.map((i: { name: string }) => i.name)).toEqual(["AGENTS.md"]);
+    const memory = payload.data.groups.find((g: { key: string }) => g.key === "memoryFiles");
+    expect(memory.items).toEqual(["AGENTS.md"]);
     // 统计出错不抛到 Core
     expect(() =>
       handlers.get("agent_end")?.(
