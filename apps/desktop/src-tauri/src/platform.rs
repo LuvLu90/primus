@@ -158,6 +158,33 @@ pub(crate) fn relaunch_script(handle: usize, exe: &Path, data_dir: Option<&Path>
     )
 }
 
+/// 能否找到 PowerShell（技术方案第 12.3 节）：与 Core 的 `powershell` 工具查找同样的位置——PATH 上的 `pwsh.exe`、
+/// `%ProgramFiles%\PowerShell\7\pwsh.exe`、PATH 上的 `powershell.exe`、`<系统目录>\WindowsPowerShell\v1.0\powershell.exe`，
+/// 任一存在即可（具体用哪个由 Core 决定）。只检查文件是否存在，不拉起进程，启动时调用不增加耗时。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn powershell_available_in(
+    system_dir: &Path,
+    program_files: Option<&std::ffi::OsStr>,
+    path_var: Option<&std::ffi::OsStr>,
+) -> bool {
+    let mut candidates = vec![
+        system_dir
+            .join("WindowsPowerShell")
+            .join("v1.0")
+            .join("powershell.exe"),
+    ];
+    if let Some(dir) = program_files.filter(|d| !d.is_empty()) {
+        candidates.push(Path::new(dir).join("PowerShell").join("7").join("pwsh.exe"));
+    }
+    if let Some(path_var) = path_var {
+        for dir in std::env::split_paths(path_var).filter(|d| d.is_absolute()) {
+            candidates.push(dir.join("pwsh.exe"));
+            candidates.push(dir.join("powershell.exe"));
+        }
+    }
+    candidates.iter().any(|file| file.is_file())
+}
+
 #[cfg(windows)]
 pub(crate) use windows_impl::*;
 
@@ -750,6 +777,15 @@ mod windows_impl {
         std::path::PathBuf::from(std::ffi::OsString::from_wide(&buf[..len]))
     }
 
+    /// 本机能否找到 PowerShell（见 [`super::powershell_available_in`]）。
+    pub(crate) fn powershell_available() -> bool {
+        super::powershell_available_in(
+            &system_dir(),
+            std::env::var_os("ProgramFiles").as_deref(),
+            std::env::var_os("PATH").as_deref(),
+        )
+    }
+
     /// 自动更新（ADR 0007）：经 UAC（`runas`）启动安装器；拿到安装器进程句柄后，以当前（非提权）身份拉起一个隐藏的
     /// PowerShell，等安装器结束后重新打开 `relaunch`，保证新版本以普通权限运行（不让提权的安装器直接启动 App）。
     /// 返回 `Ok(Some(relaunch_scheduled))` 表示安装器已运行（调用方应退出），用户取消 UAC 返回 `Ok(None)`。
@@ -1041,6 +1077,11 @@ mod windows_impl {
 mod fallback_impl {
     use super::*;
 
+    /// 非 Windows：Core 的 `powershell` 工具只在 Windows 原生进程中可用，命令工具保持 `bash`。
+    pub(crate) fn powershell_available() -> bool {
+        false
+    }
+
     /// 文件系统身份（[`file_keys`]）：Unix 为 dev + ino，跟随符号链接；取不到时为 None。
     pub(crate) fn file_system_id(path: &Path) -> Option<String> {
         #[cfg(unix)]
@@ -1249,6 +1290,46 @@ pub fn set_window_bounds(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn powershell_detection_checks_core_locations() {
+        let root =
+            std::env::temp_dir().join(format!("primus-powershell-detect-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let system = root.join("System32");
+        let program_files = root.join("Program Files");
+        let bin = root.join("bin");
+        for dir in [&system, &program_files, &bin] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let path_var = std::env::join_paths([&bin]).unwrap();
+        let detect = || {
+            powershell_available_in(
+                &system,
+                Some(program_files.as_os_str()),
+                Some(path_var.as_os_str()),
+            )
+        };
+        assert!(!detect());
+        // PATH 上的 pwsh.exe
+        std::fs::write(bin.join("pwsh.exe"), b"").unwrap();
+        assert!(detect());
+        std::fs::remove_file(bin.join("pwsh.exe")).unwrap();
+        // %ProgramFiles%\PowerShell\7\pwsh.exe
+        let pwsh7 = program_files.join("PowerShell").join("7");
+        std::fs::create_dir_all(&pwsh7).unwrap();
+        std::fs::write(pwsh7.join("pwsh.exe"), b"").unwrap();
+        assert!(detect());
+        std::fs::remove_file(pwsh7.join("pwsh.exe")).unwrap();
+        // 系统自带的 Windows PowerShell；同名目录不算
+        let legacy = system.join("WindowsPowerShell").join("v1.0");
+        std::fs::create_dir_all(legacy.join("powershell.exe")).unwrap();
+        assert!(!detect());
+        std::fs::remove_dir(legacy.join("powershell.exe")).unwrap();
+        std::fs::write(legacy.join("powershell.exe"), b"").unwrap();
+        assert!(detect());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn path_key_normalizes_per_platform() {
