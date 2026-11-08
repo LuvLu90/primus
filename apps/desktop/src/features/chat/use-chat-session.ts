@@ -68,13 +68,14 @@ export interface ChatSession {
   /** 刷新上下文占用与本会话用量（get_session_stats）；会话未打开时什么也不做 */
   refreshStats: () => void;
   /**
-   * 请求上下文分项统计（`/primus-context-stats`）。先用 get_commands 确认扩展命令已注册：
-   * 未注册时这段文字会被当作普通消息发给模型，因此不发送（卡片只显示已用与可用空间）
+   * 请求上下文分项统计（`/primus-context-stats`）。先用 get_commands 确认扩展命令已注册（每个连接只查一次）：
+   * 未注册时这段文字会被当作普通消息发给模型，因此不发送（卡片只显示已用与可用空间）。
+   * 会话打开与重启后会自动预取一次，之后由扩展在每轮结束时主动重推
    */
   requestContextStats: () => void;
   /** 立即压缩（compact）；成功返回 true，失败设置 error 并返回 false */
   compact: () => Promise<boolean>;
-  /** 开关自动压缩（set_auto_compaction）；成功返回 true */
+  /** 开关自动压缩（set_auto_compaction，Core 的全局持久设置）；乐观更新，失败回滚；成功返回 true */
   setAutoCompaction: (enabled: boolean) => Promise<boolean>;
   /** abort 成功（Core 已回成功响应）返回 true；失败时设置 error 并返回 false */
   abort: () => Promise<boolean>;
@@ -158,6 +159,35 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
   }>({});
   const pendingModelRef = useRef(pendingModel);
   pendingModelRef.current = pendingModel;
+
+  // 只在每个连接（含重启后的新进程）上查一次命令是否注册，结果缓存；之后扩展在每轮结束时主动重推，
+  // 打开卡片不再现场串行 get_commands → prompt → setWidget
+  const requestContextStats = useCallback(() => {
+    const c = conn.current;
+    if (!c) return;
+    const { client } = c;
+    if (!statsCommandReady.current) {
+      const query: Promise<boolean> = client
+        .request("get_commands")
+        .then(
+          (res) =>
+            res.success &&
+            res.data.commands.some(
+              (cmd) => cmd.source === "extension" && cmd.name === CONTEXT_STATS_COMMAND,
+            ),
+        )
+        .catch(() => {
+          // 查询失败（超时等）：下次打开卡片再查；只清掉自己（期间重连或重启已换成新的查询时不动）
+          if (statsCommandReady.current === query) statsCommandReady.current = null;
+          return false;
+        });
+      statsCommandReady.current = query;
+    }
+    void statsCommandReady.current.then((ready) => {
+      if (!ready || conn.current?.client !== client) return;
+      client.request("prompt", { message: contextStatsCommand }).catch(() => {});
+    });
+  }, []);
 
   /** 把界面上的权限模式同步给 Core（primus-guard）；已一致时什么也不做 */
   const syncMode = useCallback(async (client: RpcClient) => {
@@ -304,21 +334,25 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
       optionsRef.current.onOpened?.({ sessionId: sessionId ?? null, workspace: path });
       // 会话已建立：打开后的设置失败不影响会话本身（提示错误；权限模式在下一次发送前会再同步）
       await applySession(client).catch(fail);
+      // 预取上下文分项：打开卡片时已有数据，不再等三次往返
+      requestContextStats();
     })().finally(() => {
       opening.current = null;
       // 失败时也结束“打开中”（成功时已在 onOpened 之前结束，重复调用无影响）
       if (!disposed.current) optionsRef.current.onOpening?.(false);
     });
     return opening.current;
-  }, [enqueue, setError, clearError, syncUnresponsive, applySession, fail]);
+  }, [enqueue, setError, clearError, syncUnresponsive, applySession, fail, requestContextStats]);
 
-  // 每条消息输出结束（含一轮结束）后刷新上下文占用；切换模型后也刷新（上下文窗口随模型变化）
+  // 每条消息输出结束（含一轮结束）后刷新上下文占用；切换模型后也刷新（上下文窗口随模型变化）；
+  // 压缩结束（含自动压缩）后也刷新。打开上下文卡片时直接用这里的结果，不再每次都取
   const streamingNow = state.streamingMessage;
+  const compactingNow = state.compacting;
   const modelKey = state.model ? `${state.model.provider}/${state.model.id}` : "";
   useEffect(() => {
-    if (streamingNow || !modelKey) return;
+    if (streamingNow || compactingNow || !modelKey) return;
     conn.current?.client.request("get_session_stats").catch(() => {});
-  }, [streamingNow, modelKey]);
+  }, [streamingNow, compactingNow, modelKey]);
 
   // 权限模式变化：会话已打开时立即同步（扩展命令运行中也会立即执行）
   const permissionMode = useAppStore((s) => s.permissionMode);
@@ -474,33 +508,6 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     conn.current?.client.request("get_session_stats").catch(() => {});
   }, []);
 
-  const requestContextStats = useCallback(() => {
-    const c = conn.current;
-    if (!c) return;
-    const { client } = c;
-    if (!statsCommandReady.current) {
-      const query: Promise<boolean> = client
-        .request("get_commands")
-        .then(
-          (res) =>
-            res.success &&
-            res.data.commands.some(
-              (cmd) => cmd.source === "extension" && cmd.name === CONTEXT_STATS_COMMAND,
-            ),
-        )
-        .catch(() => {
-          // 查询失败（超时等）：下次打开卡片再查；只清掉自己（期间重连或重启已换成新的查询时不动）
-          if (statsCommandReady.current === query) statsCommandReady.current = null;
-          return false;
-        });
-      statsCommandReady.current = query;
-    }
-    void statsCommandReady.current.then((ready) => {
-      if (!ready || conn.current?.client !== client) return;
-      client.request("prompt", { message: contextStatsCommand }).catch(() => {});
-    });
-  }, []);
-
   const compact = useCallback(async (): Promise<boolean> => {
     const c = conn.current;
     if (!c) return false;
@@ -516,23 +523,33 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     }
   }, [fail]);
 
+  // 自动压缩：先乐观更新 store（开关立即停在新位置），set_auto_compaction 失败再回滚到切换前的值。
+  // 不再用 get_state 读回：成功响应即表示 Core 已写入设置（compaction.enabled，全局持久）
+  const autoCompactionSeq = useRef(0);
   const setAutoCompaction = useCallback(
     async (enabled: boolean): Promise<boolean> => {
       const c = conn.current;
       if (!c) return false;
+      const previous = store.getState().autoCompaction;
+      const seq = ++autoCompactionSeq.current;
+      store.setState((s) => ({ ...s, autoCompaction: enabled }), true);
       try {
         const res = await c.client.request("set_auto_compaction", { enabled });
         if (!res.success)
           throw new Error(`${strings.chat.contextCard.autoCompactFailed}：${res.error}`);
-        // 读回实际生效的值
-        await c.client.request("get_state");
+        // 期间到达的旧 get_state 可能把值改回去：以最后一次成功的切换为准
+        if (seq === autoCompactionSeq.current)
+          store.setState((s) => ({ ...s, autoCompaction: enabled }), true);
         return true;
       } catch (e) {
+        // 只回滚最后一次切换（连续切换时较早那次的失败不覆盖之后的选择）
+        if (seq === autoCompactionSeq.current)
+          store.setState((s) => ({ ...s, autoCompaction: previous }), true);
         fail(e);
         return false;
       }
     },
-    [fail],
+    [store, fail],
   );
 
   // 同步的重入保护（state 要到下一次渲染才生效）；restarting 只用于界面禁用按钮
@@ -557,6 +574,8 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
       const ok = await c.client.resync();
       if (ok) await syncMode(c.client).catch(() => {});
       lock.current.restart = !ok;
+      // 新进程的扩展还没被请求过，不会主动推分项：重新预取一次
+      if (ok) requestContextStats();
       syncUnresponsive();
     } catch (e) {
       // 重启失败时旧进程已结束、会话没有内核：保留重启入口，可再次重启
@@ -569,7 +588,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
       restartingRef.current = false;
       setRestarting(false);
     }
-  }, [setError, fail, syncUnresponsive, syncMode]);
+  }, [setError, fail, syncUnresponsive, syncMode, requestContextStats]);
 
   return {
     state,

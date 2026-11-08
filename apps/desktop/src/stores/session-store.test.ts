@@ -377,7 +377,7 @@ describe("会话 store：流式消息重建（第 7.4 节）", () => {
     const data = {
       estimator: "chars/4",
       categories: [{ key: "systemPrompt", tokens: 1200, items: [] }],
-      deferredTools: ["lazy"],
+      usedTools: [{ name: "read", count: 2 }],
     };
     const s1 = applyChunks(initialSessionState, [
       chunk([widget([JSON.stringify({ v: 1, type: "context-stats", data })])]),
@@ -392,5 +392,11 @@ describe("会话 store：流式消息重建（第 7.4 节）", () => {
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
     expect(applyChunks(s1, [chunk([widget(undefined)])]).contextStats).toBeUndefined();
+    // 旧版扩展没有 usedTools：按空列表处理
+    const legacy = { estimator: "chars/4", categories: data.categories, deferredTools: ["lazy"] };
+    const s3 = applyChunks(initialSessionState, [
+      chunk([widget([JSON.stringify({ v: 1, type: "context-stats", data: legacy })])]),
+    ]);
+    expect(s3.contextStats?.usedTools).toEqual([]);
   });
 });

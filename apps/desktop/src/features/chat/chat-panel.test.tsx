@@ -576,36 +576,74 @@ describe("对话区（mock 事件流）", () => {
     const card = await screen.findByRole("dialog", { name: t.contextCard.title });
     expect(card.textContent).toContain(t.contextCard.usageTitle);
     expect(card.textContent).toContain(t.contextCard.cacheRead);
-    // 打开时刷新用量
-    await waitFor(() =>
-      expect(records.filter((r) => r.type === "get_session_stats").length).toBeGreaterThan(1),
-    );
     await waitFor(() => expect(card.textContent).toMatch(/\$\d/));
-    // 打开时先确认扩展命令已注册，再请求分项统计；该命令不进入时间线
-    await waitFor(() =>
-      expect(
-        records.some((r) => r.type === "prompt" && r.message === "/primus-context-stats"),
-      ).toBe(true),
-    );
-    expect(records.some((r) => r.type === "get_commands")).toBe(true);
+    // 分项在会话打开后已预取（先确认扩展命令已注册，再请求）；该命令不进入时间线
+    const statsPrompts = () =>
+      records.filter((r) => r.type === "prompt" && r.message === "/primus-context-stats").length;
+    expect(statsPrompts()).toBe(1);
+    expect(records.filter((r) => r.type === "get_commands")).toHaveLength(1);
     expect(screen.queryByText("/primus-context-stats")).toBeNull();
-    // 展开明细：分项（消息等）、延迟加载的工具与可用空间
+    // 打开卡片直接用缓存：不再现场请求分项或用量
+    const statsCalls = records.filter((r) => r.type === "get_session_stats").length;
+    // 展开明细：分项（消息等）、可用空间与本会话调用过的工具；没有“延迟加载”
     fireEvent.click(screen.getByRole("button", { name: t.contextCard.expand }));
     expect(await screen.findByRole("list", { name: t.contextCard.groupsLabel })).toBeTruthy();
     expect(screen.getByText(t.contextCard.categories.messages)).toBeTruthy();
-    expect(screen.getByText("notebook_edit")).toBeTruthy();
+    expect(screen.getByText(t.contextCard.usedTools)).toBeTruthy();
+    expect(screen.queryByText("延迟加载")).toBeNull();
     expect(screen.getByText(t.contextCard.free)).toBeTruthy();
-    // 自动压缩开关与立即压缩
-    fireEvent.click(screen.getByRole("switch", { name: t.contextCard.autoCompact }));
+    // 自动压缩开关：立即停在新位置（乐观更新），之后不跳回
+    const toggle = screen.getByRole("switch", {
+      name: `${t.contextCard.autoCompact}（${t.contextCard.autoCompactScope}）`,
+    }) as HTMLInputElement;
+    expect(toggle.checked).toBe(true);
+    fireEvent.click(toggle);
+    expect(toggle.checked).toBe(false);
     await waitFor(() =>
       expect(records.find((r) => r.type === "set_auto_compaction")).toMatchObject({
         enabled: false,
       }),
     );
+    expect(toggle.checked).toBe(false);
+    // 不再用 get_state 读回
+    expect(records.filter((r) => r.type === "get_state").length).toBeLessThanOrEqual(1);
+    // 关闭再打开卡片：仍不现场请求
+    fireEvent.keyDown(card, { key: "Escape" });
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: t.contextCard.title })).toBeNull(),
+    );
+    fireEvent.click(button);
+    await screen.findByRole("dialog", { name: t.contextCard.title });
+    expect(statsPrompts()).toBe(1);
+    expect(records.filter((r) => r.type === "get_session_stats").length).toBe(statsCalls);
     fireEvent.click(screen.getByRole("button", { name: t.contextCard.compactNow }));
     await waitFor(() => expect(records.some((r) => r.type === "compact")).toBe(true));
     // 压缩后占用未知
     await waitFor(() => expect(screen.getByRole("button", { name: "上下文 —" })).toBeTruthy());
+  });
+
+  it("自动压缩切换失败：开关回到原位并提示错误", async () => {
+    setPlatformForTesting(
+      createMockPlatform({
+        intervalMs: 1,
+        batchSize: 50,
+        failCommand: (cmd) => (cmd.type === "set_auto_compaction" ? "设置只读" : undefined),
+      }),
+    );
+    render(<ChatPanel />);
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    fireEvent.change(input, { target: { value: "你好" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(screen.getByRole("button", { name: t.send })).toBeTruthy());
+    fireEvent.click(await screen.findByRole("button", { name: /^上下文 \d/ }));
+    await screen.findByRole("dialog", { name: t.contextCard.title });
+    const toggle = screen.getByRole("switch", {
+      name: `${t.contextCard.autoCompact}（${t.contextCard.autoCompactScope}）`,
+    }) as HTMLInputElement;
+    fireEvent.click(toggle);
+    expect(toggle.checked).toBe(false);
+    await waitFor(() => expect(toggle.checked).toBe(true));
+    expect(await screen.findByText(new RegExp(t.contextCard.autoCompactFailed))).toBeTruthy();
   });
 
   it("语音输入：识别中的文字灰色显示，定稿插入输入框；停止后可发送", async () => {
@@ -640,7 +678,9 @@ describe("对话区（mock 事件流）", () => {
     const sent: string[] = [];
     const coreSend = platform.coreSend.bind(platform);
     vi.spyOn(platform, "coreSend").mockImplementation((key, record) => {
-      if (record.type === "prompt") sent.push(String((record as { message: string }).message));
+      // 会话打开后预取上下文分项的只读命令与本用例无关
+      const message = String((record as { message?: string }).message);
+      if (record.type === "prompt" && message !== "/primus-context-stats") sent.push(message);
       return coreSend(key, record);
     });
     render(<ChatPanel />);

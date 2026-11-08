@@ -91,9 +91,9 @@ export interface SessionState {
   contextUsage?: ContextUsage;
   /** 本会话累计用量（get_session_stats 的 tokens 与 cost） */
   sessionUsage?: Pick<SessionStats, "tokens" | "cost">;
-  /** 上下文分项估算（primus-context-stats 经 setWidget("primus:context-stats") 推送；打开上下文卡片时请求） */
+  /** 上下文分项估算（primus-context-stats 经 setWidget("primus:context-stats") 推送；会话打开后请求一次，之后扩展每轮结束主动重推） */
   contextStats?: ContextStatsData;
-  /** 自动压缩开关（get_state 的 autoCompactionEnabled；set_auto_compaction 成功后更新） */
+  /** 自动压缩开关（get_state 的 autoCompactionEnabled；切换时乐观更新，set_auto_compaction 失败回滚）。Core 的全局持久设置 */
   autoCompaction?: boolean;
   /** 正在压缩（compaction_start 到 compaction_end） */
   compacting: boolean;
@@ -250,9 +250,10 @@ function applyWidget(draft: SessionState, key: string, lines: string[] | undefin
   }
   const parsed = parsePrimusData(key, lines);
   const data = parsed?.data as ContextStatsData | undefined;
-  if (data && Array.isArray(data.categories) && Array.isArray(data.deferredTools))
-    draft.contextStats = data;
-  else if (parsed) console.warn(`忽略 ${key}：数据缺少 categories / deferredTools`);
+  if (data && Array.isArray(data.categories))
+    // usedTools 缺省（旧版扩展）按“没有调用过的工具”处理
+    draft.contextStats = Array.isArray(data.usedTools) ? data : { ...data, usedTools: [] };
+  else if (parsed) console.warn(`忽略 ${key}：数据缺少 categories`);
 }
 
 /** 记下一个模型对象的能力（get_state / set_model） */

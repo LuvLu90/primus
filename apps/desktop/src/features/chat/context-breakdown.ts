@@ -6,6 +6,7 @@ import type {
   ContextStatsCategoryKey,
   ContextStatsData,
   ContextStatsItem,
+  ContextStatsUsedTool,
   ContextUsage,
 } from "@primus/protocol";
 
@@ -33,14 +34,6 @@ export interface BreakdownRow {
   items: ContextStatsItem[];
 }
 
-/** 不在上下文中的工具（延迟加载 / 未启用）：只列出，不占百分比 */
-export interface DeferredRow {
-  name: string;
-  /** 协议目前不给延迟工具的 token，为 null */
-  tokens: number | null;
-  percent: null;
-}
-
 export interface ContextBreakdown {
   /** 已用总量已知（压缩后到下一条回复前为 false） */
   known: boolean;
@@ -50,7 +43,8 @@ export interface ContextBreakdown {
   usedPercent: number | null;
   /** 有分项统计时为 6 项（BREAKDOWN_ORDER）；没有统计时为空，界面只画已用与可用空间 */
   rows: BreakdownRow[];
-  deferred: DeferredRow[];
+  /** 本会话实际调用过的工具（扩展统计，按次数从多到少）；未调用的工具不列出 */
+  usedTools: ContextStatsUsedTool[];
   free: number | null;
   freePercent: number | null;
 }
@@ -90,11 +84,7 @@ export function computeBreakdown(
         ? clamp(pct(used), 0, 100)
         : null;
   const free = known ? Math.max(0, contextWindow - used) : null;
-  const deferred: DeferredRow[] = (stats?.deferredTools ?? []).map((name) => ({
-    name,
-    tokens: null,
-    percent: null,
-  }));
+  const usedTools = Array.isArray(stats?.usedTools) ? stats.usedTools : [];
 
   let rows: BreakdownRow[] = [];
   if (stats) {
@@ -136,7 +126,7 @@ export function computeBreakdown(
     contextWindow,
     usedPercent,
     rows,
-    deferred,
+    usedTools,
     free,
     freePercent: free === null ? null : pct(free),
   };

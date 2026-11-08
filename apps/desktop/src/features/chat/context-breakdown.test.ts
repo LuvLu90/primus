@@ -2,7 +2,10 @@ import type { ContextStatsData } from "@primus/protocol";
 import { describe, expect, it } from "vitest";
 import { cacheHitPercent, computeBreakdown, scaleToTotal } from "./context-breakdown";
 
-function stats(tokens: Partial<Record<string, number>>, deferredTools: string[] = []) {
+function stats(
+  tokens: Partial<Record<string, number>>,
+  usedTools: { name: string; count: number }[] = [],
+) {
   const keys = ["systemPrompt", "systemTools", "mcpTools", "skills", "memoryFiles"] as const;
   return {
     estimator: "chars/4",
@@ -11,7 +14,7 @@ function stats(tokens: Partial<Record<string, number>>, deferredTools: string[] 
       tokens: tokens[key] ?? 0,
       items: key === "mcpTools" ? [{ name: "search", tokens: tokens[key] ?? 0 }] : [],
     })),
-    deferredTools,
+    usedTools,
   } satisfies ContextStatsData;
 }
 
@@ -61,15 +64,19 @@ describe("上下文分项计算", () => {
     expect(scaleToTotal([0, 0], 10)).toEqual([0, 0]);
   });
 
-  it("延迟加载的工具单独列出，不占百分比", () => {
+  it("只带出本会话调用过的工具；旧数据缺 usedTools 时为空", () => {
+    const used = [
+      { name: "read", count: 3 },
+      { name: "bash", count: 1 },
+    ];
     const b = computeBreakdown(
       { tokens: 5_000, contextWindow: 100_000, percent: 5 },
-      stats({}, ["lazy", "later"]),
+      stats({}, used),
     );
-    expect(b.deferred).toEqual([
-      { name: "lazy", tokens: null, percent: null },
-      { name: "later", tokens: null, percent: null },
-    ]);
+    expect(b.usedTools).toEqual(used);
+    const legacy = { ...stats({}), usedTools: undefined } as unknown as ContextStatsData;
+    expect(computeBreakdown(undefined, legacy).usedTools).toEqual([]);
+    expect(computeBreakdown(undefined, undefined).usedTools).toEqual([]);
   });
 
   it("压缩后已用未知：分项与可用空间都未知", () => {

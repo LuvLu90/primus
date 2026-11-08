@@ -45,6 +45,8 @@ export interface MockOptions {
   dropBatch?: (seq: number, records: readonly CoreRecord[]) => boolean;
   /** 模拟内核卡死：返回 true 的命令不回 response（测试超时） */
   stallCommand?: (cmd: RpcCommand) => boolean;
+  /** 模拟命令失败：返回字符串的命令回失败响应（error 为该字符串），不执行（测试回滚） */
+  failCommand?: (cmd: RpcCommand) => string | undefined;
   /**
    * 模拟更新源上的最新版本：比当前版本（0.0.0-mock）新时，“立即检查”会经过下载进度后得到待装版本。
    * 默认没有新版本（检查结果为已是最新）
@@ -228,7 +230,12 @@ export const MOCK_CONTEXT_STATS: ContextStatsData = {
       ],
     },
   ],
-  deferredTools: ["mcp__browser__screenshot", "notebook_edit"],
+  usedTools: [
+    { name: "read", count: 6 },
+    { name: "bash", count: 3 },
+    { name: "edit", count: 2 },
+    { name: "mcp__docs__search", count: 1 },
+  ],
 };
 
 /** 示例分项之和：mock 的上下文占用在消息之外加上这部分（与真实 Core 一样，占用含系统提示词与工具） */
@@ -474,6 +481,11 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
 
   const handle = (s: MockSession, cmd: RpcCommand) => {
     if (options.stallCommand?.(cmd)) return;
+    const failure = options.failCommand?.(cmd);
+    if (failure !== undefined) {
+      emit(s, respond(cmd, undefined, failure));
+      return;
+    }
     switch (cmd.type) {
       case "prompt": {
         const message = String(cmd.message ?? "");

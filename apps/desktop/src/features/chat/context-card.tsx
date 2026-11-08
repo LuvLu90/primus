@@ -2,12 +2,18 @@
 
 // 底栏模型按钮右侧的上下文按钮：只有小圆环（百分比只放在无障碍名称里）；点开是“上下文卡片”。
 // 卡片：标题行“上下文窗口 · 已用 / 窗口 (百分比)”，箭头展开明细；多色分段条（消息、系统工具、MCP 工具、技能、
-// 系统提示、记忆文件，空余部分是中性轨道）；图例逐行列出各分项、延迟加载的工具与可用空间；
-// 下方按分组（MCP 工具、记忆文件、技能、系统工具）折叠列出明细。本会话用量（输入/输出/缓存命中率/费用）、
-// 自动压缩开关与“立即压缩”。
+// 系统提示、记忆文件，空余部分是中性轨道）；图例逐行列出各分项与可用空间；
+// 下方按分组（MCP 工具、记忆文件、技能、系统工具）折叠列出明细，再列本会话实际调用过的工具（未调用的不列）。
+// 本会话用量（输入/输出/缓存命中率/费用）、自动压缩开关（Core 的全局设置）与“立即压缩”。
+// 数据都是缓存：会话打开后预取、每轮结束由扩展重推，打开卡片立即显示，不现场等 RPC。
 // 总量来自 Core（get_session_stats 的 contextUsage）；分项来自扩展 primus-context-stats 的估算（字符数 / 4），
 // 由 computeBreakdown 推出“消息”与“可用空间”。分项未到达前只画已用与可用空间，不编造数字。
-import type { ContextStatsData, ContextUsage, SessionStats } from "@primus/protocol";
+import type {
+  ContextStatsData,
+  ContextStatsUsedTool,
+  ContextUsage,
+  SessionStats,
+} from "@primus/protocol";
 import { ChevronDown } from "lucide-react";
 import { Popover } from "radix-ui";
 import { type CSSProperties, useState } from "react";
@@ -84,7 +90,7 @@ export interface ContextCardProps {
   connected: boolean;
   /** 运行中不能压缩 */
   busy?: boolean;
-  /** 打开卡片时调用（刷新用量并请求分项统计） */
+  /** 打开卡片时调用（只补取还没有的数据；已缓存的直接显示） */
   onOpen?: () => void;
   onCompact: () => void;
   onAutoCompactionChange: (enabled: boolean) => void;
@@ -221,7 +227,7 @@ function ContextCard({
         </div>
         <div className="ctx-expand" data-open={expanded || undefined} inert={!expanded}>
           <div className="min-h-0 overflow-hidden">
-            <div className="max-h-[min(56vh,440px)] overflow-y-auto pt-1">
+            <div className="scroll-none max-h-[min(56vh,440px)] overflow-y-auto overscroll-contain pt-1">
               <ul aria-label={c.title}>
                 {hasRows ? (
                   b.rows.map((row) => (
@@ -243,17 +249,6 @@ function ContextCard({
                     percent={formatPercent1(pct(used))}
                   />
                 ) : null}
-                {b.deferred.map((d) => (
-                  <ContextRow
-                    key={`deferred:${d.name}`}
-                    index={index++}
-                    color="bg-track-strong"
-                    label={d.name}
-                    value={d.tokens === null ? c.deferred : formatEstimate(d.tokens, true)}
-                    percent="—"
-                    muted
-                  />
-                ))}
                 {(known || hasRows) && (
                   <ContextRow
                     index={index++}
@@ -281,6 +276,7 @@ function ContextCard({
                       <ContextGroup key={key} row={row} index={index++} known={known} />
                     ) : null;
                   })}
+                  {b.usedTools.length > 0 && <UsedToolsGroup tools={b.usedTools} index={index++} />}
                   <li
                     className="ctx-row pt-1 text-[11px] text-muted"
                     style={{ "--i": index++ } as CSSProperties}
@@ -307,14 +303,18 @@ function ContextCard({
           <Stat label={c.cost} value={sessionUsage ? formatCost(sessionUsage.cost) : "—"} />
         </dl>
         <div className="mt-2.5 flex items-center gap-2 text-[12px] text-muted">
+          {/* 受控开关：切换时 store 先乐观更新（失败回滚），不会出现“新 → 旧 → 新”的跳动 */}
           <Switch
-            ariaLabel={c.autoCompact}
+            ariaLabel={`${c.autoCompact}（${c.autoCompactScope}）`}
             checked={autoCompaction ?? true}
             disabled={!connected || autoCompaction === undefined}
             onCheckedChange={onAutoCompactionChange}
             className="origin-left scale-[0.8] -mr-2"
           />
-          <span>{c.autoCompact}</span>
+          <span title={c.autoCompactHint}>
+            {c.autoCompact}
+            <span className="ml-1 text-[11px] opacity-70">{c.autoCompactScope}</span>
+          </span>
           <span className="flex-1" />
           <button
             type="button"
@@ -337,7 +337,6 @@ function ContextRow({
   label,
   value,
   percent,
-  muted,
   ring,
 }: {
   index: number;
@@ -345,8 +344,6 @@ function ContextRow({
   label: string;
   value: string;
   percent: string;
-  /** 不占上下文的行（延迟加载的工具）：标签也用次要色 */
-  muted?: boolean;
   /** 中性色方块加描边（可用空间，与轨道同色） */
   ring?: boolean;
 }) {
@@ -363,7 +360,7 @@ function ContextRow({
           ring && "shadow-[inset_0_0_0_1px_var(--color-border)]",
         )}
       />
-      <span className={cn("min-w-0 truncate", muted && "text-muted")}>{label}</span>
+      <span className="min-w-0 truncate">{label}</span>
       <span className="flex-1" />
       <span className="shrink-0 text-right tabular-nums text-muted">{value}</span>
       <span
@@ -420,6 +417,55 @@ function ContextGroup({ row, index, known }: { row: BreakdownRow; index: number;
               <span className="flex-1" />
               <span className="shrink-0 tabular-nums text-muted">
                 {known ? formatEstimate(item.tokens, true) : "—"}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </li>
+  );
+}
+
+/** 本会话实际调用过的工具：标题行显示种类与总次数，展开后逐个列出调用次数 */
+function UsedToolsGroup({ tools, index }: { tools: ContextStatsUsedTool[]; index: number }) {
+  const [open, setOpen] = useState(false);
+  const total = tools.reduce((n, tool) => n + tool.count, 0);
+  const count = c.itemCount.replace("{n}", String(tools.length));
+  return (
+    <li className="ctx-row" style={{ "--i": index } as CSSProperties}>
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-label={`${c.usedTools} ${count}`}
+        onClick={() => setOpen((v) => !v)}
+        className="-mx-1.5 flex h-[24px] w-[calc(100%+12px)] items-center gap-2 rounded-md px-1.5 text-left text-[12px] outline-none hover:bg-hover focus-visible:bg-hover"
+      >
+        <i aria-hidden className="size-2 shrink-0 rounded-[2px] bg-track-strong" />
+        <span>{c.usedTools}</span>
+        <span className="text-muted">{count}</span>
+        <span className="flex-1" />
+        <span className="tabular-nums text-muted">{c.callCount.replace("{n}", String(total))}</span>
+        <ChevronDown
+          aria-hidden
+          size={12}
+          className="ctx-chevron shrink-0 text-muted"
+          data-open={open || undefined}
+        />
+      </button>
+      <div className="ctx-expand ctx-group" data-open={open || undefined} inert={!open}>
+        <ul aria-label={c.usedTools} className="min-h-0 overflow-hidden pl-4">
+          {tools.map((tool, i) => (
+            <li
+              key={tool.name}
+              className="ctx-item flex h-[20px] items-center gap-2 text-[11.5px]"
+              style={{ "--i": i } as CSSProperties}
+            >
+              <span className="min-w-0 truncate text-muted" title={tool.name}>
+                {tool.name}
+              </span>
+              <span className="flex-1" />
+              <span className="shrink-0 tabular-nums text-muted">
+                {c.callCount.replace("{n}", String(tool.count))}
               </span>
             </li>
           ))}

@@ -22,6 +22,12 @@ const MIN_VEIL = 0.07;
 const MIN_BLUR = 2.5;
 const MAP_SIZE = 256;
 const MAP_CACHE_LIMIT = 48;
+/**
+ * 乾元补丁：尺寸变化后等这么久没有新变化（尺寸稳定）才重新生成折射贴图。
+ * 展开动画、内容到达等连续变高时，每帧逐像素重画 256×256 画布再 toDataURL 会卡住主线程；
+ * 期间沿用上一张贴图拉伸到新尺寸（preserveAspectRatio="none"），稳定后再换成精确的一张。
+ */
+const MAP_SETTLE_MS = 160;
 const GLOW = 0.16;
 const EDGE = 0.85;
 const SPECULAR_STRENGTH = 1.7;
@@ -164,6 +170,15 @@ function GlassSurface({
       return;
     }
     let lastKey = "";
+    let settle: ReturnType<typeof setTimeout> | undefined;
+    const applyMap = (w: number, h: number, r: number, rim: number) => {
+      const img = feImageRef.current;
+      if (img) {
+        img.setAttribute("href", surfaceMap(w, h, r, rim));
+        img.setAttribute("width", String(w));
+        img.setAttribute("height", String(h));
+      }
+    };
     const update = () => {
       const w = node.offsetWidth;
       const h = node.offsetHeight;
@@ -175,12 +190,18 @@ function GlassSurface({
       const rim = Math.max(6, Math.min(0.18 * Math.min(w, h), 24, half - 2));
       const key = `${w}|${h}|${r}|${rim}`;
       if (key !== lastKey) {
+        const first = lastKey === "";
         lastKey = key;
-        const img = feImageRef.current;
-        if (img) {
-          img.setAttribute("href", surfaceMap(w, h, r, rim));
-          img.setAttribute("width", String(w));
-          img.setAttribute("height", String(h));
+        clearTimeout(settle);
+        if (first || surfaceMapCache.has(key)) {
+          // 首次或已缓存：立即用（缓存命中只是换 href，不重画）
+          applyMap(w, h, r, rim);
+        } else {
+          // 尺寸还在变：旧贴图先拉伸到新尺寸，稳定后再生成
+          const img = feImageRef.current;
+          img?.setAttribute("width", String(w));
+          img?.setAttribute("height", String(h));
+          settle = setTimeout(() => applyMap(w, h, r, rim), MAP_SETTLE_MS);
         }
       }
       const base = Math.min(0.17 * Math.min(w, h), 26) * dispFade;
@@ -194,7 +215,10 @@ function GlassSurface({
     const observer = new ResizeObserver(update);
     observer.observe(node);
     update();
-    return () => observer.disconnect();
+    return () => {
+      clearTimeout(settle);
+      observer.disconnect();
+    };
   }, [refract, radius, chroma, chromaOn, dispFade]);
 
   const filterParts: string[] = [];

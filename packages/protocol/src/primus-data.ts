@@ -27,11 +27,21 @@ export interface ContextStatsCategory {
   items: ContextStatsItem[];
 }
 
+/** 本会话实际调用过的一个工具 */
+export interface ContextStatsUsedTool {
+  name: string;
+  /** 调用次数（当前分支的 assistant 消息里 toolCall 的个数） */
+  count: number;
+}
+
 /** `primus:context-stats` 的 data：只读估算，不改动上下文 */
 export interface ContextStatsData {
   /** 估算方法：字符数 / 4 */
   estimator: "chars/4";
   categories: ContextStatsCategory[];
-  /** 已配置但不在上下文中的工具（延迟加载 / 只供代码模式 / 未启用），不计 token */
-  deferredTools: string[];
+  /**
+   * 本会话（当前分支）实际调用过的工具，按次数从多到少。未启用、未调用的工具（延迟加载 / 只供代码模式 / 关闭）
+   * 不列出：它们不在上下文里
+   */
+  usedTools: ContextStatsUsedTool[];
 }

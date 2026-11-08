@@ -850,8 +850,10 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                   connected={connected}
                   busy={state.running || submitting}
                   onOpen={() => {
-                    refreshStats();
-                    requestContextStats();
+                    // 已缓存的数据直接显示（每条回复、压缩、切换模型后已刷新；分项由扩展每轮结束重推）；
+                    // 只补取还没有的
+                    if (!state.contextUsage) refreshStats();
+                    if (!state.contextStats) requestContextStats();
                   }}
                   onCompact={() => void compact()}
                   onAutoCompactionChange={(enabled) => void setAutoCompaction(enabled)}

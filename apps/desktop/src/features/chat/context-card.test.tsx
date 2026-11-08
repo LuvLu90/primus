@@ -28,7 +28,10 @@ const stats: ContextStatsData = {
     { key: "skills", tokens: 1_000, items: [{ name: "pdf", tokens: 1_000 }] },
     { key: "memoryFiles", tokens: 2_000, items: [{ name: "AGENTS.md", tokens: 2_000 }] },
   ],
-  deferredTools: ["lazy_tool"],
+  usedTools: [
+    { name: "read", count: 4 },
+    { name: "mcp__docs__search", count: 1 },
+  ],
 };
 
 const sessionUsage = {
@@ -83,7 +86,7 @@ describe("上下文卡片", () => {
     expect(card.querySelectorAll("[data-segment]")).toHaveLength(1);
   });
 
-  it("有分项：按分项着色、标“约”、百分比一位小数；延迟工具为“—”；分组可展开", async () => {
+  it("有分项：按分项着色、标“约”、百分比一位小数；只列调用过的工具；分组可展开", async () => {
     render(
       <ContextButton
         {...base}
@@ -103,10 +106,8 @@ describe("上下文卡片", () => {
     expect(within(messages).getByText(`${c.approx} 797k`)).toBeTruthy();
     expect(within(messages).getByText("79.7%")).toBeTruthy();
     expect(within(legendRow(c.categories.systemPrompt)).getByText("0.3%")).toBeTruthy();
-    // 延迟加载的工具：不占百分比
-    const lazy = legendRow("lazy_tool");
-    expect(within(lazy).getByText(c.deferred)).toBeTruthy();
-    expect(within(lazy).getByText("—")).toBeTruthy();
+    // 不再有“延迟加载”行
+    expect(card.textContent).not.toContain("延迟加载");
     expect(within(legendRow(c.free)).getByText("18.0%")).toBeTruthy();
     // 分组：合计与条目数，展开后列出明细
     const groups = screen.getByRole("list", { name: c.groupsLabel });
@@ -119,6 +120,30 @@ describe("上下文卡片", () => {
     expect(tools.getAttribute("aria-expanded")).toBe("true");
     expect(within(groups).getByText("bash")).toBeTruthy();
     expect(within(groups).getByText(`${c.approx} 8k`)).toBeTruthy();
+    // 本会话调用过的工具：种类与总次数，展开后逐个列出次数
+    const used = within(groups).getByRole("button", {
+      name: `${c.usedTools} ${c.itemCount.replace("{n}", "2")}`,
+    });
+    expect(used.textContent).toContain(c.callCount.replace("{n}", "5"));
+    fireEvent.click(used);
+    const usedList = within(groups).getByRole("list", { name: c.usedTools });
+    expect(within(usedList).getByText("read")).toBeTruthy();
+    expect(within(usedList).getByText(c.callCount.replace("{n}", "4"))).toBeTruthy();
+    // 明细区可滚动但不显示滚动条
+    expect(card.querySelector(".overflow-y-auto")?.classList.contains("scroll-none")).toBe(true);
+  });
+
+  it("没有调用过任何工具时不显示“调用过的工具”分组", async () => {
+    render(
+      <ContextButton
+        {...base}
+        usage={{ tokens: 820_000, contextWindow: 1_000_000, percent: 82 }}
+        stats={{ ...stats, usedTools: [] }}
+      />,
+    );
+    await openCard();
+    fireEvent.click(screen.getByRole("button", { name: c.expand }));
+    expect(screen.queryByText(c.usedTools)).toBeNull();
   });
 
   it("缓存命中显示命中率（一位小数）；分母为 0 时为“—”", async () => {
@@ -170,9 +195,13 @@ describe("上下文卡片", () => {
     expect((screen.getByRole("button", { name: c.compactNow }) as HTMLButtonElement).disabled).toBe(
       true,
     );
-    expect((screen.getByRole("switch", { name: c.autoCompact }) as HTMLInputElement).disabled).toBe(
-      true,
-    );
+    expect(
+      (
+        screen.getByRole("switch", {
+          name: `${c.autoCompact}（${c.autoCompactScope}）`,
+        }) as HTMLInputElement
+      ).disabled,
+    ).toBe(true);
   });
 
   it("token 紧凑写法", () => {
