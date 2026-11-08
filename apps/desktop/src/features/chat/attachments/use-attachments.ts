@@ -2,7 +2,7 @@
 
 // 输入框附件的状态与读取队列。
 // - 图片逐张排队读取（一张读完再读下一张）：本地路径交给薄壳 `attachment_image`，剪贴板/拖放的内存图片在 WebView 里解码。
-// - 其他文件立即落地（无进度环），发送时按路径引用。
+// - 其他文件立即落地（无进度环），发送时按路径引用（Core 的 `<file>` 标签，文本文件由 primus-attach 扩展内联）。
 // - 当前模型不看图：不读取图片；有路径的图片按路径引用（图块标“按路径”），内存图片无法发送（显示原因）。
 //   换回能看图的模型时，未读的图片重新进入队列。
 // - 进度环只跟随真实阶段（排队 0 → 开始读取 → 解码/编码完成 → 100），不编造百分比。
@@ -229,7 +229,10 @@ export function useAttachments({
     (a) => a.path !== undefined || (imagesSupported && a.status !== "error"),
   );
 
-  /** 发送内容：能看图时图片放进 `images`，其余（以及不看图时的图片）按路径引用 */
+  /**
+   * 发送内容（与 Core 的 `@file` 一致）：能看图时读好的图片放进 `images`；有路径的附件都按路径引用
+   * （图片也引用路径，模型因此知道文件名与位置）。剪贴板里的图片没有路径，只随 `images` 发送
+   */
   const build = useCallback((): { images: ImageContent[]; paths: string[] } => {
     const images: ImageContent[] = [];
     const paths: string[] = [];
@@ -237,7 +240,7 @@ export function useAttachments({
       if (a.removing) continue;
       if (a.kind === "image" && imagesSupported && a.status === "ready" && a.image)
         images.push(a.image);
-      else if (a.path) paths.push(a.path);
+      if (a.path) paths.push(a.path);
     }
     return { images, paths };
   }, [items, imagesSupported]);

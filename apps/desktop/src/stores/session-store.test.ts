@@ -400,3 +400,60 @@ describe("会话 store：流式消息重建（第 7.4 节）", () => {
     expect(s3.contextStats?.usedTools).toEqual([]);
   });
 });
+
+describe("会话 store：自动重试", () => {
+  it("auto_retry_start 记下重试进度，auto_retry_end 清除并记下结果；新一轮开始时清除结果", () => {
+    vi.useFakeTimers({ now: 1_000 });
+    try {
+      const s1 = applyChunks(initialSessionState, [
+        chunk([
+          { type: "agent_start" },
+          {
+            type: "auto_retry_start",
+            attempt: 1,
+            maxAttempts: 3,
+            delayMs: 2000,
+            errorMessage: "Connection error.",
+          },
+        ]),
+      ]);
+      expect(s1.retry).toEqual({
+        attempt: 1,
+        maxAttempts: 3,
+        delayMs: 2000,
+        errorMessage: "Connection error.",
+        at: 1_000,
+      });
+      // 重试途中 Core 继续运行（再次 agent_start）不清除进度
+      const s2 = applyChunks(s1, [chunk([{ type: "agent_start" }])]);
+      expect(s2.retry?.attempt).toBe(1);
+      const s3 = applyChunks(s2, [
+        chunk([
+          { type: "auto_retry_end", success: false, attempt: 3, finalError: "Connection error." },
+        ]),
+      ]);
+      expect(s3.retry).toBeUndefined();
+      expect(s3.retryResult).toEqual({
+        attempt: 3,
+        success: false,
+        finalError: "Connection error.",
+      });
+      const s4 = applyChunks(s3, [chunk([{ type: "agent_settled", aborted: false }])]);
+      expect(s4.retryResult?.attempt).toBe(3);
+      expect(applyChunks(s4, [chunk([{ type: "agent_start" }])]).retryResult).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("错过 auto_retry_end 时，一轮结束（agent_settled）也清除重试进度", () => {
+    const s = applyChunks(initialSessionState, [
+      chunk([
+        { type: "agent_start" },
+        { type: "auto_retry_start", attempt: 2, maxAttempts: 3, delayMs: 4000, errorMessage: "x" },
+        { type: "agent_settled", aborted: true },
+      ]),
+    ]);
+    expect(s.retry).toBeUndefined();
+  });
+});

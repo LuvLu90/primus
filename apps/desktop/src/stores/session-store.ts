@@ -97,6 +97,19 @@ export interface SessionState {
   autoCompaction?: boolean;
   /** 正在压缩（compaction_start 到 compaction_end） */
   compacting: boolean;
+  /**
+   * Core 正在自动重试失败的请求（auto_retry_start 到 auto_retry_end）。`at` 为收到事件的本地时间，
+   * 界面据此倒计时 `delayMs`；可以用 abort_retry 停止
+   */
+  retry?: {
+    attempt: number;
+    maxAttempts: number;
+    delayMs: number;
+    errorMessage: string;
+    at: number;
+  };
+  /** 最近一次自动重试的结果（auto_retry_end）；下一轮开始时清除。最终失败时错误卡片注明重试了几次 */
+  retryResult?: { attempt: number; success: boolean; finalError?: string };
 }
 
 export const initialSessionState: SessionState = {
@@ -322,9 +335,13 @@ function applyRecord(draft: SessionState, record: CoreRecord): void {
     case "agent_start":
       draft.running = true;
       draft.lastError = undefined;
+      // 新一轮：上一轮的重试结果不再适用（重试中途 Core 继续运行时保留）
+      if (!draft.retry) draft.retryResult = undefined;
       return;
     case "agent_settled":
       draft.running = false;
+      // 自动重试一定在一轮结束前结束（auto_retry_end）；缺号时可能错过了它
+      draft.retry = undefined;
       endStream(draft);
       // 一轮结束（含被停止）后，扩展不会再等这些对话框的回答
       draft.uiRequests = [];
@@ -378,6 +395,24 @@ function applyRecord(draft: SessionState, record: CoreRecord): void {
       }
       return;
     }
+    case "auto_retry_start":
+      draft.retry = {
+        attempt: record.attempt,
+        maxAttempts: record.maxAttempts,
+        delayMs: record.delayMs,
+        errorMessage: record.errorMessage,
+        at: Date.now(),
+      };
+      draft.retryResult = undefined;
+      return;
+    case "auto_retry_end":
+      draft.retry = undefined;
+      draft.retryResult = {
+        attempt: record.attempt,
+        success: record.success,
+        ...(record.finalError !== undefined ? { finalError: record.finalError } : {}),
+      };
+      return;
     case "compaction_start":
       draft.compacting = true;
       return;

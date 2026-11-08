@@ -138,6 +138,76 @@ describe("mock 平台", () => {
     expect(types(records).slice(-2)).toEqual(["agent_end", "agent_settled"]);
   });
 
+  it("#错误:<类别> 返回失败回复：错误文本仿照 Core 的写法，带渠道、模型与耗时", async () => {
+    const platform = createMockPlatform({ batchSize: 50 });
+    const records: CoreRecord[] = [];
+    const { sessionKey } = await platform.sessionOpen("ws", undefined, (b) =>
+      records.push(...b.records),
+    );
+    await platform.coreSend(sessionKey, { type: "prompt", message: "hi #错误:认证" });
+    await vi.runAllTimersAsync();
+    const end = records.findLast((r) => r.type === "message_end");
+    expect(end).toMatchObject({
+      message: {
+        role: "assistant",
+        stopReason: "error",
+        provider: "ioply",
+        model: "mock-large",
+        errorMessage: expect.stringMatching(/^ioply API error \(401\): /),
+        durationMs: expect.any(Number),
+      },
+    });
+    expect(types(records).slice(-2)).toEqual(["agent_end", "agent_settled"]);
+    // 网络类错误之后“检测连接”同样失败，正常发送后恢复
+    await platform.coreSend(sessionKey, { type: "prompt", message: "hi #错误:连接" });
+    await vi.runAllTimersAsync();
+    const probe = platform.providerFetchModels({ id: "ioply" });
+    const rejected = expect(probe).rejects.toThrow("无法连接到服务器");
+    await vi.runAllTimersAsync();
+    await rejected;
+  });
+
+  it("#错误:重试：auto_retry_start 后按延时继续；abort_retry 取消等待并补上 Retry cancelled", async () => {
+    const platform = createMockPlatform({ batchSize: 50 });
+    const records: CoreRecord[] = [];
+    const { sessionKey } = await platform.sessionOpen("ws", undefined, (b) =>
+      records.push(...b.records),
+    );
+    await platform.coreSend(sessionKey, { type: "prompt", message: "#错误:重试" });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(records.at(-1)).toMatchObject({ type: "auto_retry_start", attempt: 1, maxAttempts: 3 });
+    // 第一次重试的等待结束：第二次失败，开始第二次重试
+    await vi.advanceTimersByTimeAsync(3100);
+    expect(records.at(-1)).toMatchObject({ type: "auto_retry_start", attempt: 2 });
+    await platform.coreSend(sessionKey, { id: "r", type: "abort_retry" });
+    await vi.runAllTimersAsync();
+    expect(records.slice(-4)).toMatchObject([
+      { type: "auto_retry_end", success: false, attempt: 2, finalError: "Retry cancelled" },
+      { type: "agent_end" },
+      { type: "agent_settled" },
+      { type: "response", id: "r", command: "abort_retry", success: true },
+    ]);
+    expect(records.filter((r) => r.type === "auto_retry_start")).toHaveLength(2);
+  });
+
+  it("#错误:重试成功：重试一次后得到回答，auto_retry_end 为成功", async () => {
+    const platform = createMockPlatform({ batchSize: 50 });
+    const records: CoreRecord[] = [];
+    const { sessionKey } = await platform.sessionOpen("ws", undefined, (b) =>
+      records.push(...b.records),
+    );
+    await platform.coreSend(sessionKey, { type: "prompt", message: "#错误:重试成功" });
+    await vi.runAllTimersAsync();
+    expect(records.find((r) => r.type === "auto_retry_end")).toEqual({
+      type: "auto_retry_end",
+      success: true,
+      attempt: 1,
+    });
+    expect(records.findLast((r) => r.type === "message_end")).toMatchObject({
+      message: { stopReason: "stop" },
+    });
+  });
+
   it("运行中再次 prompt 返回失败响应；abort 丢弃剩余事件并以 aborted 结束", async () => {
     const platform = createMockPlatform({ batchSize: 3 });
     const records: CoreRecord[] = [];

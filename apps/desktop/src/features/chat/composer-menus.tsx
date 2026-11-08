@@ -1,6 +1,7 @@
 "use client";
 
 // 输入框周边的弹出菜单：选择工作区、权限模式；以及附件（本地路径引用）小标签。
+import { appendFileTags } from "@primus/protocol";
 import {
   Check,
   FileText,
@@ -325,8 +326,13 @@ export function AttachmentChips({
   );
 }
 
-/** 发送时把附件作为路径引用附在消息末尾（本地应用：不复制、不上传，Core 按路径读取） */
+/**
+ * 发送时把附件作为 Core 原生的 `<file name="路径"></file>` 引用附在正文之后（本地应用：不复制、不上传）。
+ * 文本文件由第一方扩展 primus-attach 在 Core 的 input 事件里内联，其余由模型按路径用工具读取
+ */
 export function withAttachments(message: string, paths: string[]): string {
-  if (paths.length === 0) return message;
-  return `${message}\n\n${t.attachmentsPrompt}\n${paths.map((p) => `- ${p}`).join("\n")}`;
+  return appendFileTags(
+    message,
+    paths.map((path) => ({ path })),
+  );
 }

@@ -79,6 +79,8 @@ export interface ChatSession {
   setAutoCompaction: (enabled: boolean) => Promise<boolean>;
   /** abort 成功（Core 已回成功响应）返回 true；失败时设置 error 并返回 false */
   abort: () => Promise<boolean>;
+  /** 停止 Core 的自动重试（abort_retry）；成功返回 true，失败设置 error 并返回 false */
+  abortRetry: () => Promise<boolean>;
   /** 正在重启内核：期间重启入口不可用，避免连点重复重启 */
   restarting: boolean;
   /** 重启内核并重建会话状态；进行中再次调用会被忽略 */
@@ -504,6 +506,18 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     }
   }, [fail]);
 
+  const abortRetry = useCallback(async (): Promise<boolean> => {
+    const c = conn.current;
+    if (!c) return false;
+    try {
+      const res = await c.client.request("abort_retry");
+      return res.success;
+    } catch (e) {
+      fail(e);
+      return false;
+    }
+  }, [fail]);
+
   const refreshStats = useCallback(() => {
     conn.current?.client.request("get_session_stats").catch(() => {});
   }, []);
@@ -597,6 +611,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     coreStopped,
     send,
     abort,
+    abortRetry,
     restarting,
     restart,
     respondUi,

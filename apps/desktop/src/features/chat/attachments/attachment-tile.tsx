@@ -22,7 +22,8 @@ import type { AttachmentView } from "./use-attachments";
 
 const t = strings.chat;
 
-const ICONS: Record<Exclude<AttachmentKind, "image">, LucideIcon> = {
+/** 非图片附件的图标（输入框图块与时间线里的附件标签共用） */
+export const ICONS: Record<Exclude<AttachmentKind, "image">, LucideIcon> = {
   document: FileText,
   spreadsheet: FileSpreadsheet,
   presentation: Presentation,

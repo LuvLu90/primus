@@ -499,10 +499,20 @@ describe("对话区（mock 事件流）", () => {
     fireEvent.click(send);
     await waitFor(() => expect(prompts).toHaveLength(1));
     expect(prompts[0]?.images).toHaveLength(1);
-    expect(prompts[0]?.message).toContain("README.md");
-    expect(prompts[0]?.message).not.toContain("设计稿.png");
-    // 发送成功后清空附件
-    await waitFor(() => expect(screen.queryByText("README.md")).toBeNull());
+    // Core 原生的 `<file>` 引用附在正文之后：图片随 images 发送，同时引用路径
+    expect(prompts[0]?.message).toBe(
+      '<file name="C:\\Users\\mock\\示例工作区\\README.md"></file>\n' +
+        '<file name="C:\\Users\\mock\\示例工作区\\设计稿.png"></file>',
+    );
+    // 发送成功后清空输入框里的附件；时间线里的用户消息以文件标签显示
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("list", { name: t.attachments.list })?.textContent ?? "",
+      ).not.toContain("README.md"),
+    );
+    const sent = await screen.findByRole("list", { name: t.attachments.sent });
+    expect(sent.textContent).toContain("README.md");
+    expect(sent.textContent).toContain("设计稿.png");
   });
 
   it("当前模型不看图：图片不读取，标“按路径”，按路径引用发送", async () => {
@@ -530,7 +540,9 @@ describe("对话区（mock 事件流）", () => {
     fireEvent.click(send);
     await waitFor(() => expect(prompts).toHaveLength(1));
     expect(prompts[0]?.images).toBeUndefined();
-    expect(prompts[0]?.message).toContain("设计稿.png");
+    expect(prompts[0]?.message).toContain(
+      '<file name="C:\\Users\\mock\\示例工作区\\设计稿.png"></file>',
+    );
     expect(readImage).not.toHaveBeenCalled();
   });
 
@@ -914,6 +926,87 @@ describe("对话区（mock 事件流）", () => {
     fireEvent.click(again);
     await waitFor(() => expect(screen.getByRole("button", { name: t.send })).toBeTruthy());
     expect(coreSend.mock.calls.filter(([, r]) => r.type === "abort")).toHaveLength(2);
+  });
+
+  it("用户消息末尾的 <file> 引用显示成文件标签，内联的文件内容不铺在气泡里", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    setPlatformForTesting(platform);
+    render(<ChatPanel />);
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    fireEvent.change(input, {
+      target: {
+        value:
+          '看看这些\n\n<file name="C:\\a\\说明.md">\n# 很长的内容\n</file>\n<file name="C:\\a\\表.xlsx"></file>',
+      },
+    });
+    fireEvent.keyDown(input, { key: "Enter" });
+    const bubble = await screen.findByRole("article", { name: t.you });
+    const files = await screen.findByRole("list", { name: t.attachments.sent });
+    expect(bubble.contains(files)).toBe(true);
+    expect(screen.getByLabelText(`说明.md（${t.attachments.inlined}）`)).toBeTruthy();
+    expect(screen.getByLabelText("表.xlsx").getAttribute("title")).toBe("C:\\a\\表.xlsx");
+    expect(bubble.textContent).toContain("看看这些");
+    expect(bubble.textContent).not.toContain("很长的内容");
+    expect(bubble.textContent).not.toContain("<file");
+  });
+
+  it("回复出错显示错误卡片，重试重新发送上一条消息；可去设置检查渠道", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    setPlatformForTesting(platform);
+    const prompts: string[] = [];
+    const coreSend = platform.coreSend.bind(platform);
+    vi.spyOn(platform, "coreSend").mockImplementation((key, record) => {
+      if (isUserPrompt(record as { type: string; message?: unknown }))
+        prompts.push(String((record as { message: string }).message));
+      return coreSend(key, record);
+    });
+    render(<ChatPanel />);
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    fireEvent.change(input, { target: { value: "你好 #错误:认证" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    const card = await screen.findByRole("region", {
+      name: `${t.replyFailed}：${t.replyError.categories.auth.title}`,
+    });
+    expect(card.textContent).toContain("401");
+    const retry = await screen.findByRole("button", { name: t.replyError.retry });
+    fireEvent.click(retry);
+    await waitFor(() => expect(prompts).toEqual(["你好 #错误:认证", "你好 #错误:认证"]));
+    // 第二次同样失败：两张卡片，只有最后一张能重试
+    await waitFor(() =>
+      expect(screen.getAllByRole("region", { name: /回复出错/ })).toHaveLength(2),
+    );
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: t.replyError.retry })).toHaveLength(1),
+    );
+    fireEvent.click(
+      screen.getAllByRole("button", { name: t.replyError.openSettings })[0] as HTMLElement,
+    );
+    expect(useRouter().push).toHaveBeenCalledWith("/settings/?group=models");
+  });
+
+  it("自动重试时显示倒计时与停止重试；停止后显示错误卡片并注明已停止", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    setPlatformForTesting(platform);
+    const sent: string[] = [];
+    const coreSend = platform.coreSend.bind(platform);
+    vi.spyOn(platform, "coreSend").mockImplementation((key, record) => {
+      sent.push((record as { type: string }).type);
+      return coreSend(key, record);
+    });
+    render(<ChatPanel />);
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    fireEvent.change(input, { target: { value: "你好 #错误:重试" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(await screen.findByText(/秒后进行第 1\/3 次重试/)).toBeTruthy();
+    expect(screen.queryByRole("region", { name: /回复出错/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: t.replyError.stopRetry }));
+    await waitFor(() => expect(sent).toContain("abort_retry"));
+    const card = await screen.findByRole("region", {
+      name: `${t.replyFailed}：${t.replyError.categories.connection.title}`,
+    });
+    expect(card.textContent).toContain(t.replyError.retryCancelled);
+    expect(screen.queryByRole("button", { name: t.replyError.stopRetry })).toBeNull();
+    await waitFor(() => expect(screen.getByRole("button", { name: t.send })).toBeTruthy());
   });
 
   it("时间线按悬浮输入框的实测高度留出底部空间，欢迎页不被遮挡", () => {

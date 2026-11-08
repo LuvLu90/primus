@@ -175,3 +175,189 @@ export function promptScenario(prompt: string, now: number): ScenarioResult {
   records.push({ type: "agent_settled", aborted: false });
   return { records, messages };
 }
+
+// ---------- 回复出错（浏览器预览演示错误卡片与自动重试） ----------
+
+/**
+ * 消息里带 `#错误:<类别>` 时 mock 返回对应的失败回复。错误文本仿照 Core 的真实写法
+ * （`{provider} API error ({status}): {body}`，连接错误只剩 `Connection error.`）。
+ * `重试` 演示自动重试 3 次后仍失败（可点“停止重试”），`重试成功` 演示重试一次后成功
+ */
+export const MOCK_ERROR_KINDS = [
+  "连接",
+  "拒绝",
+  "认证",
+  "限流",
+  "服务端",
+  "请求",
+  "未知",
+  "重试",
+  "重试成功",
+] as const;
+export type MockErrorKind = (typeof MOCK_ERROR_KINDS)[number];
+
+export function mockErrorKind(prompt: string): MockErrorKind | undefined {
+  const m = /#错误[:：](\S+)/.exec(prompt);
+  return MOCK_ERROR_KINDS.find((k) => k === m?.[1]);
+}
+
+/** 这些演示属于网络不通：mock 的“检测连接”（providerFetchModels）同样失败 */
+export const MOCK_NETWORK_DOWN: ReadonlySet<MockErrorKind> = new Set(["连接", "拒绝", "重试"]);
+
+function errorText(kind: MockErrorKind, provider: string): string {
+  switch (kind) {
+    case "拒绝":
+      return "Connection error. (connect ECONNREFUSED 127.0.0.1:3304)";
+    case "认证":
+      return `${provider} API error (401): {"error":{"message":"Incorrect API key provided: mock****c74e","type":"invalid_request_error","code":"invalid_api_key"}}`;
+    case "限流":
+      return `${provider} API error (429): {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed the rate limit for your organization of 50 requests per minute."}}`;
+    case "服务端":
+      return `${provider} API error (529): {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`;
+    case "请求":
+      return `${provider} API error (400): {"error":{"message":"The model \`mock-9\` does not exist or you do not have access to it.","type":"invalid_request_error"}}`;
+    case "未知":
+      return "Unexpected end of JSON input";
+    default:
+      return "Connection error.";
+  }
+}
+
+/** 一段延时后推送的记录；`cancel` 为在这段等待中被 abort_retry / abort 时补上的记录 */
+export interface ScenarioStep {
+  delayMs: number;
+  records: CoreRecord[];
+  cancel?: CoreRecord[];
+}
+
+/** 失败回复的事件序列：第一段立即推送，其余按 delayMs 依次推送 */
+export function errorScenario(
+  kind: MockErrorKind,
+  prompt: string,
+  now: number,
+  model: { provider: string; id: string },
+): { steps: ScenarioStep[]; user: AgentMessage } {
+  const user: AgentMessage = { role: "user", content: prompt, timestamp: now };
+  const failed = (attempt: number, text: string): AssistantMessage => ({
+    role: "assistant",
+    content: [],
+    stopReason: "error",
+    errorMessage: text,
+    usage: usage(0, 0),
+    timestamp: now + attempt * 10,
+    durationMs: kind === "连接" || kind === "重试" ? 10_412 : 1_284,
+    api: "openai-responses",
+    provider: model.provider,
+    model: model.id,
+    ...(kind === "服务端"
+      ? {
+          diagnostics: [
+            {
+              type: "provider_error",
+              timestamp: now + 5,
+              error: { name: "APIError", message: "Overloaded", code: 529 },
+              details: { requestId: "req_mock_8f3a", retryAfter: "2" },
+            },
+          ],
+        }
+      : {}),
+  });
+  const attemptRecords = (m: AssistantMessage): CoreRecord[] => [
+    { type: "message_start", message: { ...m, stopReason: "pending" } },
+    { type: "message_end", message: m },
+    { type: "turn_end", message: m, toolResults: [] },
+  ];
+  const start: CoreRecord[] = [
+    { type: "agent_start" },
+    { type: "turn_start" },
+    { type: "message_start", message: user },
+    { type: "message_end", message: user },
+  ];
+  const settled = (m: AssistantMessage): CoreRecord[] => [
+    { type: "agent_end", messages: [user, m], willRetry: false },
+    { type: "agent_settled", aborted: false },
+  ];
+  const text = errorText(kind, model.provider);
+
+  if (kind !== "重试" && kind !== "重试成功") {
+    const m = failed(0, text);
+    return {
+      user,
+      steps: [{ delayMs: 0, records: [...start, ...attemptRecords(m), ...settled(m)] }],
+    };
+  }
+
+  // 自动重试：与 Core 默认设置一致（最多 3 次，间隔 2s 起指数递增）；预览放慢一点便于观察
+  const maxAttempts = kind === "重试" ? 3 : 1;
+  const delays = [3000, 6000, 12000];
+  const steps: ScenarioStep[] = [];
+  let records: CoreRecord[] = [...start];
+  let last = failed(0, text);
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    records.push(...attemptRecords(last), {
+      type: "auto_retry_start",
+      attempt,
+      maxAttempts: 3,
+      delayMs: delays[attempt - 1] ?? 2000,
+      errorMessage: text,
+    });
+    // 等待这次重试期间被停止：Core 补上 auto_retry_end（Retry cancelled），本轮以这次失败结束
+    steps.push({
+      delayMs: attempt === 1 ? 0 : (delays[attempt - 2] ?? 2000),
+      records,
+      cancel: [
+        { type: "auto_retry_end", success: false, attempt, finalError: "Retry cancelled" },
+        ...settled(last),
+      ],
+    });
+    records = [{ type: "turn_start" }];
+    last = failed(attempt, text);
+  }
+  const delay = delays[maxAttempts - 1] ?? 2000;
+  if (kind === "重试成功") {
+    const answer = "重试成功：这是重新请求后得到的回答（mock）。";
+    const ok: AssistantMessage = {
+      role: "assistant",
+      content: [{ type: "text", text: answer }],
+      stopReason: "stop",
+      usage: usage(120, 30),
+      timestamp: now + 100,
+      durationMs: 2_310,
+      api: "openai-responses",
+      provider: model.provider,
+      model: model.id,
+    };
+    steps.push({
+      delayMs: delay,
+      records: [
+        { type: "turn_start" },
+        { type: "message_start", message: { ...ok, content: [], stopReason: "pending" } },
+        {
+          type: "message_update",
+          usage: ok.usage,
+          assistantMessageEvent: { type: "text_start", contentIndex: 0 },
+        },
+        {
+          type: "message_update",
+          usage: ok.usage,
+          assistantMessageEvent: { type: "text_end", contentIndex: 0, content: answer },
+        },
+        { type: "message_end", message: ok },
+        { type: "auto_retry_end", success: true, attempt: maxAttempts },
+        { type: "turn_end", message: ok, toolResults: [] },
+        ...settled(ok),
+      ],
+    });
+  } else {
+    steps.push({
+      delayMs: delay,
+      records: [
+        { type: "turn_start" },
+        ...attemptRecords(last),
+        { type: "auto_retry_end", success: false, attempt: maxAttempts, finalError: text },
+        ...settled(last),
+      ],
+    });
+  }
+  return { user, steps };
+}

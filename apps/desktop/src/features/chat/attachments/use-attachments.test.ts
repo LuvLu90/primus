@@ -47,7 +47,8 @@ describe("useAttachments", () => {
       expect(result.current.pending).toBe(false);
       const built = result.current.build();
       expect(built.images.map((i) => i.data)).toEqual([btoa("a"), btoa("b")]);
-      expect(built.paths).toEqual(["C:\\doc.pdf"]);
+      // 图片也按路径引用（模型知道文件名与位置）
+      expect(built.paths).toEqual(["C:\\a.png", "C:\\doc.pdf", "C:\\b.jpg"]);
     } finally {
       vi.useRealTimers();
     }

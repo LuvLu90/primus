@@ -29,7 +29,13 @@ import {
   type UpdateStatus,
   type WorkspaceInfo,
 } from "../types";
-import { promptScenario } from "./scenario";
+import {
+  errorScenario,
+  MOCK_NETWORK_DOWN,
+  mockErrorKind,
+  promptScenario,
+  type ScenarioStep,
+} from "./scenario";
 
 // 浏览器预览用的 mock 平台（第 16.1.1 节）：不依赖 Tauri 与 Rust，
 // 会话命令由脚本化的假 Core 处理，事件按"每 16ms 一批"推送，与薄壳的合批节奏一致（第 16.4 节）。
@@ -274,6 +280,8 @@ interface MockSession {
   autoCompaction: boolean;
   /** 刚压缩过：下一次回复前上下文占用未知（tokens 为 null，与 Core 一致） */
   compacted: boolean;
+  /** 演示自动重试：等待中的下一段事件；abort_retry / abort 时取消并推送它的 cancel */
+  pendingStep?: { timer: ReturnType<typeof setTimeout>; step: ScenarioStep };
 }
 
 const MOCK_WORKSPACE = "C:\\Users\\mock\\示例工作区";
@@ -352,6 +360,8 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
   // 模型渠道（模拟薄壳的 providers.json + 保险库）：预置 ioply
   let providers: MockProvider[] = structuredClone(MOCK_SEED_PROVIDERS);
   const fetchDelayMs = options.fetchDelayMs ?? 600;
+  /** 最近一次演示的是网络类错误：“检测连接”同样连不上（下一次正常发送后恢复） */
+  let networkDown = false;
   /** 进入模型配置的模型：启用 + 已存密钥 + 有模型的渠道 */
   const allModels = (): ModelSummary[] =>
     providers
@@ -510,16 +520,64 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
           emit(s, respond(cmd, undefined, "mock：正在运行中，请先停止或等待结束"));
           return;
         }
-        const scenario = promptScenario(message, now());
+        const errorKind = mockErrorKind(message);
+        networkDown = errorKind !== undefined && MOCK_NETWORK_DOWN.has(errorKind);
         s.streaming = true;
         s.compacted = false;
+        if (errorKind) {
+          // 回复出错的演示：第一段立即推送，其余（自动重试）按延时推送
+          const [model = "", ...rest] = s.model.split("/");
+          const { steps } = errorScenario(errorKind, message, now(), {
+            provider: model,
+            id: rest.join("/"),
+          });
+          const [first, ...later] = steps;
+          emit(s, respond(cmd, { disposition: "started" }), ...(first?.records ?? []));
+          const next = (prev: ScenarioStep | undefined, queue: ScenarioStep[]) => {
+            const [step, ...remaining] = queue;
+            if (!step || !prev) return;
+            s.pendingStep = {
+              step: prev,
+              timer: setTimeout(() => {
+                s.pendingStep = undefined;
+                if (s.closed) return;
+                emit(s, ...step.records);
+                next(step, remaining);
+              }, step.delayMs),
+            };
+          };
+          next(first, later);
+          return;
+        }
+        const scenario = promptScenario(message, now());
         emit(s, respond(cmd, { disposition: "started" }), ...scenario.records);
+        return;
+      }
+      case "abort_retry": {
+        // 与 Core 一致：取消等待中的重试，补上 auto_retry_end（Retry cancelled），本轮以最近一次失败结束
+        const pending = s.pendingStep;
+        if (pending) {
+          clearTimeout(pending.timer);
+          s.pendingStep = undefined;
+          emit(s, ...(pending.step.cancel ?? []));
+        }
+        emit(s, respond(cmd));
         return;
       }
       case "abort": {
         // 与 Core 一致：丢弃尚未推送的事件，结束被中止的消息与工具，会话空闲（agent_settled）后才回 response。
         // 运行开始与用户消息在 Core 受理 prompt 时就已发生，保留它们（用户消息因此留在历史里）
         // 已在中止中（结束事件已排队）时只排响应：不丢弃上一次 abort 的结束事件，响应仍在 agent_settled 之后
+        // 等待自动重试时停止：Core 的 abort 同样会取消重试（abortRetry）
+        if (s.pendingStep) {
+          clearTimeout(s.pendingStep.timer);
+          const { cancel } = s.pendingStep.step;
+          s.pendingStep = undefined;
+          s.aborting = true;
+          s.queue = keptOnAbort(s.queue);
+          emit(s, ...(cancel ?? []), respond(cmd));
+          return;
+        }
         if (s.streaming && !s.aborting) {
           s.aborting = true;
           s.queue = keptOnAbort(s.queue);
@@ -765,6 +823,7 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       }
       s.closed = true;
       if (s.timer !== undefined) clearTimeout(s.timer);
+      if (s.pendingStep) clearTimeout(s.pendingStep.timer);
       s.queue = [];
       sessions.delete(sessionKey);
     },
@@ -774,6 +833,8 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
         if (s.path !== path || s.closed) continue;
         s.closed = true;
         if (s.timer !== undefined) clearTimeout(s.timer);
+        if (s.pendingStep) clearTimeout(s.pendingStep.timer);
+        if (s.pendingStep) clearTimeout(s.pendingStep.timer);
         s.queue = [];
         sessions.delete(key);
       }
@@ -796,6 +857,8 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
     },
     coreRestart: async (sessionKey) => {
       const s = session(sessionKey);
+      if (s.pendingStep) clearTimeout(s.pendingStep.timer);
+      s.pendingStep = undefined;
       s.queue = [];
       s.streaming = false;
       s.aborting = false;
@@ -903,7 +966,7 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
         throw new Error("请填写协议、接口地址与 API 密钥");
       }
       if (fetchDelayMs > 0) await new Promise((r) => setTimeout(r, fetchDelayMs));
-      if (!/^https?:\/\//i.test(baseUrl.trim())) {
+      if (networkDown || !/^https?:\/\//i.test(baseUrl.trim())) {
         throw new Error("无法连接到服务器，请检查接口地址与网络");
       }
       if (apiKey === MOCK_BAD_KEY) throw new Error("密钥无效或没有权限（HTTP 401）");

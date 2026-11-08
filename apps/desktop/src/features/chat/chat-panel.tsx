@@ -1,6 +1,6 @@
 "use client";
 
-import type { AgentMessage } from "@primus/protocol";
+import { type AgentMessage, type ImageContent, splitFileTags } from "@primus/protocol";
 import { ArrowUp, Maximize2, Minimize2, Plus, Square } from "lucide-react";
 import { useRouter } from "next/navigation";
 import {
@@ -31,6 +31,7 @@ import { useAppStore } from "@/stores/app-store";
 import { AgentTurn } from "./agent-turn";
 import { ApprovalCard } from "./approval-card";
 import { AttachmentStrip } from "./attachments/attachment-strip";
+import { SentFiles } from "./attachments/sent-files";
 import { useAttachments } from "./attachments/use-attachments";
 import { ComposerLip } from "./composer-lip";
 import {
@@ -42,6 +43,7 @@ import {
   withAttachments,
 } from "./composer-menus";
 import { ContextButton } from "./context-card";
+import type { ErrorActions } from "./error-card";
 import { ThinkingIndicator } from "./message-content";
 import { type IndexItem, MessageIndex } from "./message-index";
 import { ModelPicker, withCoreCaps } from "./model-picker";
@@ -60,6 +62,12 @@ function textOf(content: unknown): string {
   return content
     .map((c: { type?: string; text?: string }) => (c.type === "text" ? (c.text ?? "") : ""))
     .join("");
+}
+
+/** 消息索引里的一行：正文；只有附件时列出文件名 */
+function indexText(text: string): string {
+  const { message, files } = splitFileTags(text);
+  return message || files.map((f) => f.path.split(/[\\/]/).pop() ?? f.path).join("、");
 }
 
 /** 一轮：一条用户消息 + 其后的助手消息与工具结果（会话开头若没有用户消息，user 为空） */
@@ -88,13 +96,20 @@ function groupTurns(messages: AgentMessage[]): Turn[] {
 }
 
 const UserBubble = memo(function UserBubble({ text, index }: { text: string; index: number }) {
+  // 末尾的 `<file>` 引用显示成文件标签（内联的文件内容不铺在气泡里）
+  const { message, files } = useMemo(() => splitFileTags(text), [text]);
   return (
     <article
       aria-label={t.you}
       data-msg-index={index}
-      className="msg-in max-w-[80%] scroll-mt-6 self-end rounded-[18px] rounded-br-md bg-bubble px-3.5 py-2 text-fg"
+      className="msg-in flex max-w-[80%] scroll-mt-6 flex-col items-end gap-1.5 self-end"
     >
-      <p className="whitespace-pre-wrap leading-relaxed">{text}</p>
+      <SentFiles files={files} />
+      {message && (
+        <p className="whitespace-pre-wrap rounded-[18px] rounded-br-md bg-bubble px-3.5 py-2 leading-relaxed text-fg">
+          {message}
+        </p>
+      )}
     </article>
   );
 });
@@ -199,6 +214,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     coreStopped,
     send,
     abort,
+    abortRetry,
     restarting,
     restart,
     respondUi,
@@ -505,6 +521,52 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
       });
   };
 
+  // 错误卡片的“重试”：重新发送上一条用户消息（Core 没有“重新生成”命令；出错的回复不进入模型上下文，
+  // 见 ai/src/api/transform-messages.ts）。附件按空标签重发，文本文件由 primus-attach 重新读取；图片随 images 重发
+  const resendLast = () => {
+    if (busy || modelConfig.unavailable || submittingRef.current) return;
+    const lastUser = state.messages.findLast((m) => m.role === "user");
+    if (lastUser?.role !== "user") return;
+    const { message: body, files } = splitFileTags(textOf(lastUser.content));
+    const message = withAttachments(
+      body,
+      files.map((f) => f.path),
+    );
+    const images = Array.isArray(lastUser.content)
+      ? lastUser.content.filter((c): c is ImageContent => c.type === "image")
+      : [];
+    submittingRef.current = true;
+    setSubmitting(true);
+    stickToBottom.current = true;
+    setPendingUser({ text: message, index: state.messages.length });
+    void send(message, images.length > 0 ? images : undefined)
+      .then((sent) => {
+        if (!sent) setPendingUser(null);
+      })
+      .finally(() => {
+        submittingRef.current = false;
+        setSubmitting(false);
+      });
+  };
+  const resendRef = useRef(resendLast);
+  resendRef.current = resendLast;
+  const openSettingsRef = useRef(openModelSettings);
+  openSettingsRef.current = openModelSettings;
+  const canRetry = !busy && !modelConfig.unavailable;
+  // 稳定的引用：历史轮次的 memo 不因每次渲染新建的回调而重渲
+  const errorActions = useMemo<ErrorActions>(
+    () => ({
+      onRetry: canRetry ? () => resendRef.current() : undefined,
+      onOpenSettings: () => openSettingsRef.current(),
+    }),
+    [canRetry],
+  );
+  // 历史轮次只能去设置里检查渠道（重试只针对最后一轮）
+  const settingsOnly = useMemo<ErrorActions>(
+    () => ({ onOpenSettings: () => openSettingsRef.current() }),
+    [],
+  );
+
   // 停止：发出 abort 后到本轮结束（agent_settled，running 变为 false）之间按钮显示“正在停止”，不重复发送。
   // abort 成功时保持到 running 结束；只有失败（失败响应或超时）才提前恢复按钮以便重试。
   // 每次停止一个令牌：旧的 abort 迟到失败时不清除新一轮的停止状态
@@ -538,7 +600,9 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
   const indexItems = useMemo<IndexItem[]>(
     () =>
       turns.flatMap((turn) =>
-        turn.user ? [{ index: turn.user.index, text: textOf(turn.user.message.content) }] : [],
+        turn.user
+          ? [{ index: turn.user.index, text: indexText(textOf(turn.user.message.content)) }]
+          : [],
       ),
     [turns],
   );
@@ -600,6 +664,15 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                     startedAt={
                       (turn.user?.message as { timestamp?: number } | undefined)?.timestamp
                     }
+                    providerNames={modelConfig.providerNames}
+                    {...(lastTurn
+                      ? {
+                          retry: state.retry,
+                          retryResult: state.retryResult,
+                          onStopRetry: abortRetry,
+                          errorActions,
+                        }
+                      : { errorActions: settingsOnly })}
                   />
                 )}
               </Fragment>
