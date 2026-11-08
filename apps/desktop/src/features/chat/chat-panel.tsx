@@ -100,7 +100,7 @@ function Welcome({ onPick }: { onPick: (text: string) => void }) {
   return (
     <div className="m-auto flex max-w-2xl flex-col items-center gap-5 text-center">
       <LogoMark size={60} className="text-fg/80" />
-      <h2 className="font-serif text-[28px] font-medium tracking-tight">{t.welcomeTitle}</h2>
+      <h2 className="font-serif text-3xl font-medium tracking-tight">{t.welcomeTitle}</h2>
       <p className="sr-only">{strings.layout.emptyTimeline}</p>
       <div className="flex flex-wrap justify-center gap-2.5">
         {t.suggestions.map((s) => (
@@ -112,7 +112,7 @@ function Welcome({ onPick }: { onPick: (text: string) => void }) {
             className={glassButtonClass}
             onClick={() => onPick(s)}
           >
-            <span className="text-[13px] font-normal">{s}</span>
+            <span className="text-sm font-normal">{s}</span>
           </GlassButton>
         ))}
       </div>
@@ -598,7 +598,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        className="scroll-none flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pt-12 text-sm"
+        className="scroll-none flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pt-12 text-base"
         style={{ paddingBottom: (composerHeight ?? COMPOSER_FALLBACK_PX) + COMPOSER_GAP_PX }}
       >
         <div
@@ -606,7 +606,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
           className="relative mx-auto flex w-full max-w-3xl flex-1 flex-col gap-4"
         >
           {preview && (
-            <p className="self-center rounded-full bg-hover px-2.5 py-0.5 text-[11px] text-muted">
+            <p className="self-center rounded-full bg-hover px-2.5 py-0.5 text-2xs text-muted">
               {t.previewBadge}
             </p>
           )}
@@ -789,7 +789,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                   rows={1}
                   style={{ height: inputHeight }}
                   className={cn(
-                    "scroll-none block w-full resize-none bg-transparent px-1 text-[14px] leading-[22px] caret-accent outline-none placeholder:text-muted/55",
+                    "scroll-none block w-full resize-none bg-transparent px-1 text-base leading-input caret-accent outline-none placeholder:text-muted/55",
                     (overflowing || expanded) && "pr-8",
                     voice.recording && voiceText && "text-transparent",
                   )}
@@ -801,7 +801,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                     aria-hidden
                     style={{ height: inputHeight }}
                     className={cn(
-                      "scroll-none pointer-events-none absolute inset-x-0 top-0 overflow-hidden px-1 text-[14px] leading-[22px] break-words whitespace-pre-wrap text-fg",
+                      "scroll-none pointer-events-none absolute inset-x-0 top-0 overflow-hidden px-1 text-base leading-input break-words whitespace-pre-wrap text-fg",
                       (overflowing || expanded) && "pr-8",
                     )}
                   >
@@ -872,7 +872,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                     />
                     <span
                       className={cn(
-                        "text-[12px] font-normal",
+                        "text-xs font-normal",
                         permissionMode === "full" && permissionMeta.full.tone,
                       )}
                     >

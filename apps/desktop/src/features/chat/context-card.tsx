@@ -189,7 +189,7 @@ function ContextCard({
       <div
         role="dialog"
         aria-label={c.title}
-        className="flex w-[340px] flex-col px-4 pt-3.5 pb-3 text-[13px] text-fg"
+        className="flex w-[340px] flex-col px-4 pt-3.5 pb-3 text-sm text-fg"
       >
         <button
           type="button"
@@ -200,7 +200,7 @@ function ContextCard({
         >
           <span className="font-semibold">{c.title}</span>
           <span className="flex-1" />
-          <span className="text-[12px] tabular-nums text-muted">
+          <span className="text-xs tabular-nums text-muted">
             {usage
               ? `${known ? formatTokens(used) : "—"} / ${formatTokens(b.contextWindow)} (${known ? formatPercent(percent) : "—"})`
               : c.noData}
@@ -261,7 +261,7 @@ function ContextCard({
                 )}
                 {!known && (
                   <li
-                    className="ctx-row flex min-h-[22px] items-center text-[12px] text-muted"
+                    className="ctx-row flex min-h-[22px] items-center text-xs text-muted"
                     style={{ "--i": index++ } as CSSProperties}
                   >
                     {usage ? c.unknownAfterCompact : c.noData}
@@ -278,7 +278,7 @@ function ContextCard({
                   })}
                   {b.usedTools.length > 0 && <UsedToolsGroup tools={b.usedTools} index={index++} />}
                   <li
-                    className="ctx-row pt-1 text-[11px] text-muted"
+                    className="ctx-row pt-1 text-2xs text-muted"
                     style={{ "--i": index++ } as CSSProperties}
                   >
                     {c.estimateNote}
@@ -302,7 +302,7 @@ function ContextCard({
           <Stat label={c.cacheRead} value={formatPercent1(hit)} />
           <Stat label={c.cost} value={sessionUsage ? formatCost(sessionUsage.cost) : "—"} />
         </dl>
-        <div className="mt-2.5 flex items-center gap-2 text-[12px] text-muted">
+        <div className="mt-2.5 flex items-center gap-2 text-xs text-muted">
           {/* 受控开关：切换时 store 先乐观更新（失败回滚），不会出现“新 → 旧 → 新”的跳动 */}
           <Switch
             ariaLabel={`${c.autoCompact}（${c.autoCompactScope}）`}
@@ -313,7 +313,7 @@ function ContextCard({
           />
           <span title={c.autoCompactHint}>
             {c.autoCompact}
-            <span className="ml-1 text-[11px] opacity-70">{c.autoCompactScope}</span>
+            <span className="ml-1 text-2xs opacity-70">{c.autoCompactScope}</span>
           </span>
           <span className="flex-1" />
           <button
@@ -349,7 +349,7 @@ function ContextRow({
 }) {
   return (
     <li
-      className="ctx-row flex h-[22px] items-center gap-2 text-[12px]"
+      className="ctx-row flex h-[22px] items-center gap-2 text-xs"
       style={{ "--i": index } as CSSProperties}
     >
       <i
@@ -389,7 +389,7 @@ function ContextGroup({ row, index, known }: { row: BreakdownRow; index: number;
         aria-label={`${label} ${count}`}
         disabled={empty}
         onClick={() => setOpen((v) => !v)}
-        className="-mx-1.5 flex h-[24px] w-[calc(100%+12px)] items-center gap-2 rounded-md px-1.5 text-left text-[12px] outline-none hover:bg-hover focus-visible:bg-hover disabled:hover:bg-transparent"
+        className="-mx-1.5 flex h-[24px] w-[calc(100%+12px)] items-center gap-2 rounded-md px-1.5 text-left text-xs outline-none hover:bg-hover focus-visible:bg-hover disabled:hover:bg-transparent"
       >
         <i aria-hidden className={cn("size-2 shrink-0 rounded-[2px]", COLOR[row.key])} />
         <span>{label}</span>
@@ -408,7 +408,7 @@ function ContextGroup({ row, index, known }: { row: BreakdownRow; index: number;
           {row.items.map((item, i) => (
             <li
               key={item.name}
-              className="ctx-item flex h-[20px] items-center gap-2 text-[11.5px]"
+              className="ctx-item flex h-[20px] items-center gap-2 text-2xs"
               style={{ "--i": i } as CSSProperties}
             >
               <span className="min-w-0 truncate text-muted" title={item.name}>
@@ -438,7 +438,7 @@ function UsedToolsGroup({ tools, index }: { tools: ContextStatsUsedTool[]; index
         aria-expanded={open}
         aria-label={`${c.usedTools} ${count}`}
         onClick={() => setOpen((v) => !v)}
-        className="-mx-1.5 flex h-[24px] w-[calc(100%+12px)] items-center gap-2 rounded-md px-1.5 text-left text-[12px] outline-none hover:bg-hover focus-visible:bg-hover"
+        className="-mx-1.5 flex h-[24px] w-[calc(100%+12px)] items-center gap-2 rounded-md px-1.5 text-left text-xs outline-none hover:bg-hover focus-visible:bg-hover"
       >
         <i aria-hidden className="size-2 shrink-0 rounded-[2px] bg-track-strong" />
         <span>{c.usedTools}</span>
@@ -457,7 +457,7 @@ function UsedToolsGroup({ tools, index }: { tools: ContextStatsUsedTool[]; index
           {tools.map((tool, i) => (
             <li
               key={tool.name}
-              className="ctx-item flex h-[20px] items-center gap-2 text-[11.5px]"
+              className="ctx-item flex h-[20px] items-center gap-2 text-2xs"
               style={{ "--i": i } as CSSProperties}
             >
               <span className="min-w-0 truncate text-muted" title={tool.name}>
@@ -478,8 +478,8 @@ function UsedToolsGroup({ tools, index }: { tools: ContextStatsUsedTool[]; index
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex flex-col gap-0.5 rounded-[10px] bg-hover px-2 py-1.5">
-      <dt className="text-[11px] text-muted">{label}</dt>
-      <dd className="text-[13px] font-semibold tabular-nums">{value}</dd>
+      <dt className="text-2xs text-muted">{label}</dt>
+      <dd className="text-sm font-semibold tabular-nums">{value}</dd>
     </div>
   );
 }

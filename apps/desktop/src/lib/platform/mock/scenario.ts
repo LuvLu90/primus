@@ -56,6 +56,31 @@ export interface ScenarioResult {
   messages: AgentMessage[];
 }
 
+/** 消息里带 `#排版` 时，最终回答换成一段覆盖常见 Markdown 元素的中文示例，用于检查字号层级 */
+export const TYPOGRAPHY_TAG = "#排版";
+const TYPOGRAPHY_ANSWER = [
+  "## 数据说明",
+  "",
+  "本次共分析 **2,981 条客诉**，时间跨度为 2026 年 1–10 月，字段来自 `complaints_2026.csv` 的 `类别` 与 `created_at` 两列。",
+  "",
+  "### 月度趋势",
+  "",
+  "- 3 月达到峰值 **412 条**，主要是 `物流延迟` 类；",
+  "- 6 月起回落到每月 250 条左右；",
+  "- 运行 `pnpm analyze --month 10` 可以重新生成本节数据。",
+  "",
+  "| 月份 | 客诉数 | 环比 |",
+  "| --- | ---: | ---: |",
+  "| 3 月 | 412 | +38% |",
+  "| 4 月 | 306 | -26% |",
+  "",
+  "```ts",
+  'const total = rows.filter((r) => r.类别 !== "咨询").length; // 2981',
+  "```",
+  "",
+  "> 注：咨询类工单不计入客诉。",
+].join("\n");
+
 /** 为一次 prompt 生成完整事件序列 */
 export function promptScenario(prompt: string, now: number): ScenarioResult {
   const records: CoreRecord[] = [];
@@ -65,7 +90,9 @@ export function promptScenario(prompt: string, now: number): ScenarioResult {
   const firstText = "我先查看一下工作区的文件。";
   const toolArgs = { path: "README.md" };
   const toolOutput = "# 示例工作区\n\n这是 mock 平台返回的假文件内容。";
-  const answer = `这是来自 mock 平台的模拟回答（浏览器预览模式，没有连接真实内核）。\n\n你刚才说：「${prompt}」\n\n工作区里有一个 README.md，内容是示例文本。`;
+  const answer = prompt.includes(TYPOGRAPHY_TAG)
+    ? TYPOGRAPHY_ANSWER
+    : `这是来自 mock 平台的模拟回答（浏览器预览模式，没有连接真实内核）。\n\n你刚才说：「${prompt}」\n\n工作区里有一个 README.md，内容是示例文本。`;
 
   const user: AgentMessage = { role: "user", content: prompt, timestamp: now };
   messages.push(user);

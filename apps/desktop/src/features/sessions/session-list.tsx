@@ -329,9 +329,9 @@ function SessionRow({
               className="size-1.5 shrink-0 rounded-full bg-accent"
             />
           )}
-          <span className="truncate text-[13px] leading-tight">{title}</span>
+          <span className="truncate text-sm leading-tight">{title}</span>
         </span>
-        <span className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted">
+        <span className="mt-0.5 flex items-center gap-1.5 text-2xs text-muted">
           <span>{relativeTime(session.updatedAt, now)}</span>
           {session.archived && <span>· {t.archived}</span>}
         </span>

@@ -232,7 +232,7 @@ function StepButton({
       aria-expanded={open}
       aria-controls={controls}
       onClick={onToggle}
-      className="group/step -mx-1.5 flex max-w-full items-center gap-2 rounded-lg px-1.5 py-[3px] text-left text-[13px] text-muted outline-none transition-colors duration-200 hover:bg-hover/60 hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40"
+      className="group/step -mx-1.5 flex max-w-full items-center gap-2 rounded-lg px-1.5 py-[3px] text-left text-sm text-muted outline-none transition-colors duration-200 hover:bg-hover/60 hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40"
     >
       <Icon
         aria-hidden
@@ -276,14 +276,14 @@ function ToolCallRow({ call, info }: { call: ToolCallBlock; info: CallInfo }) {
         failed={info.status === "error"}
       >
         {kind === "other" ? `${verb} ${call.name}` : verb}
-        {arg && <span className="ml-1.5 font-mono text-[12px] opacity-80">{arg}</span>}
+        {arg && <span className="ml-1.5 font-mono text-xs opacity-80">{arg}</span>}
       </StepButton>
       <Collapse open={open} id={id}>
         <div className="mt-1 mb-1.5 overflow-hidden rounded-xl bg-hover/70 ring-1 ring-border/60">
-          <div className="px-3 pt-2 text-[11px] text-muted">
+          <div className="px-3 pt-2 text-2xs text-muted">
             {kind === "bash" ? "Shell" : call.name}
           </div>
-          <pre className="output-fade max-h-64 overflow-auto px-3 pt-1.5 pb-3 font-mono text-[12px] leading-[1.6]">
+          <pre className="output-fade max-h-64 overflow-auto px-3 pt-1.5 pb-3 font-mono text-xs leading-relaxed">
             {argOf(call) && (
               <>
                 <span className="text-muted">{kind === "bash" ? "$ " : ""}</span>
@@ -384,7 +384,7 @@ function ThoughtStep({ text, live }: { text: string; live: boolean }) {
         <div
           ref={tailRef}
           className={cn(
-            "mt-1 mb-1 ml-[7px] overflow-y-auto border-border/80 border-l pl-3 text-[12.5px] text-muted leading-relaxed",
+            "mt-1 mb-1 ml-[7px] overflow-y-auto border-border/80 border-l pl-3 text-xs text-muted leading-relaxed",
             live ? "thought-live max-h-[7.5em]" : "max-h-80",
           )}
         >
@@ -408,11 +408,7 @@ function StepView({
     return <ToolGroup calls={step.calls} infoOf={infoOf} turnRunning={turnRunning} />;
   if (step.kind === "thought") return <ThoughtStep text={step.text} live={step.live} />;
   return (
-    <MarkdownText
-      text={step.text}
-      streaming={step.live}
-      className="py-0.5 text-[14px] text-fg/85 leading-relaxed"
-    />
+    <MarkdownText text={step.text} streaming={step.live} className="py-0.5 text-base text-fg/85" />
   );
 }
 
@@ -503,7 +499,7 @@ export const AgentTurn = memo(function AgentTurn({
             aria-controls={id}
             aria-label={open ? t.collapse : t.expand}
             onClick={() => setUserOpen(!open)}
-            className="group/work -mx-1.5 flex items-center gap-1 self-start rounded-lg px-1.5 py-[3px] text-[13px] text-muted outline-none transition-colors duration-200 hover:bg-hover/60 hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40"
+            className="group/work -mx-1.5 flex items-center gap-1 self-start rounded-lg px-1.5 py-[3px] text-sm text-muted outline-none transition-colors duration-200 hover:bg-hover/60 hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40"
           >
             <span className={cn(running && "text-pulse")}>{running ? t.running : t.elapsed}</span>
             <Elapsed start={start} end={end} running={running} />
@@ -540,11 +536,11 @@ export const AgentTurn = memo(function AgentTurn({
           key={a.key}
           text={a.text}
           streaming={a.live}
-          className="step-in font-serif text-[15px] leading-relaxed"
+          className="step-in font-serif text-base"
         />
       ))}
       {last?.stopReason === "aborted" && (
-        <p className="self-start rounded-full bg-hover px-2 py-0.5 text-[11px] text-muted">
+        <p className="self-start rounded-full bg-hover px-2 py-0.5 text-2xs text-muted">
           {strings.chat.stopped}
         </p>
       )}

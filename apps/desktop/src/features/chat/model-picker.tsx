@@ -156,7 +156,7 @@ export function ModelPicker({
           type="button"
           aria-label={`${t.label}：${model?.name ?? name}${level ? `，${t.thinkingDegree}${level}` : ""}`}
           title={model?.name ?? name}
-          className="flex h-8 max-w-64 items-center gap-1.5 rounded-full px-2.5 text-[12px] text-muted outline-none transition-colors hover:bg-hover hover:text-fg focus-visible:bg-hover disabled:opacity-40 data-[state=open]:bg-hover data-[state=open]:text-fg"
+          className="flex h-8 max-w-64 items-center gap-1.5 rounded-full px-2.5 text-xs text-muted outline-none transition-colors hover:bg-hover hover:text-fg focus-visible:bg-hover disabled:opacity-40 data-[state=open]:bg-hover data-[state=open]:text-fg"
         >
           <span className="truncate">{name}</span>
           {level && <span className="shrink-0">· {level}</span>}
@@ -175,10 +175,10 @@ export function ModelPicker({
         <div className={cn("flex flex-col", contentMaxHeight)}>
           {empty ? (
             <div className="px-4 pt-1 pb-2">
-              <p className="text-[13px] text-muted">{t.empty}</p>
+              <p className="text-sm text-muted">{t.empty}</p>
               <Menu.Item
                 onSelect={onOpenSettings}
-                className="mt-2.5 inline-flex cursor-default select-none items-center rounded-full bg-hover px-3 py-1.5 text-[13px] font-medium text-fg outline-none transition-colors data-[highlighted]:bg-black/[0.08] motion-reduce:transition-none dark:data-[highlighted]:bg-white/[0.12]"
+                className="mt-2.5 inline-flex cursor-default select-none items-center rounded-full bg-hover px-3 py-1.5 text-sm font-medium text-fg outline-none transition-colors data-[highlighted]:bg-black/[0.08] motion-reduce:transition-none dark:data-[highlighted]:bg-white/[0.12]"
               >
                 {t.addProvider}
               </Menu.Item>
@@ -238,7 +238,7 @@ function ModelList({
             <Menu.Label
               id={`${labelBase}-${group.provider}`}
               className={cn(
-                "truncate px-4 pb-1 text-[11px] font-medium text-muted",
+                "truncate px-4 pb-1 text-2xs font-medium text-muted",
                 i === 0 ? "pt-0.5" : "pt-2.5",
               )}
             >
@@ -253,7 +253,7 @@ function ModelList({
                 className={rowClass}
               >
                 <span className="min-w-0 flex-1 truncate">{m.name}</span>
-                <span aria-hidden className="shrink-0 text-[12px] tabular-nums text-muted">
+                <span aria-hidden className="shrink-0 text-xs tabular-nums text-muted">
                   {formatTokens(m.contextWindow)}
                 </span>
                 <span aria-hidden className="flex w-3.5 shrink-0 justify-center">
@@ -362,13 +362,13 @@ function ThinkingSlider({
   const label = thinkingLabel(levels[draft]);
   return (
     <div className="px-4 pt-0.5 pb-2">
-      <div className="flex items-baseline gap-1.5 text-[12px] text-muted">
+      <div className="flex items-baseline gap-1.5 text-xs text-muted">
         <span>{t.thinkingDegree}</span>
-        <span key={label} aria-hidden className="value-in text-[13px] font-medium text-fg">
+        <span key={label} aria-hidden className="value-in text-sm font-medium text-fg">
           {label}
         </span>
       </div>
-      <div aria-hidden className="mt-2 mb-1.5 flex justify-between text-[12px] text-muted">
+      <div aria-hidden className="mt-2 mb-1.5 flex justify-between text-xs text-muted">
         <span>{t.faster}</span>
         <span>{t.smarter}</span>
       </div>

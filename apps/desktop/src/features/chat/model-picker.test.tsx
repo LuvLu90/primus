@@ -217,7 +217,7 @@ describe("模型选择", () => {
   it("行的字号与行高与输入栏其他菜单一致（13px / py-[7px]）", async () => {
     open();
     const row = await screen.findByRole("menuitemradio", { name: "Sonnet 5" });
-    expect(row.className).toContain("text-[13px]");
+    expect(row.className).toContain("text-sm");
     expect(row.className).toContain("py-[7px]");
   });
 

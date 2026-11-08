@@ -30,7 +30,7 @@ export function SentFiles({ files }: { files: FileTag[] }) {
             key={`${i}-${f.path}`}
             title={inlined ? `${f.path}\n${t.inlined}` : f.path}
             aria-label={inlined ? `${name}（${t.inlined}）` : name}
-            className="flex h-7 max-w-56 items-center gap-1.5 rounded-[9px] bg-tile px-2 text-[12px] ring-1 ring-tile-ring"
+            className="flex h-7 max-w-56 items-center gap-1.5 rounded-[9px] bg-tile px-2 text-xs ring-1 ring-tile-ring"
           >
             <Icon aria-hidden size={13} className="shrink-0 text-muted" />
             <span className="min-w-0 truncate">{name}</span>

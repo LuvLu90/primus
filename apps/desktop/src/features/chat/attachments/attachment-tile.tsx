@@ -92,9 +92,7 @@ export function AttachmentTile({
               Icon && (
                 <>
                   <Icon aria-hidden size={22} strokeWidth={1.6} className="text-fg/75" />
-                  <span className="max-w-12 truncate text-[9px] leading-[11px] text-muted">
-                    {item.name}
-                  </span>
+                  <span className="max-w-12 truncate text-3xs text-muted">{item.name}</span>
                 </>
               )
             )}

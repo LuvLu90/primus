@@ -57,7 +57,7 @@ export function VoiceButton({
         <span
           role="timer"
           aria-label={`${t.recording} ${clock(elapsed)}`}
-          className="voice-time shrink-0 text-[11.5px] tabular-nums"
+          className="voice-time shrink-0 text-2xs tabular-nums"
         >
           {clock(elapsed)}
         </span>

@@ -63,7 +63,7 @@ export interface ErrorActions {
 }
 
 const buttonBase =
-  "inline-flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-[12px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-50";
+  "inline-flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-50";
 const primaryButton = cn(buttonBase, "bg-fg text-surface hover:bg-fg/85");
 const secondaryButton = cn(buttonBase, "text-fg ring-1 ring-border ring-inset hover:bg-hover");
 
@@ -71,9 +71,7 @@ function Meta({ label, children, mono }: { label: string; children: ReactNode; m
   return (
     <div className="flex min-w-0 items-baseline gap-1">
       <dt className="shrink-0">{label}</dt>
-      <dd
-        className={cn("min-w-0 truncate text-fg/80 tabular-nums", mono && "font-mono text-[11px]")}
-      >
+      <dd className={cn("min-w-0 truncate text-fg/80 tabular-nums", mono && "font-mono text-2xs")}>
         {children}
       </dd>
     </div>
@@ -150,7 +148,7 @@ export function ErrorCard({
       aria-labelledby={titleId}
       data-category={info.category}
       className={cn(
-        "step-in flex flex-col gap-2.5 rounded-xl border px-3.5 py-3 text-[13px]",
+        "step-in flex flex-col gap-2.5 rounded-xl border px-3.5 py-3 text-sm",
         warning ? "border-warning/25 bg-warning/[0.06]" : "border-danger/25 bg-danger/[0.05]",
       )}
     >
@@ -170,11 +168,11 @@ export function ErrorCard({
               {strings.chat.replyFailed}：{copy.title}
             </h3>
             {info.reason && (
-              <span className="rounded-full bg-danger/10 px-1.5 py-px text-[11px] text-danger">
+              <span className="rounded-full bg-danger/10 px-1.5 py-px text-2xs text-danger">
                 {t.reasons[info.reason]}
               </span>
             )}
-            {retried && <span className="text-[11.5px] text-muted">{retried}</span>}
+            {retried && <span className="text-2xs text-muted">{retried}</span>}
           </div>
           <p className="text-fg/80 leading-relaxed">
             {copy.hint}
@@ -218,7 +216,7 @@ export function ErrorCard({
       {(probe.state === "ok" || probe.state === "failed") && (
         <p
           role="status"
-          className="step-in flex items-start gap-1.5 pl-8.5 text-[12px] text-fg/80 leading-relaxed"
+          className="step-in flex items-start gap-1.5 pl-8.5 text-xs text-fg/80 leading-relaxed"
         >
           {probe.state === "ok" ? (
             <>
@@ -236,7 +234,7 @@ export function ErrorCard({
 
       <div className="ml-8.5 flex flex-col gap-1.5 border-border border-t pt-2">
         <div className="flex items-center gap-2">
-          <dl className="flex min-w-0 flex-1 flex-wrap gap-x-3.5 gap-y-1 text-[11.5px] text-muted">
+          <dl className="flex min-w-0 flex-1 flex-wrap gap-x-3.5 gap-y-1 text-2xs text-muted">
             {message.provider && <Meta label={t.provider}>{providerName || message.provider}</Meta>}
             {message.model && (
               <Meta label={t.model} mono>
@@ -254,7 +252,7 @@ export function ErrorCard({
             aria-expanded={open}
             aria-controls={detailsId}
             onClick={() => setOpen((o) => !o)}
-            className="-mr-1 inline-flex shrink-0 items-center gap-0.5 rounded-md px-1 py-0.5 text-[11.5px] text-muted outline-none transition-colors hover:bg-hover hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40"
+            className="-mr-1 inline-flex shrink-0 items-center gap-0.5 rounded-md px-1 py-0.5 text-2xs text-muted outline-none transition-colors hover:bg-hover hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40"
           >
             {open ? t.hideDetails : t.details}
             <ChevronRight
@@ -275,16 +273,16 @@ export function ErrorCard({
             <div className="absolute top-1 right-1">
               <CopyButton text={report} label={t.copyDetails} size="sm" />
             </div>
-            <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words px-2.5 py-2 pr-9 font-mono text-[11.5px] text-fg/85 leading-relaxed">
+            <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words px-2.5 py-2 pr-9 font-mono text-2xs text-fg/85 leading-relaxed">
               {message.errorMessage || copy.title}
             </pre>
             {diagnostics.length > 0 && (
               <div className="border-tile-ring border-t px-2.5 py-2">
-                <p className="mb-1 text-[11px] text-muted">{t.diagnostics}</p>
+                <p className="mb-1 text-2xs text-muted">{t.diagnostics}</p>
                 <ul className="flex flex-col gap-1.5">
                   {diagnostics.map((d, i) => (
                     // biome-ignore lint/suspicious/noArrayIndexKey: 诊断记录随消息定稿，不会重排
-                    <li key={i} className="font-mono text-[11px] text-fg/80">
+                    <li key={i} className="font-mono text-2xs text-fg/80">
                       <span>{diagnosticLine(d)}</span>
                       {d.details && (
                         <pre className="mt-0.5 whitespace-pre-wrap break-words text-muted">
@@ -335,7 +333,7 @@ export function RetryNotice({
     <div
       role="status"
       aria-live="polite"
-      className="step-in flex items-center gap-2.5 rounded-xl border border-warning/25 bg-warning/[0.06] px-3.5 py-2.5 text-[13px]"
+      className="step-in flex items-center gap-2.5 rounded-xl border border-warning/25 bg-warning/[0.06] px-3.5 py-2.5 text-sm"
     >
       <span
         aria-hidden
@@ -355,7 +353,7 @@ export function RetryNotice({
             {left > 0 ? fill(t.retryIn, values) : `${fill(t.retrying, values)}…`}
           </span>
         </p>
-        <p className="truncate text-[12px] text-muted" title={retry.errorMessage}>
+        <p className="truncate text-xs text-muted" title={retry.errorMessage}>
           {retry.errorMessage}
         </p>
       </div>

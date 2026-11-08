@@ -31,7 +31,7 @@ const t = strings.chat;
 
 /** 菜单行：圆角高亮、图标 + 文字，高亮态用轻微的黑/白叠色（输入栏各菜单与模型列表共用） */
 export const rowClass =
-  "mx-1.5 flex cursor-default select-none items-center gap-2.5 rounded-[10px] px-2.5 py-[7px] text-[13px] text-fg outline-none " +
+  "mx-1.5 flex cursor-default select-none items-center gap-2.5 rounded-[10px] px-2.5 py-[7px] text-sm text-fg outline-none " +
   "data-[highlighted]:bg-black/[0.06] data-[disabled]:opacity-45 dark:data-[highlighted]:bg-white/[0.1]";
 
 export const separatorClass = "mx-3 my-1 h-px bg-black/[0.07] dark:bg-white/[0.09]";
@@ -169,18 +169,18 @@ export function WorkspacePicker({
               }}
               placeholder={t.searchWorkspaces}
               aria-label={t.searchWorkspaces}
-              className="h-6 min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-muted/70"
+              className="h-6 min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted/70"
             />
           </div>
           <div className={separatorClass} />
           {error && (
-            <p role="alert" className="px-4 pt-1.5 text-[12px] text-danger">
+            <p role="alert" className="px-4 pt-1.5 text-xs text-danger">
               {error}
             </p>
           )}
           <div className="scroll-thin max-h-60 overflow-y-auto py-0.5">
             {filtered.length === 0 ? (
-              <p className="px-4 py-2 text-[12px] text-muted">
+              <p className="px-4 py-2 text-xs text-muted">
                 {items.length === 0 ? t.noRecentWorkspaces : t.noMatchingWorkspaces}
               </p>
             ) : (
@@ -274,7 +274,7 @@ export function PermissionPicker({
                   <span className="font-medium leading-snug">{p.label}</span>
                   <span
                     className={cn(
-                      "text-[12px] leading-snug",
+                      "text-xs leading-snug",
                       m === "full" ? "opacity-80" : "text-muted",
                     )}
                   >
@@ -308,7 +308,7 @@ export function AttachmentChips({
         <li
           key={p}
           title={p}
-          className="group flex h-7 max-w-56 items-center gap-1.5 rounded-[9px] bg-black/[0.045] pl-2 pr-1 text-[12px] ring-1 ring-black/[0.05] dark:bg-white/[0.07] dark:ring-white/[0.06]"
+          className="group flex h-7 max-w-56 items-center gap-1.5 rounded-[9px] bg-black/[0.045] pl-2 pr-1 text-xs ring-1 ring-black/[0.05] dark:bg-white/[0.07] dark:ring-white/[0.06]"
         >
           <FileText aria-hidden size={13} className="shrink-0 text-muted" />
           <span className="min-w-0 truncate">{baseName(p)}</span>

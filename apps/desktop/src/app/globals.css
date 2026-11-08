@@ -40,12 +40,56 @@
   --color-caption-close: #e81123;
   --color-caption-close-pressed: #f1707a;
   /* 全部用 Windows 系统字体：西文 Segoe UI，中文微软雅黑，代码 Cascadia（Win11 自带）回落 Consolas。
-     标题与回复也用同一套无衬线字体，不再单独打包西文字体 */
+     标题与回复也用同一套无衬线字体，不再单独打包西文字体。
+     中文优先：西文字体在前只负责字母与数字（Segoe UI 与微软雅黑是配套设计，数字与汉字视觉大小一致），
+     汉字落到 Microsoft YaHei UI（Windows）/ PingFang SC（macOS）；不要把宋体等衬线中文字体放进任何一个字体栈 */
   --font-sans:
     "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC",
     system-ui, sans-serif;
   --font-serif: var(--font-sans);
-  --font-mono: "Cascadia Code", "Cascadia Mono", Consolas, "Microsoft YaHei UI", monospace;
+  /* 等宽：Cascadia Mono 不带连字（!== 不会被画成一个符号）；行内代码里的汉字回落到雅黑 / 苹方（常规字重的无衬线），
+     不会落到加粗或衬线的中文字体上 */
+  --font-mono:
+    "Cascadia Mono", "Cascadia Code", Consolas, "Microsoft YaHei UI", "Microsoft YaHei",
+    "PingFang SC", monospace;
+
+  /*
+   * 字号阶梯（全局唯一来源）：界面里只用下面这些 text-* 工具类，不写 text-[13px] 这类任意值（scripts/check-type-scale.mjs 检查）。
+   * 先清空 Tailwind 默认阶梯，避免 text-sm=14px 这类默认值与我们的阶梯混用。
+   *   3xs  9px  附件图块上的扩展名角标
+   *   2xs 11px  徽标、计数、次要说明、分组标题
+   *   xs  12px  次要信息：提示、副标题、等宽路径与命令输出、思考内容
+   *   sm  13px  界面控件：菜单项、按钮、列表行、设置项、工作过程行（"已思考""已读取"）
+   *   base 14px 阅读正文：用户气泡、助手回复与中间文字、输入框
+   *   md  15px  玻璃按钮文字；Markdown h3
+   *   lg  16px  对话框标题；Markdown h2
+   *   xl  18px  Markdown h1
+   *   2xl 24px  设置页分组标题
+   *   3xl 28px  欢迎页标题
+   */
+  --text-*: initial;
+  --text-3xs: 9px;
+  --text-3xs--line-height: 11px;
+  --text-2xs: 11px;
+  --text-2xs--line-height: 16px;
+  --text-xs: 12px;
+  --text-xs--line-height: 18px;
+  --text-sm: 13px;
+  --text-sm--line-height: 20px;
+  --text-base: 14px;
+  --text-base--line-height: 1.65;
+  --text-md: 15px;
+  --text-md--line-height: 22px;
+  --text-lg: 16px;
+  --text-lg--line-height: 24px;
+  --text-xl: 18px;
+  --text-xl--line-height: 26px;
+  --text-2xl: 24px;
+  --text-2xl--line-height: 32px;
+  --text-3xl: 28px;
+  --text-3xl--line-height: 36px;
+  /* 输入框行高固定 22px：与 chat-panel 里计算 2–6 行高度用的 INPUT_LINE_PX 保持一致 */
+  --leading-input: 22px;
 }
 
 :root {
@@ -493,22 +537,27 @@ html.window-effects.glass-clear body {
 .md table {
   margin: 0.6em 0;
 }
+/* 标题克制：只比正文略大、半粗。按正文 14px 计依次为 18 / 16 / 15 / 14px（--text-xl / lg / md / base），
+   用 em 写是为了在思考内容（12px）等更小的上下文里同比缩小 */
 .md h1,
 .md h2,
 .md h3,
 .md h4 {
-  margin: 1.1em 0 0.5em;
+  margin: 1em 0 0.4em;
   font-weight: 600;
-  line-height: 1.35;
+  line-height: 1.4;
 }
 .md h1 {
-  font-size: 1.35em;
+  font-size: 1.2857em;
 }
 .md h2 {
-  font-size: 1.2em;
+  font-size: 1.1429em;
 }
 .md h3 {
-  font-size: 1.08em;
+  font-size: 1.0714em;
+}
+.md h4 {
+  font-size: 1em;
 }
 .md strong {
   font-weight: 600;
@@ -532,34 +581,35 @@ html.window-effects.glass-clear body {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
-/* 行内代码（code span）：参照 GitHub / ChatGPT 的做法，浅底色 + 细描边的小胶囊。
+/* 行内代码（code span）：浅底色小胶囊，不加描边、不加粗。
+   等宽字体的字面比正文字体宽，0.875em 时与周围文字视觉等大（14px 正文里约 12.25px）；
+   字重固定常规，粗体里的代码也不加粗，避免等宽字形显得又大又重。
    颜色从文字色按比例混出，玻璃背景和深浅主题下都能看清；换行时每段各自带底色与圆角 */
 .md code {
   font-family: var(--font-mono);
-  font-size: 0.86em;
-  padding: 0.12em 0.4em;
+  font-size: 0.875em;
+  font-weight: 400;
+  padding: 0.1em 0.35em;
   margin: 0 0.1em;
-  border-radius: 6px;
-  background: color-mix(in srgb, currentColor 8%, transparent);
-  border: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+  border-radius: 5px;
+  background: color-mix(in srgb, currentColor 7%, transparent);
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
   overflow-wrap: anywhere;
 }
+/* 代码块：与行内代码同一字号比例，行高略松 */
 .md pre {
   padding: 0.8em 1em;
   border-radius: 12px;
   background: var(--color-hover);
   overflow-x: auto;
-  line-height: 1.5;
+  line-height: 1.6;
 }
 .md pre code {
   padding: 0;
   margin: 0;
-  border: 0;
   background: none;
   overflow-wrap: normal;
-  font-size: 0.85em;
 }
 .md blockquote {
   padding-left: 0.9em;
@@ -960,8 +1010,8 @@ html.window-effects.glass-clear body {
   border-radius: 5px;
   background: rgb(0 0 0 / 0.55);
   color: #fff;
-  font-size: 8.5px;
-  line-height: 12px;
+  font-size: var(--text-3xs);
+  line-height: var(--text-3xs--line-height);
   backdrop-filter: blur(6px);
 }
 

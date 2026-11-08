@@ -50,7 +50,7 @@ function GlassTooltipContent({
         {...props}
       >
         <GlassSurface blur={12} radius={999} tint={tint} tintColor={tintColor}>
-          <span className="block whitespace-nowrap px-3 py-1.5 font-medium text-[12px] text-fg leading-none">
+          <span className="block whitespace-nowrap px-3 py-1.5 font-medium text-xs text-fg leading-none">
             {children}
           </span>
         </GlassSurface>

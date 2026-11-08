@@ -161,9 +161,9 @@ export function MessageIndex({
             className="index-pop absolute left-9 w-64 rounded-2xl bg-surface/95 px-3.5 py-2.5 shadow-[0_8px_30px_-8px_rgb(0_0_0/0.18)] ring-1 ring-border backdrop-blur-md"
             style={{ top: hover.top, translate: "0 -50%" }}
           >
-            <p className="truncate font-medium text-[13px] text-fg">{title}</p>
+            <p className="truncate font-medium text-sm text-fg">{title}</p>
             {rest.join(" ").trim() && (
-              <p className="mt-0.5 line-clamp-2 text-[12px] text-muted leading-relaxed">
+              <p className="mt-0.5 line-clamp-2 text-xs text-muted leading-relaxed">
                 {rest.join(" ").trim()}
               </p>
             )}

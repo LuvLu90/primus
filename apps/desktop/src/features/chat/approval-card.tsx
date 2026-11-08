@@ -24,13 +24,13 @@ export function ApprovalCard({
   const cancel = () =>
     onRespond({ type: "extension_ui_response", id: request.id, cancelled: true });
   const button =
-    "rounded-full px-3.5 py-1.5 text-[13px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/40";
+    "rounded-full px-3.5 py-1.5 text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/40";
 
   return (
     <section
       role="alertdialog"
       aria-label={t.label}
-      className="mx-auto mb-2 flex w-full max-w-xl flex-col gap-2.5 rounded-[18px] bg-surface px-4 py-3 text-[13px] shadow-[0_8px_30px_-12px_rgb(0_0_0/0.35)] ring-1 ring-border"
+      className="mx-auto mb-2 flex w-full max-w-xl flex-col gap-2.5 rounded-[18px] bg-surface px-4 py-3 text-sm shadow-[0_8px_30px_-12px_rgb(0_0_0/0.35)] ring-1 ring-border"
     >
       <div className="flex items-start gap-2.5">
         <ShieldQuestion aria-hidden size={16} className="mt-0.5 shrink-0 text-muted" />
@@ -43,7 +43,7 @@ export function ApprovalCard({
             tabIndex={0}
             className="mt-0.5 max-h-[min(9rem,22vh)] overflow-y-auto overscroll-contain rounded-md pr-1 outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
           >
-            <p className="whitespace-pre-wrap break-words font-mono text-[12px] text-muted">
+            <p className="whitespace-pre-wrap break-words font-mono text-xs text-muted">
               {request.title}
             </p>
             {request.method === "confirm" && request.message && (

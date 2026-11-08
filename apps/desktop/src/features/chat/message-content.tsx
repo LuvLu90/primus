@@ -163,10 +163,10 @@ export const MarkdownText = memo(function MarkdownText({
           <GlassDialogContent>
             <GlassDialogTitle>{strings.chat.linkTitle}</GlassDialogTitle>
             <GlassDialogDescription>{strings.chat.linkDescription}</GlassDialogDescription>
-            <p className="mt-3 max-h-32 overflow-y-auto break-all font-mono text-[12px] text-muted">
+            <p className="mt-3 max-h-32 overflow-y-auto break-all font-mono text-xs text-muted">
               {pendingLink}
             </p>
-            {linkError && <p className="mt-2 text-[13px] text-danger">{linkError}</p>}
+            {linkError && <p className="mt-2 text-sm text-danger">{linkError}</p>}
             <div className="mt-5 flex justify-end gap-2 text-sm">
               <GlassDialogClose asChild>
                 <button type="button" className="rounded-full bg-hover px-4 py-1.5">
@@ -194,7 +194,7 @@ export function ThinkingIndicator({ label = strings.chat.thinkingNow }: { label?
     <div
       role="status"
       aria-live="polite"
-      className="msg-in flex items-center gap-2 self-start text-[13px]"
+      className="msg-in flex items-center gap-2 self-start text-sm"
     >
       <span className="thinking-dots" aria-hidden>
         <i />

@@ -37,7 +37,7 @@ export function SessionsSidebar({ width }: { width: number }) {
             onClick={newTab}
           >
             <SquarePen aria-hidden size={16} strokeWidth={2} />
-            <span className="text-[13px] font-medium">{t.newSession}</span>
+            <span className="text-sm font-medium">{t.newSession}</span>
           </GlassButton>
 
           {/* 搜索 + 会话列表 */}

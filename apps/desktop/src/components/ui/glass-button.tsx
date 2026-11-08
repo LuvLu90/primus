@@ -156,7 +156,7 @@ function GlassButton({
           tint={tint}
           tintColor={tintColor}
         />
-        <span className="relative inline-flex items-center justify-center gap-2 font-medium text-[15px] leading-none">
+        <span className="relative inline-flex items-center justify-center gap-2 font-medium text-md leading-none">
           {children}
         </span>
       </span>

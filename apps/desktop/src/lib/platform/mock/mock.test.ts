@@ -2,7 +2,7 @@ import type { CoreBatch, CoreRecord } from "@primus/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { COMMANDS } from "../types";
 import { compareSemver, createMockPlatform } from "./index";
-import { chunk, promptScenario } from "./scenario";
+import { chunk, promptScenario, TYPOGRAPHY_TAG } from "./scenario";
 
 const types = (records: CoreRecord[]) => records.map((r) => r.type);
 
@@ -560,6 +560,18 @@ describe("假事件流脚本", () => {
     expect(updates[0]).toBe("thinking_start");
     expect(updates).toContain("toolcall_end");
     expect(updates.at(-1)).toBe("text_end");
+  });
+
+  it("#排版：最终回答换成覆盖标题、粗体、行内代码、列表、表格与代码块的 Markdown 示例", () => {
+    const answerOf = (prompt: string) => {
+      const { messages } = promptScenario(prompt, 0);
+      const last = messages.at(-1) as { content: { type: string; text?: string }[] };
+      return last.content[0]?.text ?? "";
+    };
+    const sample = answerOf(`看看 ${TYPOGRAPHY_TAG}`);
+    for (const piece of ["## ", "### ", "**", "`", "- ", "| ", "```"])
+      expect(sample).toContain(piece);
+    expect(answerOf("你好")).toContain("你刚才说");
   });
 });
 

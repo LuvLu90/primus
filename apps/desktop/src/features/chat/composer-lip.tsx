@@ -46,7 +46,7 @@ export function ComposerLip({
   if (!workspace && locked) return null;
   const item = "lip-item-in flex min-w-0 items-center gap-1.5";
   return (
-    <div className="composer-lip mx-3.5 -mb-3 flex h-11 items-center gap-4 rounded-t-2xl bg-lip px-3.5 pb-3 text-[12px] text-muted shadow-[inset_0_0_0_1px_var(--color-border)]">
+    <div className="composer-lip mx-3.5 -mb-3 flex h-11 items-center gap-4 rounded-t-2xl bg-lip px-3.5 pb-3 text-xs text-muted shadow-[inset_0_0_0_1px_var(--color-border)]">
       {branch && (
         <span
           key={`${workspace?.path}:${branch.name}`}

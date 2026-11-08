@@ -44,7 +44,7 @@ function GlassDialogContent({
 function GlassDialogTitle({ className, ...props }: ComponentProps<typeof DialogPrimitive.Title>) {
   return (
     <DialogPrimitive.Title
-      className={cn("font-semibold text-[17px] leading-snug tracking-tight", className)}
+      className={cn("font-semibold text-lg tracking-tight", className)}
       {...props}
     />
   );
@@ -56,7 +56,7 @@ function GlassDialogDescription({
 }: ComponentProps<typeof DialogPrimitive.Description>) {
   return (
     <DialogPrimitive.Description
-      className={cn("mt-1.5 text-[14px] leading-relaxed opacity-65", className)}
+      className={cn("mt-1.5 text-sm leading-relaxed opacity-65", className)}
       {...props}
     />
   );

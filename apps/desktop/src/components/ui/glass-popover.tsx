@@ -83,9 +83,9 @@ function GlassPopoverItem({
         </span>
       ) : null}
       <span className="flex min-w-0 flex-col gap-0.5">
-        <span className="truncate text-[14px] leading-tight">{label}</span>
+        <span className="truncate text-sm leading-tight">{label}</span>
         {sublabel ? (
-          <span className="truncate text-[12px] leading-tight opacity-55">{sublabel}</span>
+          <span className="truncate text-xs leading-tight opacity-55">{sublabel}</span>
         ) : null}
       </span>
     </MenuPrimitive.Item>

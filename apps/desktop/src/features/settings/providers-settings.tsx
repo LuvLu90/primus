@@ -658,7 +658,7 @@ function ModelRow({
           <span className="min-w-0 flex-1">
             <span className="block truncate">{model.name}</span>
             {(model.name !== model.id || !model.listed) && (
-              <span className="block truncate text-[11px] text-muted">
+              <span className="block truncate text-2xs text-muted">
                 {model.name !== model.id ? model.id : null}
                 {model.name !== model.id && !model.listed ? " · " : null}
                 {!model.listed ? td.notListed : null}
@@ -693,7 +693,7 @@ function ModelRow({
           className="mt-2 grid grid-cols-2 gap-x-3 gap-y-2 pl-6.5"
         >
           <div>
-            <label htmlFor={ctxId} className="mb-0.5 block text-[11px] text-muted">
+            <label htmlFor={ctxId} className="mb-0.5 block text-2xs text-muted">
               {td.contextWindow}
             </label>
             <input
@@ -706,13 +706,13 @@ function ModelRow({
               className={cn(inputClass, "px-2 py-1")}
             />
             {errors.includes("contextWindow") && (
-              <p id={`${ctxId}-error`} className="mt-0.5 text-[11px] text-danger">
+              <p id={`${ctxId}-error`} className="mt-0.5 text-2xs text-danger">
                 {td.errors.positiveInt}
               </p>
             )}
           </div>
           <div>
-            <label htmlFor={maxId} className="mb-0.5 block text-[11px] text-muted">
+            <label htmlFor={maxId} className="mb-0.5 block text-2xs text-muted">
               {td.maxTokens}
             </label>
             <input
@@ -725,7 +725,7 @@ function ModelRow({
               className={cn(inputClass, "px-2 py-1")}
             />
             {errors.includes("maxTokens") && (
-              <p id={`${maxId}-error`} className="mt-0.5 text-[11px] text-danger">
+              <p id={`${maxId}-error`} className="mt-0.5 text-2xs text-danger">
                 {td.errors.positiveInt}
               </p>
             )}
