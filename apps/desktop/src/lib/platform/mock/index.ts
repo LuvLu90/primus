@@ -164,7 +164,10 @@ function toSummary(p: MockProvider, m: ProviderModel): ModelSummary {
 
 /** get_state / set_model 响应里的模型对象（字段按 Core 的 Model，只填界面用到的） */
 function mockModel(key: string, m: ModelSummary | undefined) {
-  const [provider = "", id = key] = key.split("/");
+  // 只按第一个 `/` 拆分：模型 ID 可以含 `/`（如 moonshotai/kimi-k3）
+  const slash = key.indexOf("/");
+  const provider = slash >= 0 ? key.slice(0, slash) : "";
+  const id = slash >= 0 ? key.slice(slash + 1) : key;
   return {
     id: m?.id ?? id,
     name: m?.name ?? id,
@@ -548,6 +551,9 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
         s.thinkingLevel = findModel(s.model)?.reasoning ? cmd.level : "off";
         emit(s, respond(cmd));
         return;
+      case "get_available_models":
+        emit(s, respond(cmd, { models: allModels().map((m) => mockModel(m.key, m)) }));
+        return;
       case "get_available_thinking_levels":
         emit(
           s,
@@ -830,7 +836,9 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       for (const m of input.models) {
         const extra = Object.keys(m).filter((k) => !PROVIDER_MODEL_KEYS.includes(k));
         if (extra.length) throw new Error(`模型参数包含未知字段：${extra.join("、")}`);
-        if (!m.id || m.id.includes("/")) throw new Error(`模型 ID 无效：${m.id}`);
+        // 与薄壳一致：可以含 `/`（厂商/模型），但不能以 `/` 开头或结尾、不能有空段
+        if (!m.id || m.id.split("/").some((part) => !part))
+          throw new Error(`模型 ID 无效：${m.id}`);
         if (ids.has(m.id)) throw new Error(`模型 ID 重复：${m.id}`);
         if (!m.input.includes("text")) throw new Error(`模型 ${m.id} 必须支持文本输入`);
         if (!(m.contextWindow > 0 && m.maxTokens > 0)) {

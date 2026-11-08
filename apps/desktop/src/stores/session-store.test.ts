@@ -319,6 +319,52 @@ describe("会话 store：流式消息重建（第 7.4 节）", () => {
     expect(s.thinkingLevels).toBeUndefined();
   });
 
+  it("记录 Core 认得的模型能力：get_available_models 整体替换，get_state / set_model 补充；失败不提示", () => {
+    const core = (id: string, input: string[], reasoning: boolean, contextWindow: number) => ({
+      provider: "gw",
+      id,
+      name: id,
+      input,
+      reasoning,
+      contextWindow,
+      maxTokens: 32_000,
+    });
+    const response = (command: string, data: unknown, success = true) =>
+      ({ type: "response", id: command, command, success, data }) as CoreRecord;
+    const s1 = applyChunks(initialSessionState, [
+      chunk([
+        response("get_available_models", {
+          models: [
+            core("moonshotai/kimi-k3.1-pro", ["text", "image"], true, 1_048_576),
+            core("old", ["text"], false, 128_000),
+          ],
+        }),
+      ]),
+    ]);
+    expect(s1.modelCaps).toEqual({
+      "gw/moonshotai/kimi-k3.1-pro": {
+        image: true,
+        reasoning: true,
+        contextWindow: 1_048_576,
+        maxTokens: 32_000,
+      },
+      "gw/old": { image: false, reasoning: false, contextWindow: 128_000, maxTokens: 32_000 },
+    });
+    const s2 = applyChunks(s1, [
+      chunk([
+        response("set_model", core("new", ["text", "image"], true, 200_000)),
+        response("get_available_models", undefined, false),
+      ]),
+    ]);
+    expect(s2.modelCaps?.["gw/new"]).toMatchObject({ image: true, contextWindow: 200_000 });
+    expect(s2.modelCaps?.["gw/old"]).toBeDefined();
+    expect(s2.lastError).toBeUndefined();
+    const s3 = applyChunks(s2, [
+      chunk([response("get_available_models", { models: [core("only", ["text"], true, 1)] })]),
+    ]);
+    expect(Object.keys(s3.modelCaps ?? {})).toEqual(["gw/only"]);
+  });
+
   it("primus:context-stats 按会话保存；未知版本忽略并记日志；空内容清除", () => {
     const widget = (lines: string[] | undefined, id = "w") =>
       ({

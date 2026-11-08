@@ -6,6 +6,7 @@ import type {
   ContextUsage,
   CoreRecord,
   ExtensionUiDialogRequest,
+  Model,
   RpcResponse,
   SessionStats,
   ToolResult,
@@ -26,6 +27,24 @@ export interface StreamingToolCall {
 }
 
 export type TimelineContent = AssistantContent | StreamingToolCall;
+
+/** Core 实际请求时用的模型能力（Model 对象里界面用到的几项） */
+export interface CoreModelCaps {
+  image: boolean;
+  reasoning: boolean;
+  contextWindow: number;
+  maxTokens: number;
+}
+
+/** 从 Core 的 Model 对象取能力 */
+export function capsOf(model: Model): CoreModelCaps {
+  return {
+    image: Array.isArray(model.input) && model.input.includes("image"),
+    reasoning: model.reasoning === true,
+    contextWindow: model.contextWindow,
+    maxTokens: model.maxTokens,
+  };
+}
 
 export interface ToolRun {
   toolCallId: string;
@@ -63,6 +82,11 @@ export interface SessionState {
   thinkingLevel?: string;
   /** 当前模型支持的思考强度（get_available_thinking_levels） */
   thinkingLevels?: string[];
+  /**
+   * Core 认得的模型能力，键为 `provider/modelId`：get_available_models 整体替换，get_state / set_model 的模型对象补充。
+   * 能否看图、是否支持思考、上下文长度以它为准（与 Core 实际请求用的是同一份），没有时才用设置里的值
+   */
+  modelCaps?: Record<string, CoreModelCaps>;
   /** 上下文占用（get_session_stats）；每条回复结束后刷新 */
   contextUsage?: ContextUsage;
   /** 本会话累计用量（get_session_stats 的 tokens 与 cost） */
@@ -231,13 +255,18 @@ function applyWidget(draft: SessionState, key: string, lines: string[] | undefin
   else if (parsed) console.warn(`忽略 ${key}：数据缺少 categories / deferredTools`);
 }
 
+/** 记下一个模型对象的能力（get_state / set_model） */
+function setCaps(draft: SessionState, model: Model): void {
+  draft.modelCaps = { ...draft.modelCaps, [`${model.provider}/${model.id}`]: capsOf(model) };
+}
+
 function applyRecord(draft: SessionState, record: CoreRecord): void {
   switch (record.type) {
     case "response": {
       const r: RpcResponse = record;
       if (!r.success) {
-        // 上下文统计是后台刷新，失败不打扰用户（下一条回复结束后再取）
-        if (r.command === "get_session_stats") return;
+        // 上下文统计与模型能力是后台刷新，失败不打扰用户（下一次再取）
+        if (r.command === "get_session_stats" || r.command === "get_available_models") return;
         draft.lastError = r.error || `${r.command} 失败`;
         return;
       }
@@ -253,13 +282,17 @@ function applyRecord(draft: SessionState, record: CoreRecord): void {
       if (r.command === "get_state" && r.data) {
         draft.running = r.data.isStreaming || r.data.isCompacting;
         const { model, thinkingLevel } = r.data;
-        if (model) draft.model = { provider: model.provider, id: model.id };
+        if (model) {
+          draft.model = { provider: model.provider, id: model.id };
+          setCaps(draft, model);
+        }
         if (thinkingLevel) draft.thinkingLevel = thinkingLevel;
         draft.autoCompaction = r.data.autoCompactionEnabled;
         draft.compacting = r.data.isCompacting;
       }
       if (r.command === "set_model" && r.data) {
         draft.model = { provider: r.data.provider, id: r.data.id };
+        setCaps(draft, r.data);
         // 旧模型的档位不再适用：等 get_available_thinking_levels 给出新模型的
         draft.thinkingLevels = undefined;
       }
@@ -269,6 +302,11 @@ function applyRecord(draft: SessionState, record: CoreRecord): void {
       }
       if (r.command === "get_available_thinking_levels" && Array.isArray(r.data?.levels))
         draft.thinkingLevels = r.data.levels;
+      if (r.command === "get_available_models" && Array.isArray(r.data?.models)) {
+        draft.modelCaps = Object.fromEntries(
+          r.data.models.map((m) => [`${m.provider}/${m.id}`, capsOf(m)] as const),
+        );
+      }
       return;
     }
     case "extension_ui_request":

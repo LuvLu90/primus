@@ -44,7 +44,7 @@ import {
 import { ContextButton } from "./context-card";
 import { ThinkingIndicator } from "./message-content";
 import { type IndexItem, MessageIndex } from "./message-index";
-import { ModelPicker } from "./model-picker";
+import { ModelPicker, withCoreCaps } from "./model-picker";
 import { useChatSession } from "./use-chat-session";
 import { SETTINGS_URLS, useVoiceInput } from "./voice/use-voice-input";
 import { VoiceButton } from "./voice/voice-button";
@@ -203,6 +203,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     restart,
     respondUi,
     selectModel,
+    refreshModels,
     pendingModel,
     connected,
     refreshStats,
@@ -238,7 +239,21 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
   const currentModel = state.model
     ? `${state.model.provider}/${state.model.id}`
     : (pendingModel.model ?? modelConfig.info?.defaultModel ?? null);
-  const currentModelInfo = modelConfig.info?.models.find((m) => m.key === currentModel);
+  // 模型列表来自设置的渠道；会话打开后能力（能否看图、是否支持思考、上下文长度）以 Core 的 get_available_models 为准
+  const settingsModels = modelConfig.info?.models;
+  const models = useMemo(
+    () => withCoreCaps(settingsModels ?? [], state.modelCaps),
+    [settingsModels, state.modelCaps],
+  );
+  const currentModelInfo = models.find((m) => m.key === currentModel);
+  // 渠道变化（models_watch）后 Core 会重新读取 models.json（primus-auth 合并 200ms 内的文件事件后才读）：
+  // 会话已打开时立即取一次能力，1 秒后再取一次，免得拿到 Core 重读之前的旧值
+  useEffect(() => {
+    if (!connected || !settingsModels) return;
+    refreshModels();
+    const timer = setTimeout(refreshModels, 1000);
+    return () => clearTimeout(timer);
+  }, [connected, settingsModels, refreshModels]);
   // 附件：图片排队读取（当前模型能看图时），其余按路径引用；提交中不能移除
   const attachments = useAttachments({
     imagesSupported: currentModelInfo?.image ?? false,
@@ -814,7 +829,8 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                 </PermissionPicker>
                 <span className="flex-1" />
                 <ModelPicker
-                  models={modelConfig.info?.models ?? []}
+                  models={models}
+                  onOpenChange={(open) => open && refreshModels()}
                   providerNames={modelConfig.providerNames}
                   onOpenSettings={openModelSettings}
                   current={currentModel}

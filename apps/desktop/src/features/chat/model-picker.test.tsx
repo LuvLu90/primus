@@ -2,7 +2,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { ModelSummary } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
-import { ModelPicker } from "./model-picker";
+import { ModelPicker, modelIdOf, withCoreCaps } from "./model-picker";
 
 const t = strings.chat.model;
 
@@ -75,10 +75,14 @@ describe("模型选择", () => {
     expect(trigger.textContent).not.toContain(t.levelDefault);
   });
 
-  it("“模型”分组列出模型，当前项为选中；点选切换", async () => {
+  it("列出模型，当前项为选中并打勾；每行右侧是上下文长度；点选切换", async () => {
     const { onSelectModel } = open();
-    expect(await screen.findByText(t.models)).toBeTruthy();
-    const current = screen.getByRole("menuitemradio", { name: "Fable 5" });
+    const current = await screen.findByRole("menuitemradio", { name: "Fable 5" });
+    // 一行：名称、上下文长度、勾（只有当前项有勾）
+    expect(current.textContent).toBe("Fable 5200K");
+    expect(current.querySelectorAll("svg")).toHaveLength(1);
+    const other = screen.getByRole("menuitemradio", { name: "Sonnet 5" });
+    expect(other.querySelectorAll("svg")).toHaveLength(0);
     expect(current.getAttribute("aria-checked")).toBe("true");
     expect(
       screen.getByRole("menuitemradio", { name: "Sonnet 5" }).getAttribute("aria-checked"),
@@ -162,15 +166,14 @@ describe("模型选择", () => {
     expect(
       within(first)
         .getAllByRole("menuitemradio")
-        .map((el) => el.textContent),
+        .map((el) => el.querySelector("span")?.textContent),
     ).toEqual(["Fable 5", "Fast"]);
     expect(
       within(second)
         .getAllByRole("menuitemradio")
-        .map((el) => el.textContent),
+        .map((el) => el.querySelector("span")?.textContent),
     ).toEqual(["Sonnet 5"]);
-    // 仍保留“模型”与“思考程度”
-    expect(screen.getByText(t.models)).toBeTruthy();
+    // 仍保留“思考程度”
     expect(screen.getByRole("slider", { name: t.thinkingDegree })).toBeTruthy();
     fireEvent.click(within(second).getByRole("menuitemradio", { name: "Sonnet 5" }));
     expect(onSelectModel).toHaveBeenCalledWith("corp/b");
@@ -197,5 +200,74 @@ describe("模型选择", () => {
     expect(screen.queryByRole("slider")).toBeNull();
     fireEvent.click(screen.getByRole("menuitem", { name: t.addProvider }));
     expect(onOpenSettings).toHaveBeenCalled();
+  });
+
+  it("列表可滚动且不显示滚动条：高度受 Radix 可用高度约束，思考滑杆固定在列表之外", async () => {
+    open();
+    const list = await screen.findByTestId("model-list");
+    expect(list.className).toContain("overflow-y-auto");
+    expect(list.className).toContain("scroll-none");
+    const box = list.parentElement as HTMLElement;
+    expect(box.className).toContain("--radix-dropdown-menu-content-available-height");
+    const slider = screen.getByRole("slider", { name: t.thinkingDegree });
+    expect(list.contains(slider)).toBe(false);
+    expect(box.contains(slider)).toBe(true);
+  });
+
+  it("行的字号与行高与输入栏其他菜单一致（13px / py-[7px]）", async () => {
+    open();
+    const row = await screen.findByRole("menuitemradio", { name: "Sonnet 5" });
+    expect(row.className).toContain("text-[13px]");
+    expect(row.className).toContain("py-[7px]");
+  });
+
+  it("模型 ID 含 `/`：按钮只去掉渠道前缀", () => {
+    expect(modelIdOf("gw/moonshotai/kimi-k3")).toBe("moonshotai/kimi-k3");
+    render(
+      <ModelPicker
+        models={MODELS}
+        current="gw/moonshotai/kimi-k3"
+        thinkingLevel={undefined}
+        thinkingLevels={undefined}
+        onSelectModel={vi.fn()}
+        onSelectThinking={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "模型：moonshotai/kimi-k3" })).toBeTruthy();
+  });
+
+  it("能力以 Core 报告的为准，Core 没报告的保持设置里的值", () => {
+    const settings = [
+      {
+        ...model("gw/kimi-k3.1-pro", "Kimi K3.1 Pro", false),
+        image: false,
+        contextWindow: 128_000,
+      },
+      model("gw/other", "Other"),
+    ];
+    const merged = withCoreCaps(settings, {
+      "gw/kimi-k3.1-pro": {
+        image: true,
+        reasoning: true,
+        contextWindow: 1_048_576,
+        maxTokens: 131_072,
+      },
+    });
+    expect(merged[0]).toMatchObject({
+      key: "gw/kimi-k3.1-pro",
+      name: "Kimi K3.1 Pro",
+      image: true,
+      reasoning: true,
+      contextWindow: 1_048_576,
+    });
+    expect(merged[1]).toBe(settings[1]);
+    expect(withCoreCaps(settings, undefined)).toBe(settings);
+  });
+
+  it("打开弹层时通知外层（刷新 Core 的模型能力）", async () => {
+    const onOpenChange = vi.fn();
+    open({ onOpenChange });
+    await screen.findByRole("menuitemradio", { name: "Fable 5" });
+    expect(onOpenChange).toHaveBeenCalledWith(true);
   });
 });

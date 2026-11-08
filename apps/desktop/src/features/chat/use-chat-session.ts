@@ -91,6 +91,8 @@ export interface ChatSession {
   selectModel: (choice: { model?: string; thinkingLevel?: ThinkingLevel }) => Promise<boolean>;
   /** 会话打开前记下的选择（界面据此显示） */
   pendingModel: { model?: string; thinkingLevel?: ThinkingLevel };
+  /** 重新读取 Core 的 get_available_models（模型能力以 Core 为准） */
+  refreshModels: () => void;
 }
 
 export interface ChatSessionOptions {
@@ -200,6 +202,8 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
         client.request("get_state"),
         client.request("get_available_thinking_levels"),
         client.request("get_session_stats").catch(() => {}),
+        // 模型能力以 Core 为准（能否看图、上下文长度、是否支持思考）
+        client.request("get_available_models").catch(() => {}),
       ]);
       if (failures.length > 0)
         throw new Error(`${strings.chat.model.switchFailed}：${failures.join("；")}`);
@@ -411,6 +415,11 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     [store, fail],
   );
 
+  /** 重新读取 Core 认得的模型与能力（模型渠道变化、打开模型列表时）；会话未打开时什么也不做 */
+  const refreshModels = useCallback(() => {
+    conn.current?.client.request("get_available_models").catch(() => {});
+  }, []);
+
   const selectModel = useCallback(
     async (choice: { model?: string; thinkingLevel?: ThinkingLevel }): Promise<boolean> => {
       const c = conn.current;
@@ -573,6 +582,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     restart,
     respondUi,
     selectModel,
+    refreshModels,
     pendingModel,
     connected,
     refreshStats,

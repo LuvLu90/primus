@@ -28,12 +28,12 @@ import { TrustDialog } from "./trust-dialog";
 
 const t = strings.chat;
 
-/** 菜单行：圆角高亮、图标 + 文字，高亮态用轻微的黑/白叠色 */
-const rowClass =
+/** 菜单行：圆角高亮、图标 + 文字，高亮态用轻微的黑/白叠色（输入栏各菜单与模型列表共用） */
+export const rowClass =
   "mx-1.5 flex cursor-default select-none items-center gap-2.5 rounded-[10px] px-2.5 py-[7px] text-[13px] text-fg outline-none " +
   "data-[highlighted]:bg-black/[0.06] data-[disabled]:opacity-45 dark:data-[highlighted]:bg-white/[0.1]";
 
-const separatorClass = "mx-3 my-1 h-px bg-black/[0.07] dark:bg-white/[0.09]";
+export const separatorClass = "mx-3 my-1 h-px bg-black/[0.07] dark:bg-white/[0.09]";
 
 /** 取路径最后一段作为显示名（兼容 \ 与 /） */
 export function baseName(path: string): string {

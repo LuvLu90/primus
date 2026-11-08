@@ -2,12 +2,15 @@
 
 // 输入框右下角的模型按钮：纯文字“<模型短名> · <档位>”（不带图标与“思考”二字；档位未知或只有一档时只显示模型名），
 // 点开可切换（第 9.5 节）。
-// 模型列表来自设置中的模型渠道（models_get / models_watch）；思考强度按模型支持的档位（get_available_thinking_levels）。
-// 弹层：“模型”分组，按渠道分小节（小节标题为渠道名），每行模型名 + 右侧单选圆点（选中为橙色圆环白芯，
-// 选中行的浅色底在行间滑动）；分隔线下是“思考程度”滑杆（两端“更快 / 更聪明”，拇指弹到档位上）。
+// 模型列表来自设置中的模型渠道（models_get / models_watch），会话打开后能力（上下文长度、能否看图、是否支持思考）
+// 以 Core 的 get_available_models 为准（chat-panel 合并后传入）；思考强度按模型支持的档位（get_available_thinking_levels）。
+// 弹层：按渠道分小节（小号灰色小节标题），每个模型一行：名称、右侧灰色的上下文长度、当前模型打勾；
+// 行的字号、行高与输入栏其他菜单一致（composer-menus 的 rowClass）。列表高度不超过窗口可用空间，
+// 超出时在弹层内滚动（不显示滚动条；滚轮、触控与方向键照常可用），打开时当前模型滚到可见处；
+// 分隔线下是固定在底部的“思考程度”滑杆（两端“更快 / 更聪明”，拇指弹到档位上）。
 // 还没有任何模型时弹层只有一句说明和“去设置添加渠道”。
 import type { ThinkingLevel } from "@primus/protocol";
-import { ChevronDown } from "lucide-react";
+import { Check, ChevronDown } from "lucide-react";
 import { DropdownMenu as Menu } from "radix-ui";
 import {
   type KeyboardEvent,
@@ -25,9 +28,12 @@ import {
   GlassPopoverContent,
   GlassPopoverTrigger,
 } from "@/components/ui/glass-popover";
+import { formatTokens } from "@/features/settings/account-models";
 import type { ModelSummary } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
+import type { CoreModelCaps } from "@/stores/session-store";
+import { rowClass, separatorClass } from "./composer-menus";
 
 const t = strings.chat.model;
 
@@ -37,9 +43,12 @@ export const DEFAULT_THINKING_LEVELS: ThinkingLevel[] = ["off", "low", "medium",
 /** 思考滑杆拇指宽度（px）；刻度与填充都按“拇指中心可达范围”排布 */
 const THUMB_W = 32;
 
-const rowClass =
-  "relative z-[1] mx-1.5 flex cursor-default select-none items-center gap-2.5 rounded-[10px] px-2.5 py-[9px] text-[14px] text-fg outline-none " +
-  "transition-colors data-[highlighted]:bg-black/[0.035] data-[disabled]:opacity-45 dark:data-[highlighted]:bg-white/[0.06]";
+/**
+ * 弹层内容的最大高度：不超过 Radix 给出的可用高度（触发按钮到窗口边缘，已扣除 collisionPadding），
+ * 减去玻璃底板的上下内边距（py-2），且不超过 30rem
+ */
+const contentMaxHeight =
+  "max-h-[min(30rem,calc(var(--radix-dropdown-menu-content-available-height,30rem)_-_1rem))]";
 
 export function thinkingLabel(level: string | undefined): string {
   return (level && (t.levels as Record<string, string>)[level]) || level || t.levelDefault;
@@ -48,6 +57,35 @@ export function thinkingLabel(level: string | undefined): string {
 /** 按钮上的短名：去掉括号里的档位说明（如“Claude Opus 5.5（High）”显示为“Claude Opus 5.5”） */
 export function shortModelName(name: string): string {
   return name.replace(/\s*[（(][^）)]*[）)]\s*$/, "") || name;
+}
+
+/** `provider/modelId` 的模型 ID 部分（模型 ID 本身可以含 `/`，只按第一个 `/` 拆分） */
+export function modelIdOf(key: string): string {
+  const i = key.indexOf("/");
+  return i >= 0 ? key.slice(i + 1) : key;
+}
+
+/**
+ * 用 Core 认得的能力（get_available_models / get_state）覆盖设置里的值：会话打开后，能否看图、是否支持思考、
+ * 上下文长度与最大输出以 Core 实际请求用的为准；Core 没报告的模型保持设置里的值。列表与顺序不变
+ */
+export function withCoreCaps(
+  models: ModelSummary[],
+  caps: Record<string, CoreModelCaps> | undefined,
+): ModelSummary[] {
+  if (!caps) return models;
+  return models.map((m) => {
+    const c = caps[m.key];
+    if (!c) return m;
+    return {
+      ...m,
+      image: c.image,
+      reasoning: c.reasoning,
+      // 数值异常（缺失或非正数）时保留设置里的值
+      contextWindow: c.contextWindow > 0 ? c.contextWindow : m.contextWindow,
+      maxTokens: c.maxTokens > 0 ? c.maxTokens : m.maxTokens,
+    };
+  });
 }
 
 /** 按渠道分组（保持模型列表中的先后顺序） */
@@ -78,6 +116,7 @@ export function ModelPicker({
   onSelectModel,
   onSelectThinking,
   onOpenSettings,
+  onOpenChange,
 }: {
   models: ModelSummary[];
   /** 渠道 ID → 渠道名称（分组标题）；缺少时显示渠道 ID */
@@ -92,9 +131,10 @@ export function ModelPicker({
   onSelectThinking: (level: ThinkingLevel) => void;
   /** 打开设置中的模型渠道（没有可用模型时的入口） */
   onOpenSettings?: () => void;
+  /** 弹层打开或关闭（打开时可刷新 Core 的模型能力） */
+  onOpenChange?: (open: boolean) => void;
 }) {
   const empty = models.length === 0;
-  // 记住分组结果：选中行的高亮按分组变化重新量取位置
   const groups = useMemo(() => groupByProvider(models, providerNames), [models, providerNames]);
   const model = models.find((m) => m.key === current);
   const levels = thinkingLevels ?? (model?.reasoning === false ? ["off"] : DEFAULT_THINKING_LEVELS);
@@ -104,13 +144,13 @@ export function ModelPicker({
     : empty
       ? t.empty
       : current
-        ? current.split("/").pop()
+        ? modelIdOf(current)
         : t.none;
   // 按钮上只显示已知的档位；未知（会话还没报告）时不显示“默认”
   const level =
     showThinking && thinkingLevel ? (t.levels as Record<string, string>)[thinkingLevel] : undefined;
   return (
-    <GlassPopover>
+    <GlassPopover onOpenChange={onOpenChange}>
       <GlassPopoverTrigger asChild disabled={disabled}>
         <button
           type="button"
@@ -123,37 +163,49 @@ export function ModelPicker({
           <ChevronDown aria-hidden size={12} className="shrink-0 opacity-70" />
         </button>
       </GlassPopoverTrigger>
-      <GlassPopoverContent side="top" align="end" sideOffset={10} tint={0.8} minWidth={300}>
-        <Menu.Label className="px-4 pt-1 pb-1.5 text-[12px] text-muted">{t.models}</Menu.Label>
-        {empty ? (
-          <div className="px-4 pt-1 pb-2">
-            <p className="text-[13px] text-muted">{t.empty}</p>
-            <Menu.Item
-              onSelect={onOpenSettings}
-              className="mt-2.5 inline-flex cursor-default select-none items-center rounded-full bg-hover px-3 py-1.5 text-[13px] font-medium text-fg outline-none transition-colors data-[highlighted]:bg-black/[0.08] motion-reduce:transition-none dark:data-[highlighted]:bg-white/[0.12]"
-            >
-              {t.addProvider}
-            </Menu.Item>
-          </div>
-        ) : (
-          <ModelList groups={groups} current={current} onSelect={onSelectModel} />
-        )}
-        {showThinking && (
-          <>
-            <Menu.Separator className="mx-3 my-2 h-px bg-black/[0.07] dark:bg-white/[0.09]" />
-            <ThinkingSlider
-              levels={levels}
-              value={thinkingLevel}
-              onCommit={(level) => onSelectThinking(level as ThinkingLevel)}
-            />
-          </>
-        )}
+      <GlassPopoverContent
+        side="top"
+        align="end"
+        sideOffset={10}
+        collisionPadding={12}
+        tint={0.8}
+        minWidth={280}
+        className="max-w-[360px]"
+      >
+        <div className={cn("flex flex-col", contentMaxHeight)}>
+          {empty ? (
+            <div className="px-4 pt-1 pb-2">
+              <p className="text-[13px] text-muted">{t.empty}</p>
+              <Menu.Item
+                onSelect={onOpenSettings}
+                className="mt-2.5 inline-flex cursor-default select-none items-center rounded-full bg-hover px-3 py-1.5 text-[13px] font-medium text-fg outline-none transition-colors data-[highlighted]:bg-black/[0.08] motion-reduce:transition-none dark:data-[highlighted]:bg-white/[0.12]"
+              >
+                {t.addProvider}
+              </Menu.Item>
+            </div>
+          ) : (
+            <ModelList groups={groups} current={current} onSelect={onSelectModel} />
+          )}
+          {showThinking && (
+            <div className="shrink-0">
+              <Menu.Separator className={separatorClass} />
+              <ThinkingSlider
+                levels={levels}
+                value={thinkingLevel}
+                onCommit={(level) => onSelectThinking(level as ThinkingLevel)}
+              />
+            </div>
+          )}
+        </div>
       </GlassPopoverContent>
     </GlassPopover>
   );
 }
 
-/** 模型单选列表（按渠道分小节）：选中行的浅色底是一块独立的高亮，切换时在行间滑动 */
+/**
+ * 模型单选列表（按渠道分小节）：可滚动、不显示滚动条。每行：名称、灰色的上下文长度、当前模型打勾。
+ * 打开时把当前模型滚到可见处（方向键移动高亮时浏览器会把聚焦的行滚进来）。
+ */
 function ModelList({
   groups,
   current,
@@ -163,65 +215,58 @@ function ModelList({
   current: string | null;
   onSelect: (key: string) => void;
 }) {
-  const groupRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const labelBase = useId();
-  const [box, setBox] = useState<{ top: number; height: number } | null>(null);
-  // 首次定位不过渡（弹层刚打开），之后的切换才滑动
-  const [animate, setAnimate] = useState(false);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: 选中项或列表变化时重新量取选中行的位置
+  // 只在打开（挂载）时定位一次：之后由用户滚动
   useLayoutEffect(() => {
-    const row = groupRef.current?.querySelector<HTMLElement>('[data-state="checked"]');
-    setBox(row ? { top: row.offsetTop, height: row.offsetHeight } : null);
-  }, [current, groups]);
-  useEffect(() => {
-    const id = requestAnimationFrame(() => setAnimate(true));
-    return () => cancelAnimationFrame(id);
+    const scroller = scrollRef.current;
+    const row = scroller?.querySelector<HTMLElement>('[data-state="checked"]');
+    if (!scroller || !row) return;
+    const bottom = row.offsetTop + row.offsetHeight;
+    if (row.offsetTop < scroller.scrollTop || bottom > scroller.scrollTop + scroller.clientHeight)
+      scroller.scrollTop = row.offsetTop - (scroller.clientHeight - row.offsetHeight) / 2;
   }, []);
   return (
-    <Menu.RadioGroup value={current ?? ""} onValueChange={onSelect}>
-      <div ref={groupRef} className="relative">
-        <span
-          aria-hidden
-          className={cn(
-            "pointer-events-none absolute inset-x-1.5 top-0 rounded-[10px] bg-black/[0.05] dark:bg-white/[0.08]",
-            animate && "model-highlight",
-          )}
-          style={{
-            translate: `0 ${box?.top ?? 0}px`,
-            height: box?.height ?? 0,
-            opacity: box ? 1 : 0,
-          }}
-        />
-        {groups.map((group) => (
+    <div
+      ref={scrollRef}
+      data-testid="model-list"
+      className="scroll-none relative min-h-0 flex-1 overflow-y-auto overscroll-contain"
+    >
+      <Menu.RadioGroup value={current ?? ""} onValueChange={onSelect}>
+        {groups.map((group, i) => (
           <Menu.Group key={group.provider} aria-labelledby={`${labelBase}-${group.provider}`}>
             <Menu.Label
               id={`${labelBase}-${group.provider}`}
-              className="truncate px-4 pt-1.5 pb-1 text-[11px] font-medium text-muted"
+              className={cn(
+                "truncate px-4 pb-1 text-[11px] font-medium text-muted",
+                i === 0 ? "pt-0.5" : "pt-2.5",
+              )}
             >
               {group.name}
             </Menu.Label>
             {group.models.map((m) => (
-              <Menu.RadioItem key={m.key} value={m.key} textValue={m.name} className={rowClass}>
+              <Menu.RadioItem
+                key={m.key}
+                value={m.key}
+                textValue={m.name}
+                title={m.id === m.name ? undefined : m.id}
+                className={rowClass}
+              >
                 <span className="min-w-0 flex-1 truncate">{m.name}</span>
-                <span
-                  aria-hidden
-                  className={cn(
-                    "grid size-[18px] shrink-0 place-items-center rounded-full transition-[box-shadow,background-color] duration-200",
-                    m.key === current
-                      ? "bg-select"
-                      : "shadow-[inset_0_0_0_1.5px_color-mix(in_srgb,var(--color-muted)_55%,transparent)]",
-                  )}
-                >
-                  {m.key === current && (
-                    <span className="radio-dot size-[7px] rounded-full bg-white" />
-                  )}
+                <span aria-hidden className="shrink-0 text-[12px] tabular-nums text-muted">
+                  {formatTokens(m.contextWindow)}
+                </span>
+                <span aria-hidden className="flex w-3.5 shrink-0 justify-center">
+                  <Menu.ItemIndicator>
+                    <Check size={14} />
+                  </Menu.ItemIndicator>
                 </span>
               </Menu.RadioItem>
             ))}
           </Menu.Group>
         ))}
-      </div>
-    </Menu.RadioGroup>
+      </Menu.RadioGroup>
+    </div>
   );
 }
 
