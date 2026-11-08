@@ -8,13 +8,11 @@ import type { AssistantMessage } from "@primus/protocol";
 import {
   Activity,
   Ban,
-  Check,
   ChevronRight,
   CircleAlert,
   CircleCheck,
   CircleStop,
   CircleX,
-  Copy,
   Gauge,
   KeyRound,
   type LucideIcon,
@@ -29,6 +27,7 @@ import { getPlatform } from "@/lib/platform";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 import type { SessionState } from "@/stores/session-store";
+import { CopyButton } from "./copy-button";
 import {
   classifyError,
   diagnosticLine,
@@ -67,35 +66,6 @@ const buttonBase =
   "inline-flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-[12px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-50";
 const primaryButton = cn(buttonBase, "bg-fg text-surface hover:bg-fg/85");
 const secondaryButton = cn(buttonBase, "text-fg ring-1 ring-border ring-inset hover:bg-hover");
-
-function CopyDetails({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    if (!copied) return;
-    const id = setTimeout(() => setCopied(false), 1500);
-    return () => clearTimeout(id);
-  }, [copied]);
-  return (
-    <button
-      type="button"
-      aria-label={copied ? strings.chat.copied : t.copyDetails}
-      title={copied ? strings.chat.copied : t.copyDetails}
-      onClick={() => {
-        void navigator.clipboard?.writeText(text).then(
-          () => setCopied(true),
-          () => {},
-        );
-      }}
-      className="grid size-6 place-items-center rounded-md text-muted outline-none transition-colors hover:bg-hover hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40"
-    >
-      {copied ? (
-        <Check aria-hidden size={13} className="step-in" />
-      ) : (
-        <Copy aria-hidden size={13} />
-      )}
-    </button>
-  );
-}
 
 function Meta({ label, children, mono }: { label: string; children: ReactNode; mono?: boolean }) {
   return (
@@ -303,7 +273,7 @@ export function ErrorCard({
             className="step-in relative rounded-lg bg-tile ring-1 ring-tile-ring ring-inset"
           >
             <div className="absolute top-1 right-1">
-              <CopyDetails text={report} />
+              <CopyButton text={report} label={t.copyDetails} size="sm" />
             </div>
             <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words px-2.5 py-2 pr-9 font-mono text-[11.5px] text-fg/85 leading-relaxed">
               {message.errorMessage || copy.title}

@@ -9,7 +9,6 @@ import {
   type FormEvent,
   Fragment,
   type KeyboardEvent,
-  memo,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -31,7 +30,6 @@ import { useAppStore } from "@/stores/app-store";
 import { AgentTurn } from "./agent-turn";
 import { ApprovalCard } from "./approval-card";
 import { AttachmentStrip } from "./attachments/attachment-strip";
-import { SentFiles } from "./attachments/sent-files";
 import { useAttachments } from "./attachments/use-attachments";
 import { ComposerLip } from "./composer-lip";
 import {
@@ -48,6 +46,7 @@ import { ThinkingIndicator } from "./message-content";
 import { type IndexItem, MessageIndex } from "./message-index";
 import { ModelPicker, withCoreCaps } from "./model-picker";
 import { useChatSession } from "./use-chat-session";
+import { UserBubble } from "./user-bubble";
 import { SETTINGS_URLS, useVoiceInput } from "./voice/use-voice-input";
 import { VoiceButton } from "./voice/voice-button";
 
@@ -94,25 +93,6 @@ function groupTurns(messages: AgentMessage[]): Turn[] {
   });
   return turns;
 }
-
-const UserBubble = memo(function UserBubble({ text, index }: { text: string; index: number }) {
-  // 末尾的 `<file>` 引用显示成文件标签（内联的文件内容不铺在气泡里）
-  const { message, files } = useMemo(() => splitFileTags(text), [text]);
-  return (
-    <article
-      aria-label={t.you}
-      data-msg-index={index}
-      className="msg-in flex max-w-[80%] scroll-mt-6 flex-col items-end gap-1.5 self-end"
-    >
-      <SentFiles files={files} />
-      {message && (
-        <p className="whitespace-pre-wrap rounded-[18px] rounded-br-md bg-bubble px-3.5 py-2 leading-relaxed text-fg">
-          {message}
-        </p>
-      )}
-    </article>
-  );
-});
 
 // 欢迎页：标志 + 标题 + 三个液态玻璃建议按钮
 function Welcome({ onPick }: { onPick: (text: string) => void }) {

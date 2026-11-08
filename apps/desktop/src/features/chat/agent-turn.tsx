@@ -3,9 +3,7 @@
 import type { AgentMessage } from "@primus/protocol";
 import {
   Brain,
-  Check,
   ChevronRight,
-  Copy,
   FilePen,
   FileText,
   type LucideIcon,
@@ -26,6 +24,7 @@ import {
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 import type { SessionState, TimelineContent, ToolRun } from "@/stores/session-store";
+import { CopyButton, revealOnTurnHover } from "./copy-button";
 import { type ErrorActions, ErrorCard, RetryNotice } from "./error-card";
 import { MarkdownText } from "./message-content";
 
@@ -417,35 +416,6 @@ function StepView({
   );
 }
 
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    if (!copied) return;
-    const id = setTimeout(() => setCopied(false), 1500);
-    return () => clearTimeout(id);
-  }, [copied]);
-  return (
-    <button
-      type="button"
-      aria-label={copied ? strings.chat.copied : strings.chat.copy}
-      title={copied ? strings.chat.copied : strings.chat.copy}
-      onClick={() => {
-        void navigator.clipboard?.writeText(text).then(
-          () => setCopied(true),
-          () => {},
-        );
-      }}
-      className="grid size-7 place-items-center rounded-lg text-muted outline-none transition-colors hover:bg-hover hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40"
-    >
-      {copied ? (
-        <Check aria-hidden size={14} className="step-in" />
-      ) : (
-        <Copy aria-hidden size={14} />
-      )}
-    </button>
-  );
-}
-
 export interface AgentTurnProps {
   /** 这一轮的助手消息与工具结果 */
   messages: AgentMessage[];
@@ -592,7 +562,7 @@ export const AgentTurn = memo(function AgentTurn({
         />
       )}
       {!running && answerText && (
-        <div className="-mt-1 -ml-1.5 flex opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover/turn:opacity-100">
+        <div className={cn("-mt-1 -ml-1.5 flex", revealOnTurnHover)}>
           <CopyButton text={answerText} />
         </div>
       )}
