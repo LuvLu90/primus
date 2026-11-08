@@ -15,6 +15,9 @@ ADR 0005 在账号服务接入前用一份内置客户端配置（`builtin/catal
 - Core 的 `models.json` 只收录“启用 + 已存密钥 + 至少一个模型”的渠道，供应商键 = 渠道 ID，`apiKey` 写成 `!"<Primus.exe>" --secret provider:<渠道 ID>`。`--secret` 模式只接受 `provider:<合法渠道 ID>` 形式的名字，Job Object 校验不变。默认模型失效（渠道被删、停用或模型被去掉）时回退为第一个可用模型，没有可用模型时清除；`models_get.error` 给出“还没有可用的模型”。
 - 模型列表获取（`provider_fetch_models`）由薄壳发起，不保存：openai-responses 为 `GET {baseUrl}/models`（Bearer），anthropic-messages 为 `GET {baseUrl}/v1/models`（`baseUrl` 已以 `/v1` 结尾时不重复，`x-api-key` + `anthropic-version: 2023-06-01`），15 秒超时、系统代理。错误只返回分类文案（HTTP 状态 / 超时 / 连不上 / 格式不对），不带地址、密钥与响应正文。HTTP 客户端复用自动更新插件依赖树里已有的 `reqwest` 0.13.5 + `rustls` 0.23.46（ring、tls12），不引入新的 HTTP 栈。
 - 新模型的能力（上下文长度、最大输出、图片输入、思考）逐项按 接口返回的字段 → 已知模型能力表 → 默认参数（不思考、仅文本、128,000 / 32,000）取，已保存的模型保留用户改过的参数（2026-11-07 补充）。很多网关的 `/models` 只有 `id`，原先所有模型都落到默认参数、思考强度滑块不显示；能力表由脚本从 Core 锁定的模型目录生成并嵌入薄壳（`model_capabilities.json`，`pnpm check:model-capabilities` 核对同步），不另造数据源；目录里没有的按模型系列推断（技术方案第 9.3 节）。
+- 能力表补充（2026-11-08）：收录 Kimi 编程套餐（`kimi-coding`）；匹配增加档位后缀（`-pro`、`-mini`、`-turbo` 等，只用于查表）、Kimi 系列规则与“逐段去尾直到命中”；模型 ID 允许含 `/`（`厂商/模型`），`<渠道 ID>/<模型 ID>` 只按第一个 `/` 拆分；重新获取时，能力仍是默认参数的已保存模型视为未识别，按新规则重新识别。
+- 会话中的能力以 Core 为准（2026-11-08）：前端判断能否看图、思考档位与显示上下文长度时用 Core 的 `get_available_models`（与 Core 实际请求用的是同一份），设置里的值只在会话打开前和 Core 没报告时使用。
+- 获取模型列表留在薄壳，不改用 Core 扩展的 `refreshModels` 挂钩（2026-11-08 评估）：RPC 协议没有联网刷新模型的命令，挂钩只能由扩展在已有会话里自己触发；设置页要在保存之前、没有 Core 进程时用草稿密钥测试获取，挪进 Core 就得为设置页单独拉起 Core 并把未保存的密钥交给它；其结果也不写回 `providers.json`，渠道管理要重写。详见技术方案第 9.3 节。若以后要做“会话中自动发现新模型”，可在 `primus-auth` 里用该挂钩补充，设置页的获取仍留在薄壳。
 - 运行中的 Core 随 `models.json` 更新：`primus-auth` 监听该文件并在每轮对话前核对，变化时让 Core 重新读取并只为新增 / 变更的渠道取密钥；换密钥时薄壳原样重写一次 `models.json` 作为信号（技术方案第 9.4 节）。
 - 新增命令 `providers_list`、`provider_save`、`provider_delete`、`provider_fetch_models`、`models_watch`（附录 B）；`models_get` / `models_refresh` / `models_set_default` 形状不变，`models_refresh` 只重读 `providers.json` 并重写 `models.json`，不联网。
 
