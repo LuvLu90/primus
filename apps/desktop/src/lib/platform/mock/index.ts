@@ -287,7 +287,7 @@ function messageText(m: AgentMessage): string {
 }
 
 /** mock 的打开文件：可执行与脚本类扩展名（薄壳 open_path.rs 的子集） */
-const MOCK_RISKY = /\.(?:exe|com|scr|msi|bat|cmd|ps1|vbs|js|lnk|url|hta|app|sh)[. ]*$/i;
+const MOCK_RISKY = /\.(?:exe|com|scr|msi|bat|cmd|ps1|vbs|js|lnk|url|hta|app|sh|py|pyw)[. ]*$/i;
 
 /** mock 的路径校验：只认绝对路径（含 `~/`），拒绝网址与网络路径（与薄壳的错误文案一致） */
 function mockAbsolutePath(path: string): string {

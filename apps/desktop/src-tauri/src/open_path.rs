@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 /// 直接打开可能执行代码的扩展名（小写）：打开时改为在文件夹中显示。
-/// Windows 上 .js / .vbs 等默认由脚本宿主运行，.lnk / .url 会跳转到别处；macOS 的 .app / .command 会启动程序。
+/// Windows 上 .js / .vbs 等默认由脚本宿主运行，装了 Python / Perl / Ruby 后 .py / .pl / .rb 由解释器直接运行，
+/// .lnk / .url / .appref-ms / .jnlp 会启动别的程序，.chm 可带脚本，.iso / .vhd 会挂载磁盘；
+/// macOS 的 .app / .command 会启动程序。
 const RISKY_EXTENSIONS: &[&str] = &[
     "exe",
     "com",
@@ -57,6 +59,23 @@ const RISKY_EXTENSIONS: &[&str] = &[
     "terminal",
     "sh",
     "run",
+    "py",
+    "pyw",
+    "pyz",
+    "pyc",
+    "pyo",
+    "pl",
+    "rb",
+    "jnlp",
+    "appref-ms",
+    "chm",
+    "sct",
+    "wsc",
+    "xll",
+    "iso",
+    "img",
+    "vhd",
+    "vhdx",
 ];
 
 /// 路径的最大长度（字符）
@@ -195,6 +214,15 @@ mod tests {
             "evil.exe.",
             "evil.exe ",
             "y.sh",
+            "render.py",
+            "gui.pyw",
+            "app.pyz",
+            "x.pl",
+            "y.rb",
+            "tool.appref-ms",
+            "a.jnlp",
+            "help.chm",
+            "disk.iso",
         ] {
             assert!(is_risky(Path::new(name)), "{name}");
         }
