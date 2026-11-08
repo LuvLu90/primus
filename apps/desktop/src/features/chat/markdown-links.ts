@@ -1,7 +1,8 @@
 // Markdown 回复里的链接与文件引用（markdown-it 插件）：
 // - 链接地址或行内代码是本地文件路径时，换成文件引用胶囊：类型图标 + 文件名 + 行号，完整路径在提示里；
 // - http(s) 链接保持普通文字链接，末尾加一个弱化的外链图标，与文件引用一眼区分。
-// 文件引用渲染成 <button data-file-ref>，点击由 MarkdownText 统一处理（复制路径）。
+// 文件引用渲染成 <button data-file-ref data-path>，点击由 MarkdownText 统一处理：用系统默认程序打开，
+// 右键菜单可在文件夹中显示、复制路径（见 file-ref-actions.tsx）。
 import type MarkdownIt from "markdown-it";
 import type { StateCore, Token } from "markdown-it";
 import { fileIconHtml, iconHtml } from "@/components/icons";
@@ -96,7 +97,9 @@ export function renderFileRef(meta: FileRefMeta, escapeHtml: (s: string) => stri
   const copy = fileRefCopyText(ref);
   return [
     `<button type="button" class="md-file" data-file-ref="${escapeHtml(copy)}"`,
-    ` title="${escapeHtml(ref.path + line)}" aria-label="${escapeHtml(fileRefAriaLabel(ref, name))}">`,
+    ` data-path="${escapeHtml(ref.path)}" data-name="${escapeHtml(ref.name)}"`,
+    ` title="${escapeHtml(`${ref.path}${line}\n${strings.chat.fileRef.hint}`)}"`,
+    ` aria-label="${escapeHtml(fileRefAriaLabel(ref, name))}">`,
     fileIconHtml(fileRefIcon(ref), "md-file-icon"),
     iconHtml("check", "md-file-done"),
     `<span class="md-file-name">${escapeHtml(name)}</span>`,

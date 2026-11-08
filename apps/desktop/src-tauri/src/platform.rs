@@ -185,6 +185,20 @@ pub(crate) fn powershell_available_in(
     candidates.iter().any(|file| file.is_file())
 }
 
+/// 启动一个不需要结果的外部程序（打开文件、在文件夹中显示）：不继承标准输入输出，后台线程回收退出状态（避免僵尸进程）。
+fn spawn_detached(mut command: std::process::Command) -> io::Result<()> {
+    use std::process::Stdio;
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
 #[cfg(windows)]
 pub(crate) use windows_impl::*;
 
@@ -1003,6 +1017,68 @@ mod windows_impl {
         }
     }
 
+    /// 用系统默认程序打开本机文件或文件夹（调用方已用 `open_path::check_path` 校验，且不是可执行文件）。
+    /// 用默认动词（与资源管理器双击一致），工作目录为文件所在文件夹。
+    pub(crate) fn shell_open(path: &Path) -> io::Result<()> {
+        let target = wide(path);
+        if target[..target.len() - 1].contains(&0) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "路径格式不正确",
+            ));
+        }
+        let dir = path.parent().map(wide);
+        // SAFETY: 字符串以 NUL 结尾，在调用期间有效
+        let code = unsafe {
+            ShellExecuteW(
+                null_mut(),
+                null(),
+                target.as_ptr(),
+                null(),
+                dir.as_ref().map_or(null(), |d| d.as_ptr()),
+                SW_SHOWNORMAL,
+            )
+        } as isize;
+        // ShellExecuteW 返回值大于 32 表示成功；31 为 SE_ERR_NOASSOC（没有关联的程序）
+        match code {
+            c if c > 32 => Ok(()),
+            31 => Err(io::Error::other("没有可以打开这类文件的程序")),
+            2 | 3 => Err(io::Error::new(io::ErrorKind::NotFound, "找不到文件")),
+            5 => Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "没有权限打开这个文件",
+            )),
+            c => Err(io::Error::other(format!("ShellExecuteW 失败（{c}）"))),
+        }
+    }
+
+    /// 在资源管理器中显示并选中文件或文件夹：`explorer.exe /select,"<路径>"`。
+    /// 路径已校验为本机绝对路径（Windows 路径不能含双引号，这里再检查一次），用 raw_arg 原样拼接引号，
+    /// 不经过 cmd。explorer 成功时退出码也非 0，只确认能启动。
+    pub(crate) fn reveal_in_folder(path: &Path) -> io::Result<()> {
+        use std::os::windows::process::CommandExt;
+        // 盘符根目录（C:\）没有上级可选中：直接打开
+        if path.parent().is_none() {
+            return shell_open(path);
+        }
+        // 去掉末尾分隔符：`"C:\dir\"` 里的 `\"` 会被当成转义的引号
+        let text = path.to_string_lossy();
+        let text = text.trim_end_matches(['\\', '/']);
+        if text.contains('"') || text.contains('\0') {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "路径格式不正确",
+            ));
+        }
+        let explorer = system_dir()
+            .parent()
+            .map(|windows| windows.join("explorer.exe"))
+            .unwrap_or_else(|| std::path::PathBuf::from("C:\\Windows\\explorer.exe"));
+        let mut command = std::process::Command::new(explorer);
+        command.raw_arg(format!("/select,\"{text}\""));
+        super::spawn_detached(command)
+    }
+
     pub(crate) fn open_reinstall_page() {
         let verb = wide("open");
         let url = wide(REINSTALL_URL);
@@ -1202,6 +1278,28 @@ mod fallback_impl {
 
     pub(crate) fn open_url(_url: &str) -> io::Result<()> {
         Err(io::Error::new(io::ErrorKind::Unsupported, "仅支持 Windows"))
+    }
+
+    /// 用系统默认程序打开（macOS `open`，其他 `xdg-open`）；路径是已校验的绝对路径，以 `/` 开头，不会被当成选项。
+    pub(crate) fn shell_open(path: &Path) -> io::Result<()> {
+        let program = if cfg!(target_os = "macos") {
+            "/usr/bin/open"
+        } else {
+            "xdg-open"
+        };
+        let mut command = std::process::Command::new(program);
+        command.arg(path);
+        super::spawn_detached(command)
+    }
+
+    /// 在文件管理器中显示：macOS `open -R` 选中文件；其他平台打开所在文件夹。
+    pub(crate) fn reveal_in_folder(path: &Path) -> io::Result<()> {
+        if cfg!(target_os = "macos") {
+            let mut command = std::process::Command::new("/usr/bin/open");
+            command.arg("-R").arg(path);
+            return super::spawn_detached(command);
+        }
+        shell_open(path.parent().unwrap_or(path))
     }
 
     pub(crate) fn open_reinstall_page() {

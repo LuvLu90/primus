@@ -23,6 +23,8 @@
   --color-on-danger: #ffffff;
   --color-warning: #c93400;
   --color-success: #248a3d;
+  /* 回复里的文件引用胶囊：低饱和蓝，只以淡底色、描边和略带蓝的文字出现，表示“可点击打开”，与行内代码区分 */
+  --color-file-ref: #3b6fc4;
   /* 选中指示（模型选择的单选圆点）：唯一的彩色强调，取系统橙 */
   --color-select: #ff8a00;
   /* 图表分项色（上下文卡片的分段条）：系统蓝、靛、紫、橙、绿、青 */
@@ -171,6 +173,7 @@
   --color-warning: #ff9f0a;
   --color-success: #30d158;
   --color-select: #ff9f0a;
+  --color-file-ref: #7fb0ff;
   --color-chart-1: #0a84ff;
   --color-chart-2: #5e5ce6;
   --color-chart-3: #bf5af2;
@@ -676,7 +679,8 @@ html.window-effects.glass-clear body {
 }
 /* 文件引用：小胶囊，类型图标 + 文件名 + 行号（等宽数字、弱化）。
    用界面无衬线字体，与衬线正文和等宽行内代码都区分开；尺寸全按 em 跟随正文，思考内容里同比缩小。
-   底色与描边从文字色混出，深浅主题与玻璃背景下都成立；长文件名省略号截断，完整路径在提示里 */
+   点击用系统默认程序打开：底色、描边与文字都带一点文件引用色（--color-file-ref），与灰色的行内代码区分，
+   悬停时加深底色与描边、文字转为引用色，一看就能点；长文件名省略号截断，完整路径在提示里 */
 .md-file {
   display: inline-flex;
   align-items: center;
@@ -690,23 +694,28 @@ html.window-effects.glass-clear body {
   font-size: 0.875em;
   font-weight: 450;
   line-height: 1.5;
-  color: inherit;
-  background: color-mix(in srgb, currentColor 5%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 10%, transparent);
+  color: color-mix(in srgb, var(--color-file-ref) 28%, var(--color-fg));
+  background: color-mix(in srgb, var(--color-file-ref) 8%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-file-ref) 20%, transparent);
   cursor: pointer;
   transition:
+    color 0.15s ease,
     background-color 0.15s ease,
     box-shadow 0.15s ease;
 }
 .md-file:hover {
-  background: color-mix(in srgb, currentColor 9%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 16%, transparent);
+  color: color-mix(in srgb, var(--color-file-ref) 75%, var(--color-fg));
+  background: color-mix(in srgb, var(--color-file-ref) 15%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-file-ref) 40%, transparent);
+}
+.md-file:active {
+  background: color-mix(in srgb, var(--color-file-ref) 22%, transparent);
 }
 .md-file:focus-visible {
   outline: none;
   box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, currentColor 16%, transparent),
-    0 0 0 2px color-mix(in srgb, var(--color-accent) 45%, transparent);
+    inset 0 0 0 1px color-mix(in srgb, var(--color-file-ref) 40%, transparent),
+    0 0 0 2px color-mix(in srgb, var(--color-file-ref) 45%, transparent);
 }
 .md-file-icon,
 .md-file-done {

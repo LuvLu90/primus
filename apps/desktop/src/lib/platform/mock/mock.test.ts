@@ -640,3 +640,18 @@ describe("mock 平台：输入框附件、分支与语音", () => {
     expect(events).toHaveLength(count);
   });
 });
+
+describe("mock 打开文件", () => {
+  it("绝对路径打开、可执行文件改为在文件夹中显示、相对路径与网址拒绝", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const p = createMockPlatform();
+    await expect(p.openPath("C:\\work\\a.ts")).resolves.toBe("opened");
+    await expect(p.openPath("/home/me/run.sh")).resolves.toBe("revealed");
+    await expect(p.openPath("src/a.ts")).rejects.toThrow("完整路径");
+    await expect(p.openPath("https://example.com")).rejects.toThrow("网址");
+    await expect(p.openPath("\\\\srv\\share\\a.ts")).rejects.toThrow("网络路径");
+    await expect(p.revealPath("~/a.ts")).resolves.toBeUndefined();
+    expect(info).toHaveBeenCalled();
+    info.mockRestore();
+  });
+});

@@ -15,7 +15,7 @@ import {
 import { getPlatform } from "@/lib/platform";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
-import { COPIED_MS } from "./copy-button";
+import { useFileRefActions } from "./file-ref-actions";
 import { linksPlugin } from "./markdown-links";
 
 // 不渲染原始 HTML（回复内容不可信，html: false 时所有 HTML 标签按文本转义）；链接自动识别
@@ -101,28 +101,6 @@ export function useSmoothText(text: string, animate: boolean): string {
   return text.slice(0, Math.min(shown, text.length));
 }
 
-/**
- * 点击文件引用：平台还没有“打开 / 在文件夹中显示”的接口，先复制路径（带行号）。
- * 成功后图标换成对勾、无障碍名称换成“已复制路径”约 1.5 秒；剪贴板不可用时不打扰用户。
- */
-function copyFileRef(el: HTMLElement) {
-  const text = el.dataset.fileRef ?? "";
-  if (!text) return;
-  void navigator.clipboard?.writeText(text).then(
-    () => {
-      const label = el.dataset.label ?? el.getAttribute("aria-label") ?? "";
-      el.dataset.label = label;
-      el.dataset.copied = "";
-      el.setAttribute("aria-label", strings.chat.fileRef.copied);
-      setTimeout(() => {
-        delete el.dataset.copied;
-        el.setAttribute("aria-label", label);
-      }, COPIED_MS);
-    },
-    () => {},
-  );
-}
-
 /** Markdown 正文；`streaming` 时平滑揭示新内容 */
 export const MarkdownText = memo(function MarkdownText({
   text,
@@ -145,14 +123,11 @@ export const MarkdownText = memo(function MarkdownText({
     setLinkError(null);
   }, [pathname]);
 
-  // 回复内容不可信：只处理 http/https 链接，打开前先确认（技术方案：点击外部链接前先确认）
+  const fileRefs = useFileRefActions();
+  // 文件引用：点击用系统默认程序打开，右键弹出操作菜单（file-ref-actions.tsx）。
+  // 回复内容不可信：链接只处理 http/https，打开前先确认（技术方案：点击外部链接前先确认）
   const onClick = (e: MouseEvent<HTMLDivElement>) => {
-    const fileRef = (e.target as HTMLElement).closest?.<HTMLElement>("[data-file-ref]");
-    if (fileRef) {
-      e.preventDefault();
-      copyFileRef(fileRef);
-      return;
-    }
+    if (fileRefs.onClick(e)) return;
     const anchor = (e.target as HTMLElement).closest?.("a");
     if (!anchor) return;
     e.preventDefault();
@@ -179,9 +154,11 @@ export const MarkdownText = memo(function MarkdownText({
       <div
         className={cn("md", className)}
         onClick={onClick}
+        onContextMenu={fileRefs.onContextMenu}
         // biome-ignore lint/security/noDangerouslySetInnerHtml: markdown-it 关闭了 html，输入中的标签已转义
         dangerouslySetInnerHTML={{ __html: html }}
       />
+      {fileRefs.ui}
       {pendingLink !== null && (
         <GlassDialog open onOpenChange={(open) => !open && setPendingLink(null)}>
           <GlassDialogContent>

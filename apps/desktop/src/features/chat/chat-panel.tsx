@@ -44,6 +44,7 @@ import {
 } from "./composer-menus";
 import { ContextButton } from "./context-card";
 import type { ErrorActions } from "./error-card";
+import { FileRefBase } from "./file-ref-actions";
 import { ThinkingIndicator } from "./message-content";
 import { type IndexItem, MessageIndex } from "./message-index";
 import { ModelPicker, withCoreCaps } from "./model-picker";
@@ -588,374 +589,383 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
   );
 
   return (
-    <div className="relative flex min-h-0 flex-1 flex-col">
-      <MessageIndex items={indexItems} scrollRef={scrollRef} />
-      {/* 顶部渐隐：滚上去的内容在左右栏开关下方淡出，不和按钮叠在一起 */}
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-x-0 top-0 z-10 h-12 bg-linear-to-b from-[var(--paper)] from-40% to-transparent"
-      />
-      {/* 底部渐隐（.composer-fade）：时间线在输入框上沿之上淡出、输入框后面完全不显示，
-          唇条与输入框底下只露出纸面；遮罩只作用于绘制，不拦截指针、不影响滚动与“停在底部” */}
-      <div
-        ref={scrollRef}
-        onScroll={onScroll}
-        className="composer-fade scroll-none flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pt-12 text-base"
-        style={
-          {
-            paddingBottom: (composerHeight ?? COMPOSER_FALLBACK_PX) + COMPOSER_GAP_PX,
-            "--composer-h": `${composerHeight ?? COMPOSER_FALLBACK_PX}px`,
-            "--composer-fade": `${COMPOSER_GAP_PX}px`,
-          } as CSSProperties
-        }
-      >
+    // 回复里文件引用的相对路径按会话工作区解析（file-ref-actions.tsx）
+    <FileRefBase.Provider value={shownWorkspace?.path ?? null}>
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <MessageIndex items={indexItems} scrollRef={scrollRef} />
+        {/* 顶部渐隐：滚上去的内容在左右栏开关下方淡出，不和按钮叠在一起 */}
         <div
-          ref={timelineRef}
-          className="relative mx-auto flex w-full max-w-3xl flex-1 flex-col gap-4"
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0 top-0 z-10 h-12 bg-linear-to-b from-[var(--paper)] from-40% to-transparent"
+        />
+        {/* 底部渐隐（.composer-fade）：时间线在输入框上沿之上淡出、输入框后面完全不显示，
+            唇条与输入框底下只露出纸面；遮罩只作用于绘制，不拦截指针、不影响滚动与“停在底部” */}
+        <div
+          ref={scrollRef}
+          onScroll={onScroll}
+          className="composer-fade scroll-none flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pt-12 text-base"
+          style={
+            {
+              paddingBottom: (composerHeight ?? COMPOSER_FALLBACK_PX) + COMPOSER_GAP_PX,
+              "--composer-h": `${composerHeight ?? COMPOSER_FALLBACK_PX}px`,
+              "--composer-fade": `${COMPOSER_GAP_PX}px`,
+            } as CSSProperties
+          }
         >
-          {preview && (
-            <p className="self-center rounded-full bg-hover px-2.5 py-0.5 text-2xs text-muted">
-              {t.previewBadge}
-            </p>
-          )}
-          {!welcomeGone && (
-            <div
-              inert={conversationStarted}
-              className={cn("flex flex-1", conversationStarted && "welcome-out absolute inset-0")}
-            >
-              <Welcome
-                onPick={(s) => {
-                  setDraft(s);
-                  inputRef.current?.focus();
-                }}
-              />
-            </div>
-          )}
-          {turns.map((turn, ti) => {
-            const lastTurn = ti === turns.length - 1;
-            return (
-              <Fragment key={turn.start}>
-                {turn.user && (
-                  <UserBubble
-                    key={`${turn.user.index}-user`}
-                    index={turn.user.index}
-                    text={textOf(turn.user.message.content)}
-                  />
-                )}
-                {turn.replies.length > 0 && (
-                  <AgentTurn
-                    key={`${turn.start}-turn`}
-                    messages={turn.replies}
-                    toolRuns={state.toolRuns}
-                    running={lastTurn && state.running}
-                    streaming={lastTurn && state.streamingMessage}
-                    startedAt={
-                      (turn.user?.message as { timestamp?: number } | undefined)?.timestamp
-                    }
-                    providerNames={modelConfig.providerNames}
-                    {...(lastTurn
-                      ? {
-                          retry: state.retry,
-                          retryResult: state.retryResult,
-                          onStopRetry: abortRetry,
-                          errorActions,
-                        }
-                      : { errorActions: settingsOnly })}
-                  />
-                )}
-              </Fragment>
-            );
-          })}
-          {pendingUser && state.messages.length <= pendingUser.index && (
-            // 与回显后那一轮同样的 key：回显时原地替换，不重播进场动画
-            <Fragment key={pendingUser.index + 1}>
-              <UserBubble
-                key={`${pendingUser.index}-user`}
-                index={pendingUser.index}
-                text={pendingUser.text}
-              />
-            </Fragment>
-          )}
-          {/* 已发出、回复还没开始：最后一条是用户消息（或还在等回显） */}
-          {(submitting || state.running || pendingUser !== null) &&
-            !unresponsive &&
-            (state.messages.length === 0 || state.messages.at(-1)?.role === "user") && (
-              <ThinkingIndicator />
-            )}
-          {unresponsive && (
-            <div
-              role="alert"
-              className="flex items-center gap-3 rounded-xl border border-danger/40 px-3 py-2 text-xs"
-            >
-              <div className="flex-1">
-                <p className="font-medium text-danger">
-                  {coreStopped ? t.coreStopped : t.unresponsive}
-                </p>
-                <p className="text-muted">{coreStopped ? t.coreStoppedHint : t.unresponsiveHint}</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => void restart()}
-                disabled={restarting}
-                className="rounded-full bg-hover px-3 py-1 font-medium disabled:opacity-50"
-              >
-                {t.restartCore}
-              </button>
-            </div>
-          )}
-          {shownError && (
-            <p role="alert" className="text-xs text-danger">
-              {shownError}
-            </p>
-          )}
-        </div>
-      </div>
-
-      <div ref={composerRef} className="pointer-events-none absolute inset-x-0 bottom-0 px-6 pb-4">
-        <div className="pointer-events-auto mx-auto max-w-3xl">
-          {modelConfig.unavailable && (
-            <div
-              role="alert"
-              className="mb-2 flex items-center gap-3 rounded-xl bg-surface px-3 py-2 text-xs ring-1 ring-danger/40"
-            >
-              <div className="flex-1">
-                <p className="text-danger">{t.modelConfigUnavailable}</p>
-                {modelConfig.reason && <p className="text-muted">{modelConfig.reason}</p>}
-              </div>
-              <button
-                type="button"
-                onClick={openModelSettings}
-                className="shrink-0 rounded-full bg-hover px-3 py-1 font-medium"
-              >
-                {t.openModelSettings}
-              </button>
-            </div>
-          )}
-          {pendingUi && (
-            <ApprovalCard key={pendingUi.id} request={pendingUi} onRespond={respondUi} />
-          )}
-          {/* 唇条：输入框上沿后面的灰色小舌，显示 Git 分支与工作区（选择工作区也在这里） */}
-          {canUseWorkspaces && (
-            <ComposerLip
-              workspace={shownWorkspace}
-              locked={workspaceLocked}
-              onPicked={setWorkspace}
-              onClear={() => {
-                setPickError(null);
-                setWorkspace(null);
-              }}
-              onError={setPickError}
-            />
-          )}
-          {/* 中央已是玻璃，输入框保持实色白底（深色为实色面），保证输入区清晰 */}
           <div
-            ref={composerBoxRef}
-            data-drop={dragOver || undefined}
-            {...htmlDrag}
-            className="relative rounded-[24px] bg-surface shadow-[0_12px_40px_-12px_rgb(0_0_0/0.35)] ring-1 ring-border transition-[box-shadow] duration-200 focus-within:shadow-[0_14px_44px_-12px_rgb(0_0_0/0.4)] data-[drop]:ring-2 data-[drop]:ring-accent/45"
+            ref={timelineRef}
+            className="relative mx-auto flex w-full max-w-3xl flex-1 flex-col gap-4"
           >
-            <form onSubmit={submit} className="flex flex-col gap-2 px-3.5 pt-3.5 pb-3">
-              {pickError ? (
-                <p role="alert" className="text-xs text-danger">
-                  {pickError}
-                </p>
-              ) : (
-                voice.error && (
-                  <p role="alert" className="flex items-center gap-2 text-xs text-danger">
-                    <span className="min-w-0">{voice.error.message}</span>
-                    {voice.error.settings && (
-                      <button
-                        type="button"
-                        onClick={() => openVoiceSettings(voice.error?.settings)}
-                        className="shrink-0 rounded-full px-2 py-0.5 font-medium text-danger underline-offset-2 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-danger/40"
-                      >
-                        {t.voice.openSettings}
-                      </button>
-                    )}
-                  </p>
-                )
-              )}
-              <AttachmentStrip
-                items={attachments.items}
-                onRemove={attachments.remove}
-                onRemoved={attachments.finalizeRemove}
-              />
-              <div className="relative">
-                <textarea
-                  ref={inputRef}
-                  aria-label={t.inputLabel}
-                  placeholder={t.inputPlaceholder}
-                  value={shownDraft}
-                  readOnly={submitting || voice.recording}
-                  aria-busy={submitting}
-                  onChange={(e) => setDraft(e.target.value)}
-                  onKeyDown={onKeyDown}
-                  onPaste={onPaste}
-                  onScroll={(e) => {
-                    if (mirrorRef.current) mirrorRef.current.scrollTop = e.currentTarget.scrollTop;
+            {preview && (
+              <p className="self-center rounded-full bg-hover px-2.5 py-0.5 text-2xs text-muted">
+                {t.previewBadge}
+              </p>
+            )}
+            {!welcomeGone && (
+              <div
+                inert={conversationStarted}
+                className={cn("flex flex-1", conversationStarted && "welcome-out absolute inset-0")}
+              >
+                <Welcome
+                  onPick={(s) => {
+                    setDraft(s);
+                    inputRef.current?.focus();
                   }}
-                  rows={1}
-                  style={{ height: inputHeight }}
-                  className={cn(
-                    "scroll-none block w-full resize-none bg-transparent px-1 text-base leading-input caret-accent outline-none placeholder:text-muted/55",
-                    (overflowing || expanded) && "pr-8",
-                    voice.recording && voiceText && "text-transparent",
-                  )}
                 />
-                {voice.recording && voiceText && (
-                  // 镜像层：与输入框同样排版，把识别中的临时文本染成灰色、刚定稿的一段从灰色过渡到正文色
-                  <div
-                    ref={mirrorRef}
-                    aria-hidden
+              </div>
+            )}
+            {turns.map((turn, ti) => {
+              const lastTurn = ti === turns.length - 1;
+              return (
+                <Fragment key={turn.start}>
+                  {turn.user && (
+                    <UserBubble
+                      key={`${turn.user.index}-user`}
+                      index={turn.user.index}
+                      text={textOf(turn.user.message.content)}
+                    />
+                  )}
+                  {turn.replies.length > 0 && (
+                    <AgentTurn
+                      key={`${turn.start}-turn`}
+                      messages={turn.replies}
+                      toolRuns={state.toolRuns}
+                      running={lastTurn && state.running}
+                      streaming={lastTurn && state.streamingMessage}
+                      startedAt={
+                        (turn.user?.message as { timestamp?: number } | undefined)?.timestamp
+                      }
+                      providerNames={modelConfig.providerNames}
+                      {...(lastTurn
+                        ? {
+                            retry: state.retry,
+                            retryResult: state.retryResult,
+                            onStopRetry: abortRetry,
+                            errorActions,
+                          }
+                        : { errorActions: settingsOnly })}
+                    />
+                  )}
+                </Fragment>
+              );
+            })}
+            {pendingUser && state.messages.length <= pendingUser.index && (
+              // 与回显后那一轮同样的 key：回显时原地替换，不重播进场动画
+              <Fragment key={pendingUser.index + 1}>
+                <UserBubble
+                  key={`${pendingUser.index}-user`}
+                  index={pendingUser.index}
+                  text={pendingUser.text}
+                />
+              </Fragment>
+            )}
+            {/* 已发出、回复还没开始：最后一条是用户消息（或还在等回显） */}
+            {(submitting || state.running || pendingUser !== null) &&
+              !unresponsive &&
+              (state.messages.length === 0 || state.messages.at(-1)?.role === "user") && (
+                <ThinkingIndicator />
+              )}
+            {unresponsive && (
+              <div
+                role="alert"
+                className="flex items-center gap-3 rounded-xl border border-danger/40 px-3 py-2 text-xs"
+              >
+                <div className="flex-1">
+                  <p className="font-medium text-danger">
+                    {coreStopped ? t.coreStopped : t.unresponsive}
+                  </p>
+                  <p className="text-muted">
+                    {coreStopped ? t.coreStoppedHint : t.unresponsiveHint}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void restart()}
+                  disabled={restarting}
+                  className="rounded-full bg-hover px-3 py-1 font-medium disabled:opacity-50"
+                >
+                  {t.restartCore}
+                </button>
+              </div>
+            )}
+            {shownError && (
+              <p role="alert" className="text-xs text-danger">
+                {shownError}
+              </p>
+            )}
+          </div>
+        </div>
+
+        <div
+          ref={composerRef}
+          className="pointer-events-none absolute inset-x-0 bottom-0 px-6 pb-4"
+        >
+          <div className="pointer-events-auto mx-auto max-w-3xl">
+            {modelConfig.unavailable && (
+              <div
+                role="alert"
+                className="mb-2 flex items-center gap-3 rounded-xl bg-surface px-3 py-2 text-xs ring-1 ring-danger/40"
+              >
+                <div className="flex-1">
+                  <p className="text-danger">{t.modelConfigUnavailable}</p>
+                  {modelConfig.reason && <p className="text-muted">{modelConfig.reason}</p>}
+                </div>
+                <button
+                  type="button"
+                  onClick={openModelSettings}
+                  className="shrink-0 rounded-full bg-hover px-3 py-1 font-medium"
+                >
+                  {t.openModelSettings}
+                </button>
+              </div>
+            )}
+            {pendingUi && (
+              <ApprovalCard key={pendingUi.id} request={pendingUi} onRespond={respondUi} />
+            )}
+            {/* 唇条：输入框上沿后面的灰色小舌，显示 Git 分支与工作区（选择工作区也在这里） */}
+            {canUseWorkspaces && (
+              <ComposerLip
+                workspace={shownWorkspace}
+                locked={workspaceLocked}
+                onPicked={setWorkspace}
+                onClear={() => {
+                  setPickError(null);
+                  setWorkspace(null);
+                }}
+                onError={setPickError}
+              />
+            )}
+            {/* 中央已是玻璃，输入框保持实色白底（深色为实色面），保证输入区清晰 */}
+            <div
+              ref={composerBoxRef}
+              data-drop={dragOver || undefined}
+              {...htmlDrag}
+              className="relative rounded-[24px] bg-surface shadow-[0_12px_40px_-12px_rgb(0_0_0/0.35)] ring-1 ring-border transition-[box-shadow] duration-200 focus-within:shadow-[0_14px_44px_-12px_rgb(0_0_0/0.4)] data-[drop]:ring-2 data-[drop]:ring-accent/45"
+            >
+              <form onSubmit={submit} className="flex flex-col gap-2 px-3.5 pt-3.5 pb-3">
+                {pickError ? (
+                  <p role="alert" className="text-xs text-danger">
+                    {pickError}
+                  </p>
+                ) : (
+                  voice.error && (
+                    <p role="alert" className="flex items-center gap-2 text-xs text-danger">
+                      <span className="min-w-0">{voice.error.message}</span>
+                      {voice.error.settings && (
+                        <button
+                          type="button"
+                          onClick={() => openVoiceSettings(voice.error?.settings)}
+                          className="shrink-0 rounded-full px-2 py-0.5 font-medium text-danger underline-offset-2 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-danger/40"
+                        >
+                          {t.voice.openSettings}
+                        </button>
+                      )}
+                    </p>
+                  )
+                )}
+                <AttachmentStrip
+                  items={attachments.items}
+                  onRemove={attachments.remove}
+                  onRemoved={attachments.finalizeRemove}
+                />
+                <div className="relative">
+                  <textarea
+                    ref={inputRef}
+                    aria-label={t.inputLabel}
+                    placeholder={t.inputPlaceholder}
+                    value={shownDraft}
+                    readOnly={submitting || voice.recording}
+                    aria-busy={submitting}
+                    onChange={(e) => setDraft(e.target.value)}
+                    onKeyDown={onKeyDown}
+                    onPaste={onPaste}
+                    onScroll={(e) => {
+                      if (mirrorRef.current)
+                        mirrorRef.current.scrollTop = e.currentTarget.scrollTop;
+                    }}
+                    rows={1}
                     style={{ height: inputHeight }}
                     className={cn(
-                      "scroll-none pointer-events-none absolute inset-x-0 top-0 overflow-hidden px-1 text-base leading-input break-words whitespace-pre-wrap text-fg",
+                      "scroll-none block w-full resize-none bg-transparent px-1 text-base leading-input caret-accent outline-none placeholder:text-muted/55",
                       (overflowing || expanded) && "pr-8",
+                      voice.recording && voiceText && "text-transparent",
                     )}
-                  >
-                    {voiceFinal && voiceText.before.endsWith(voiceFinal.text) ? (
-                      <>
-                        {voiceText.before.slice(
-                          0,
-                          voiceText.before.length - voiceFinal.text.length,
-                        )}
-                        <span key={voiceFinal.key} className="voice-final">
-                          {voiceFinal.text}
-                        </span>
-                      </>
-                    ) : (
-                      voiceText.before
-                    )}
-                    <span className="text-muted transition-colors">{voice.interim}</span>
-                    {voiceText.after}
-                  </div>
-                )}
-                {(overflowing || expanded) && (
-                  <button
-                    type="button"
-                    aria-label={expanded ? t.collapseInput : t.expandInput}
-                    title={expanded ? t.collapseInput : t.expandInput}
-                    onClick={() => {
-                      setExpanded((v) => !v);
-                      inputRef.current?.focus();
-                    }}
-                    className="absolute top-0 right-0 grid size-7 place-items-center rounded-lg text-muted outline-none transition-colors hover:bg-hover hover:text-fg"
-                  >
-                    {expanded ? (
-                      <Icon name="minimize" size="sm" />
-                    ) : (
-                      <Icon name="maximize" size="sm" />
-                    )}
-                  </button>
-                )}
-              </div>
-              <div className="flex items-center gap-2.5 text-xs text-muted">
-                {/* 附件：系统文件对话框选文件，只引用本地路径；薄壳未接入对话框时隐藏 */}
-                {canPickFiles && (
-                  <button
-                    type="button"
-                    aria-label={t.attach}
-                    title={t.attach}
-                    disabled={submitting}
-                    onClick={() => void pickFiles()}
-                    className={composerGhostClass({ icon: true })}
-                  >
-                    <Icon name="plus" size="sm" />
-                  </button>
-                )}
-                <PermissionPicker mode={permissionMode} onChange={setPermissionMode}>
-                  {/* 完全访问：文字与图标用警示色；其他档位是普通的弱化幽灵按钮 */}
-                  <button
-                    type="button"
-                    aria-label={`${t.permissionMode}：${t.permissions[permissionMode].label}`}
-                    className={composerGhostClass({
-                      tone: permissionMode === "full" ? "warning" : "muted",
-                    })}
-                  >
-                    <Icon
-                      name={permissionMeta[permissionMode].icon}
-                      size="sm"
-                      className={permissionMeta[permissionMode].tone}
-                    />
-                    <span>{t.permissions[permissionMode].short}</span>
-                  </button>
-                </PermissionPicker>
-                <span className="flex-1" />
-                <ModelPicker
-                  models={models}
-                  onOpenChange={(open) => open && refreshModels()}
-                  providerNames={modelConfig.providerNames}
-                  onOpenSettings={openModelSettings}
-                  current={currentModel}
-                  thinkingLevel={state.thinkingLevel ?? pendingModel.thinkingLevel}
-                  thinkingLevels={state.model ? state.thinkingLevels : undefined}
-                  disabled={state.running || submitting}
-                  onSelectModel={(model) => void selectModel({ model })}
-                  onSelectThinking={(thinkingLevel) => void selectModel({ thinkingLevel })}
-                />
-                {/* 上下文：紧挨模型按钮的小圆环（百分比只在无障碍名称里），点开是上下文卡片 */}
-                <ContextButton
-                  usage={state.contextUsage}
-                  sessionUsage={state.sessionUsage}
-                  autoCompaction={state.autoCompaction}
-                  compacting={state.compacting}
-                  stats={state.contextStats}
-                  connected={connected}
-                  busy={state.running || submitting}
-                  onOpen={() => {
-                    // 已缓存的数据直接显示（每条回复、压缩、切换模型后已刷新；清单由扩展每轮结束重推）；
-                    // 只补取还没有的
-                    if (!state.contextUsage) refreshStats();
-                    if (!state.contextStats) requestContextStats();
-                  }}
-                  onCompact={() => void compact()}
-                  onAutoCompactionChange={(enabled) => void setAutoCompaction(enabled)}
-                />
-                {voice.available && (
-                  <VoiceButton
-                    recording={voice.recording}
-                    levels={voice.levels}
-                    elapsed={voice.elapsed}
-                    disabled={submitting}
-                    onStart={voice.start}
-                    onStop={voice.stop}
                   />
-                )}
-                {state.running ? (
-                  <button
-                    type="button"
-                    aria-label={stopping ? t.stopping : t.stop}
-                    title={stopping ? t.stopping : t.stop}
-                    aria-busy={stopping}
-                    disabled={stopping}
-                    onClick={stop}
-                    className="grid size-8 place-items-center rounded-full bg-fg text-surface transition-opacity disabled:opacity-40"
-                  >
-                    <Icon name="stop" size="xs" />
-                  </button>
-                ) : (
-                  <button
-                    type="submit"
-                    aria-label={t.send}
-                    title={attachments.pending ? t.attachments.readingBlocksSend : undefined}
-                    disabled={
-                      submitting ||
-                      unresponsive ||
-                      modelConfig.unavailable ||
-                      attachments.pending ||
-                      voice.recording ||
-                      (!draft.trim() && !attachments.hasContent)
-                    }
-                    className="grid size-8 place-items-center rounded-full bg-fg text-surface transition-[opacity,transform] active:scale-95 disabled:opacity-20 disabled:active:scale-100"
-                  >
-                    <Icon name="arrow-up" />
-                  </button>
-                )}
-              </div>
-            </form>
+                  {voice.recording && voiceText && (
+                    // 镜像层：与输入框同样排版，把识别中的临时文本染成灰色、刚定稿的一段从灰色过渡到正文色
+                    <div
+                      ref={mirrorRef}
+                      aria-hidden
+                      style={{ height: inputHeight }}
+                      className={cn(
+                        "scroll-none pointer-events-none absolute inset-x-0 top-0 overflow-hidden px-1 text-base leading-input break-words whitespace-pre-wrap text-fg",
+                        (overflowing || expanded) && "pr-8",
+                      )}
+                    >
+                      {voiceFinal && voiceText.before.endsWith(voiceFinal.text) ? (
+                        <>
+                          {voiceText.before.slice(
+                            0,
+                            voiceText.before.length - voiceFinal.text.length,
+                          )}
+                          <span key={voiceFinal.key} className="voice-final">
+                            {voiceFinal.text}
+                          </span>
+                        </>
+                      ) : (
+                        voiceText.before
+                      )}
+                      <span className="text-muted transition-colors">{voice.interim}</span>
+                      {voiceText.after}
+                    </div>
+                  )}
+                  {(overflowing || expanded) && (
+                    <button
+                      type="button"
+                      aria-label={expanded ? t.collapseInput : t.expandInput}
+                      title={expanded ? t.collapseInput : t.expandInput}
+                      onClick={() => {
+                        setExpanded((v) => !v);
+                        inputRef.current?.focus();
+                      }}
+                      className="absolute top-0 right-0 grid size-7 place-items-center rounded-lg text-muted outline-none transition-colors hover:bg-hover hover:text-fg"
+                    >
+                      {expanded ? (
+                        <Icon name="minimize" size="sm" />
+                      ) : (
+                        <Icon name="maximize" size="sm" />
+                      )}
+                    </button>
+                  )}
+                </div>
+                <div className="flex items-center gap-2.5 text-xs text-muted">
+                  {/* 附件：系统文件对话框选文件，只引用本地路径；薄壳未接入对话框时隐藏 */}
+                  {canPickFiles && (
+                    <button
+                      type="button"
+                      aria-label={t.attach}
+                      title={t.attach}
+                      disabled={submitting}
+                      onClick={() => void pickFiles()}
+                      className={composerGhostClass({ icon: true })}
+                    >
+                      <Icon name="plus" size="sm" />
+                    </button>
+                  )}
+                  <PermissionPicker mode={permissionMode} onChange={setPermissionMode}>
+                    {/* 完全访问：文字与图标用警示色；其他档位是普通的弱化幽灵按钮 */}
+                    <button
+                      type="button"
+                      aria-label={`${t.permissionMode}：${t.permissions[permissionMode].label}`}
+                      className={composerGhostClass({
+                        tone: permissionMode === "full" ? "warning" : "muted",
+                      })}
+                    >
+                      <Icon
+                        name={permissionMeta[permissionMode].icon}
+                        size="sm"
+                        className={permissionMeta[permissionMode].tone}
+                      />
+                      <span>{t.permissions[permissionMode].short}</span>
+                    </button>
+                  </PermissionPicker>
+                  <span className="flex-1" />
+                  <ModelPicker
+                    models={models}
+                    onOpenChange={(open) => open && refreshModels()}
+                    providerNames={modelConfig.providerNames}
+                    onOpenSettings={openModelSettings}
+                    current={currentModel}
+                    thinkingLevel={state.thinkingLevel ?? pendingModel.thinkingLevel}
+                    thinkingLevels={state.model ? state.thinkingLevels : undefined}
+                    disabled={state.running || submitting}
+                    onSelectModel={(model) => void selectModel({ model })}
+                    onSelectThinking={(thinkingLevel) => void selectModel({ thinkingLevel })}
+                  />
+                  {/* 上下文：紧挨模型按钮的小圆环（百分比只在无障碍名称里），点开是上下文卡片 */}
+                  <ContextButton
+                    usage={state.contextUsage}
+                    sessionUsage={state.sessionUsage}
+                    autoCompaction={state.autoCompaction}
+                    compacting={state.compacting}
+                    stats={state.contextStats}
+                    connected={connected}
+                    busy={state.running || submitting}
+                    onOpen={() => {
+                      // 已缓存的数据直接显示（每条回复、压缩、切换模型后已刷新；清单由扩展每轮结束重推）；
+                      // 只补取还没有的
+                      if (!state.contextUsage) refreshStats();
+                      if (!state.contextStats) requestContextStats();
+                    }}
+                    onCompact={() => void compact()}
+                    onAutoCompactionChange={(enabled) => void setAutoCompaction(enabled)}
+                  />
+                  {voice.available && (
+                    <VoiceButton
+                      recording={voice.recording}
+                      levels={voice.levels}
+                      elapsed={voice.elapsed}
+                      disabled={submitting}
+                      onStart={voice.start}
+                      onStop={voice.stop}
+                    />
+                  )}
+                  {state.running ? (
+                    <button
+                      type="button"
+                      aria-label={stopping ? t.stopping : t.stop}
+                      title={stopping ? t.stopping : t.stop}
+                      aria-busy={stopping}
+                      disabled={stopping}
+                      onClick={stop}
+                      className="grid size-8 place-items-center rounded-full bg-fg text-surface transition-opacity disabled:opacity-40"
+                    >
+                      <Icon name="stop" size="xs" />
+                    </button>
+                  ) : (
+                    <button
+                      type="submit"
+                      aria-label={t.send}
+                      title={attachments.pending ? t.attachments.readingBlocksSend : undefined}
+                      disabled={
+                        submitting ||
+                        unresponsive ||
+                        modelConfig.unavailable ||
+                        attachments.pending ||
+                        voice.recording ||
+                        (!draft.trim() && !attachments.hasContent)
+                      }
+                      className="grid size-8 place-items-center rounded-full bg-fg text-surface transition-[opacity,transform] active:scale-95 disabled:opacity-20 disabled:active:scale-100"
+                    >
+                      <Icon name="arrow-up" />
+                    </button>
+                  )}
+                </div>
+              </form>
+            </div>
           </div>
         </div>
       </div>
-    </div>
+    </FileRefBase.Provider>
   );
 }

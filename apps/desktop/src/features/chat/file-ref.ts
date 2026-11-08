@@ -284,3 +284,31 @@ export function fileRefCopyText(ref: FileRef): string {
   if (!ref.line) return ref.path;
   return ref.column ? `${ref.path}:${ref.line}:${ref.column}` : `${ref.path}:${ref.line}`;
 }
+
+/**
+ * 打开文件用的路径：绝对路径（含 Windows 盘符、`/`、`~/`）原样交给薄壳；相对路径按会话工作区 `base` 拼接，
+ * 折叠 `.` 与 `..`，分隔符跟随工作区（Windows 工作区用反斜杠）。行号在识别时已去掉（`ref.path` 不带）。
+ * 无法定位时返回 null：相对路径但没有工作区、`@/` 这类打包别名、`~user/`。
+ */
+export function resolveFileRefPath(path: string, base: string | null): string | null {
+  // 文件夹去掉末尾斜杠；只剩根（`/`、`C:\`）时保留
+  const trimmed = path.replace(/[\\/]+$/, "");
+  const p = trimmed && !/^[A-Za-z]:$/.test(trimmed) ? trimmed : path;
+  if (WIN_ABS.test(p) || UNC.test(p) || /^[\\/]/.test(p) || p === "~" || /^~[\\/]/.test(p))
+    return p;
+  if (p.startsWith("@") || p.startsWith("~")) return null;
+  if (!base) return null;
+  const windows = WIN_ABS.test(base) || /^[\\/]{2}/.test(base);
+  const sep = windows ? "\\" : "/";
+  const lead = /^[\\/]{2}/.test(base) ? sep + sep : base.startsWith("/") ? "/" : "";
+  const segments = base.split(/[\\/]+/).filter(Boolean);
+  // 不能退到根之上：盘符（C:）或 UNC 的 \\服务器\共享 保留
+  const floor = WIN_ABS.test(base) ? 1 : lead.length === 2 ? 2 : 0;
+  for (const part of p.split(/[\\/]+/)) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      if (segments.length > floor) segments.pop();
+    } else segments.push(part);
+  }
+  return lead + segments.join(sep);
+}

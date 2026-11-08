@@ -5,6 +5,7 @@ import {
   fileRefFromHref,
   fileRefIcon,
   fileRefLineLabel,
+  resolveFileRefPath,
 } from "./file-ref";
 
 describe("链接地址识别为文件引用", () => {
@@ -204,5 +205,47 @@ describe("显示与复制", () => {
     }
     expect(fileRefFromCode("a.toString")).toBeNull();
     expect(fileRefFromCode("x.valueOf")).toBeNull();
+  });
+});
+
+describe("打开文件用的路径", () => {
+  it.each([
+    // 绝对路径原样（文件夹去掉末尾斜杠）
+    ["C:\\Users\\me\\a.ts", "/w", "C:\\Users\\me\\a.ts"],
+    ["C:/Users/me/a.ts", null, "C:/Users/me/a.ts"],
+    ["/home/me/app.py", null, "/home/me/app.py"],
+    ["~/notes.txt", null, "~/notes.txt"],
+    ["\\\\server\\share\\报告.docx", null, "\\\\server\\share\\报告.docx"],
+    ["/home/me/src/", null, "/home/me/src"],
+    ["/", null, "/"],
+    ["C:\\", null, "C:\\"],
+    // 相对路径按工作区拼接，分隔符跟随工作区
+    ["src/a.ts", "/home/me/proj", "/home/me/proj/src/a.ts"],
+    ["./src/a.ts", "/home/me/proj/", "/home/me/proj/src/a.ts"],
+    ["../other/b.md", "/home/me/proj", "/home/me/other/b.md"],
+    ["src/a.ts", "C:\\work\\primus", "C:\\work\\primus\\src\\a.ts"],
+    ["src\\lib\\", "C:\\work\\primus", "C:\\work\\primus\\src\\lib"],
+    ["../../../../x.ts", "C:\\work\\primus", "C:\\x.ts"],
+    ["../../../x.ts", "/a", "/x.ts"],
+    ["a.ts", "\\\\srv\\share\\proj", "\\\\srv\\share\\proj\\a.ts"],
+    ["../../../a.ts", "\\\\srv\\share\\proj", "\\\\srv\\share\\a.ts"],
+    ["README.md", "C:/work/primus", "C:\\work\\primus\\README.md"],
+  ])("%s（工作区 %s）→ %s", (path, base, expected) => {
+    expect(resolveFileRefPath(path, base)).toBe(expected);
+  });
+
+  it.each([
+    ["src/a.ts", null],
+    ["@/components/icons.ts", "/w"],
+    ["~other/a.ts", "/w"],
+  ])("%s（工作区 %s）无法定位", (path, base) => {
+    expect(resolveFileRefPath(path, base)).toBeNull();
+  });
+
+  it("识别出的路径不带行号", () => {
+    const ref = fileRefFromCode("src/a.ts:42-58");
+    expect(ref && resolveFileRefPath(ref.path, "/w")).toBe("/w/src/a.ts");
+    const link = fileRefFromHref("src/a.ts#L3");
+    expect(link && resolveFileRefPath(link.path, "/w")).toBe("/w/src/a.ts");
   });
 });

@@ -286,6 +286,19 @@ function messageText(m: AgentMessage): string {
     .join(" ");
 }
 
+/** mock 的打开文件：可执行与脚本类扩展名（薄壳 open_path.rs 的子集） */
+const MOCK_RISKY = /\.(?:exe|com|scr|msi|bat|cmd|ps1|vbs|js|lnk|url|hta|app|sh)[. ]*$/i;
+
+/** mock 的路径校验：只认绝对路径（含 `~/`），拒绝网址与网络路径（与薄壳的错误文案一致） */
+function mockAbsolutePath(path: string): string {
+  if (/^[A-Za-z][A-Za-z0-9+.-]+:/.test(path) || path.includes("://")) {
+    throw new Error("只能打开本机文件，不能打开网址");
+  }
+  if (/^[\\/]{2}/.test(path)) throw new Error("不支持打开网络路径或设备路径");
+  if (!/^(?:[A-Za-z]:[\\/]|\/|~(?:[\\/]|$))/.test(path)) throw new Error("需要文件的完整路径");
+  return path;
+}
+
 export function createMockPlatform(options: MockOptions = {}): Platform {
   const intervalMs = options.intervalMs ?? 16;
   const batchSize = options.batchSize ?? 4;
@@ -1019,6 +1032,15 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
 
     openExternal: async (target) => {
       globalThis.open?.(target, "_blank", "noopener");
+    },
+    // 浏览器预览打不开本机文件：只记日志。与薄壳一致地拒绝相对路径与网址，可执行文件返回 revealed
+    openPath: async (path) => {
+      const absolute = mockAbsolutePath(path);
+      console.info("[mock] 用默认程序打开", absolute);
+      return MOCK_RISKY.test(absolute) ? "revealed" : "opened";
+    },
+    revealPath: async (path) => {
+      console.info("[mock] 在文件夹中显示", mockAbsolutePath(path));
     },
     storageUsage: async () => ({ sessions: 0, logs: 0, cache: 0 }),
     storageClean: async () => {},

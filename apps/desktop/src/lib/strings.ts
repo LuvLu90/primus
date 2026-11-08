@@ -59,13 +59,23 @@ export const strings = {
     linkFailed: "无法打开链接",
     /** 回复里的外部链接（附在链接文字后的屏幕阅读器提示） */
     linkExternal: "（外部链接）",
-    /** 回复里的文件引用：点击复制路径（平台还没有打开文件的接口） */
+    /** 回复里的文件引用：点击用系统默认程序打开，右键（或菜单键）有打开、在文件夹中显示、复制路径 */
     fileRef: {
-      label: "文件 {name}，点击复制路径",
-      labelLine: "文件 {name}，第 {line} 行，点击复制路径",
-      labelRange: "文件 {name}，第 {line}–{end} 行，点击复制路径",
-      folder: "文件夹 {name}，点击复制路径",
+      label: "文件 {name}，点击打开",
+      labelLine: "文件 {name}，第 {line} 行，点击打开",
+      labelRange: "文件 {name}，第 {line}–{end} 行，点击打开",
+      folder: "文件夹 {name}，点击打开",
+      /** 悬停提示第二行（第一行是完整路径） */
+      hint: "点击打开 · 右键更多操作",
       copied: "已复制路径",
+      menu: "文件操作",
+      open: "打开",
+      reveal: "在文件夹中显示",
+      copy: "复制路径",
+      noWorkspace: "无法定位 {name}：这个会话没有工作区，不知道相对路径从哪里算起",
+      unresolved: "无法定位 {name}：不知道这个路径别名对应哪个文件夹",
+      openFailed: "打不开 {name}：{reason}",
+      revealed: "{name} 是可执行文件，已在文件夹中显示，没有直接运行",
     },
     inputLabel: "输入消息",
     inputPlaceholder: "问乾元任何事，Enter 发送，Shift+Enter 换行",

@@ -330,6 +330,13 @@ export interface Platform {
   terminalClose(terminalId: string): Promise<void>;
 
   openExternal(target: string): Promise<void>;
+  /**
+   * 用系统默认程序打开本机文件或文件夹（回复里的文件引用）。只接受已存在的绝对路径（可用 `~/`）；
+   * 网址、网络路径会被拒绝（错误文案可直接显示）。可执行与脚本类文件不直接运行，改为在文件夹中显示并返回 `revealed`
+   */
+  openPath(path: string): Promise<OpenPathOutcome>;
+  /** 在系统文件管理器中显示并选中文件或文件夹；校验同 `openPath` */
+  revealPath(path: string): Promise<void>;
   storageUsage(): Promise<Record<string, number>>;
   storageClean(category: string): Promise<void>;
   diagnosticsExport(options?: Record<string, unknown>): Promise<string>;
@@ -348,6 +355,9 @@ export interface Platform {
   updateInstall(force?: boolean): Promise<void>;
   logWrite(level: LogLevel, message: string): Promise<void>;
 }
+
+/** `openPath` 的结果：已打开，或因是可执行 / 脚本文件改为在文件夹中显示 */
+export type OpenPathOutcome = "opened" | "revealed";
 
 /** 账号命令错误码：功能尚未开放（账号服务接入前的登录 / 登出） */
 export const AUTH_NOT_AVAILABLE = "notAvailable";
@@ -425,6 +435,8 @@ export const COMMANDS = {
   terminalResize: "terminal_resize",
   terminalClose: "terminal_close",
   openExternal: "open_external",
+  openPath: "open_path",
+  revealPath: "reveal_path",
   storageUsage: "storage_usage",
   storageClean: "storage_clean",
   diagnosticsExport: "diagnostics_export",
