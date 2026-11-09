@@ -111,6 +111,19 @@ describe("对话索引交互", () => {
     await waitFor(() => expect(screen.queryByRole("tooltip")).toBeNull());
   });
 
+  it("指针停在刻度条上时焦点离开，恢复指针位置的放大与预览", async () => {
+    const { buttons, rail, ticks } = setup();
+    fireEvent.pointerMove(rail, { clientY: RAIL_PAD + TICK_PITCH * 2.5 });
+    await waitFor(() => expect(ticks[2]?.style.getPropertyValue("--index-mag")).toBe("1.000"));
+    act(() => buttons[4]?.focus());
+    await waitFor(() => expect(ticks[4]?.style.getPropertyValue("--index-mag")).toBe("1.000"));
+    act(() => buttons[4]?.blur());
+    await waitFor(() => expect(ticks[2]?.style.getPropertyValue("--index-mag")).toBe("1.000"));
+    expect(ticks[2]?.hasAttribute("data-near")).toBe(true);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(screen.getByRole("tooltip").textContent).toContain("第 2 个问题");
+  });
+
   it("键盘：方向键在刻度间移动焦点，聚焦的刻度同样预览", async () => {
     const { buttons } = setup();
     act(() => buttons[0]?.focus());

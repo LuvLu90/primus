@@ -98,8 +98,15 @@ export function MessageIndex({
   const tickRefs = useRef<(HTMLSpanElement | null)[]>([]);
   const hideTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   // 指针位置只存在 ref 里，每帧最多写一次 DOM
-  const pointer = useRef<{ y: number | null; railTop: number; frame: number }>({
+  // hoverY：指针在刻度条上的位置（不在时为 null），焦点离开后据此恢复指针的放大与预览
+  const pointer = useRef<{
+    y: number | null;
+    hoverY: number | null;
+    railTop: number;
+    frame: number;
+  }>({
     y: null,
+    hoverY: null,
     railTop: 0,
     frame: 0,
   });
@@ -205,12 +212,14 @@ export function MessageIndex({
     // 每次都重新读刻度条位置：指针停留期间窗口或聊天区高度可能变化（刻度条垂直居中，会跟着移动）
     pointer.current.railTop = e.currentTarget.getBoundingClientRect().top;
     e.currentTarget.setAttribute("data-scrub", "");
-    track(e.clientY - pointer.current.railTop);
+    pointer.current.hoverY = e.clientY - pointer.current.railTop;
+    track(pointer.current.hoverY);
   };
   const onPointerMove = onPointerEnter;
 
   /** 指针离开：键盘焦点（focus-visible）仍在某个刻度上时保留它的放大与预览，否则回落 */
   const onPointerLeave = () => {
+    pointer.current.hoverY = null;
     const rail = railRef.current;
     const focused = document.activeElement;
     let keyboard = false;
@@ -230,6 +239,17 @@ export function MessageIndex({
     rail?.removeAttribute("data-scrub");
     clearTimeout(hideTimer.current);
     track(RAIL_PAD + TICK_PITCH * (at + 0.5));
+  };
+
+  /** 刻度失焦：指针仍停在刻度条上时恢复指针位置的放大与预览，否则回落 */
+  const onTickBlur = () => {
+    const y = pointer.current.hoverY;
+    if (y === null) {
+      release();
+      return;
+    }
+    clearTimeout(hideTimer.current);
+    track(y);
   };
 
   // 键盘：Tab 进入后上下方向键 / Home / End 在刻度间移动，聚焦的刻度同样有“划过”的放大与预览
@@ -283,7 +303,7 @@ export function MessageIndex({
               aria-current={isActive || undefined}
               onClick={() => jump(item)}
               onFocus={() => track(RAIL_PAD + TICK_PITCH * (i + 0.5))}
-              onBlur={release}
+              onBlur={onTickBlur}
               className="flex h-[11px] w-7 items-center outline-none"
             >
               <span

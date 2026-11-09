@@ -10,7 +10,10 @@ import contextStats, {
 } from "./index.ts";
 
 const AGENTS = "# 项目约定\n".repeat(40);
-const PROMPT = `你是乾元。\n${"基础规则。".repeat(100)}\n<project_context>\nAGENTS.md\n${AGENTS}\n</project_context>\n<available_skills><skill><name>pdf</name></skill></available_skills>`;
+/** 与 Core 写入项目文件的格式一致（agent-core system-prompt.ts renderProjectContext） */
+const block = (path: string, content: string) =>
+  `<project_instructions path="${path}">\n${content}\n</project_instructions>`;
+const PROMPT = `你是乾元。\n${"基础规则。".repeat(100)}\n${block("AGENTS.md", AGENTS)}\n<available_skills><skill><name>pdf</name></skill></available_skills>`;
 
 const toolCall = (name: string) => ({ type: "toolCall", id: name, name, arguments: {} });
 const ENTRIES: StatsEntry[] = [
@@ -96,6 +99,31 @@ describe("primus-context-stats 上下文清单", () => {
     const prompt = `你是乾元。\n<project_context>\nAGENTS.md\n${AGENTS}\n用 pdf 导出</project_context>`;
     const data = collectContextStats(ctx({ getSystemPrompt: () => prompt }), TOOLS);
     expect(data.groups.find((g) => g.key === "skills")?.items).toEqual([]);
+  });
+
+  it("项目文件里的 <available_skills> 不算，取 Core 写在后面的技能段", () => {
+    const agents = "示例：<available_skills></available_skills>";
+    const prompt = `${block("AGENTS.md", agents)}\n<available_skills><skill><name>pdf</name></skill></available_skills>`;
+    const options = {
+      contextFiles: [{ path: "AGENTS.md", content: agents }],
+      skills: [{ name: "pdf", description: "", filePath: "/s" }],
+    };
+    const data = collectContextStats(
+      ctx({ getSystemPrompt: () => prompt, getSystemPromptOptions: () => options }),
+      TOOLS,
+    );
+    expect(data.groups.find((g) => g.key === "skills")?.items).toEqual(["pdf"]);
+  });
+
+  it("记忆文件按 Core 的文件块判断：空文件的块在才算，被扩展去掉后不列", () => {
+    const options = { contextFiles: [{ path: "AGENTS.md", content: "" }] };
+    const memoryOf = (prompt: string) =>
+      collectContextStats(
+        ctx({ getSystemPrompt: () => prompt, getSystemPromptOptions: () => options }),
+        TOOLS,
+      ).groups.find((g) => g.key === "memoryFiles")?.items;
+    expect(memoryOf(`你是乾元。\n${block("AGENTS.md", "")}`)).toEqual(["AGENTS.md"]);
+    expect(memoryOf("你是乾元。")).toEqual([]);
   });
 
   it("统计调用过的工具：优先当前分支，退回全部记录；只看 assistant 的 toolCall；读取出错为空", () => {

@@ -356,8 +356,12 @@ const MOCK_RISKY = new RegExp(
   "i",
 );
 
-/** mock 的路径校验：只认绝对路径（含 `~/`），拒绝网址与网络路径（与薄壳的错误文案一致） */
+/** mock 的路径校验：只认绝对路径（含 `~/`），拒绝空路径、超长与含控制字符的路径、网址与网络路径（与薄壳的错误文案一致） */
 function mockAbsolutePath(path: string): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: 与薄壳一致，拒绝控制字符
+  if (!path || [...path].length > 4096 || /[\u0000-\u001f\u007f-\u009f]/.test(path)) {
+    throw new Error("路径格式不正确");
+  }
   if (/^[A-Za-z][A-Za-z0-9+.-]+:/.test(path) || path.includes("://")) {
     throw new Error("只能打开本机文件，不能打开网址");
   }

@@ -81,6 +81,22 @@ describe("链接地址识别为文件引用", () => {
     expect(fileRefFromHref("docs/a%23b.md#L4")).toMatchObject({ path: "docs/a#b.md", line: 4 });
   });
 
+  it("行号按原文识别再解码：编码的 %3A 属于文件名", () => {
+    const ref = fileRefFromHref("file:///home/me/report%3A2026");
+    expect(ref).toMatchObject({ path: "/home/me/report:2026", name: "report:2026" });
+    expect(ref?.line).toBeUndefined();
+    expect(fileRefFromHref("file:///home/me/a%20b.ts:12")).toMatchObject({
+      path: "/home/me/a b.ts",
+      line: 12,
+    });
+  });
+
+  it("file: 地址只认绝对路径", () => {
+    expect(fileRefFromHref("file:notes.txt")).toBeNull();
+    expect(fileRefFromCode("file:notes.txt")).toBeNull();
+    expect(fileRefFromHref("file:/home/me/a.ts")?.path).toBe("/home/me/a.ts");
+  });
+
   it("file:// 只接受本机地址，带主机名的网络引用不算", () => {
     expect(fileRefFromHref("file://server/share/report.pdf")).toBeNull();
     expect(fileRefFromCode("file://server/share/report.pdf")).toBeNull();
@@ -108,6 +124,9 @@ describe("行内代码识别为文件引用", () => {
     ["/usr/local/bin", "bin", undefined],
     ["./scripts/build", "build", undefined],
     ["Dockerfile", "Dockerfile", undefined],
+    [".gitignore", ".gitignore", undefined],
+    [".env", ".env", undefined],
+    ["config/.npmrc", ".npmrc", undefined],
     ["app/[id]/page.tsx", "page.tsx", undefined],
   ])("%s", (code, name, line) => {
     const ref = fileRefFromCode(code);

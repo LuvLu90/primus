@@ -94,15 +94,20 @@ export function findIconUsageIssues(code) {
     for (const p of attrs.matchAll(/(?<![\w-])([A-Za-z]+)=/g)) {
       if (BAD_ICON_PROP.test(p[1])) out.push({ line, kind: "图标属性", what: p[1] });
     }
-    // size 只能是尺寸令牌：size="sm"，或每个分支都是令牌字面量的表达式（size={compact ? "xs" : "sm"}）
-    for (const sz of attrs.matchAll(/\bsize=\{([^}]*)\}/g)) {
+    // size 只能是尺寸令牌：size="sm"，或每个分支都是令牌字面量的表达式（size={compact ? "xs" : "sm"}）；
+    // 表达式里不能有数值（标识符里的数字如 compact2 不算）
+    const badSize = () =>
+      out.push({ line, kind: "图标尺寸", what: "size 只能是 2xs / xs / sm / md / lg / xl" });
+    for (const sz of attrs.matchAll(/(?<![\w-])size=(?:"([^"]*)"|'([^']*)')/g)) {
+      if (!ICON_SIZES.has(sz[1] ?? sz[2])) badSize();
+    }
+    for (const sz of attrs.matchAll(/(?<![\w-])size=\{([^}]*)\}/g)) {
       const literals = [...sz[1].matchAll(/["'`]([^"'`]*)["'`]/g)].map((l) => l[1]);
       const tokensOnly =
         literals.length > 0 &&
         literals.every((l) => ICON_SIZES.has(l)) &&
-        !/\d/.test(sz[1].replace(/["'`][^"'`]*["'`]/g, ""));
-      if (!tokensOnly)
-        out.push({ line, kind: "图标尺寸", what: "size 只能是 2xs / xs / sm / md / lg / xl" });
+        !/(?<![\w$])\.?\d/.test(sz[1].replace(/["'`][^"'`]*["'`]/g, ""));
+      if (!tokensOnly) badSize();
     }
     for (const c of attrs.matchAll(
       /(?<![\w-])(?:[\w-]+:)*((?:text|fill|stroke|opacity)-[^\s"'`}]+)/g,

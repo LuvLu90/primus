@@ -685,6 +685,9 @@ describe("mock 打开文件", () => {
     await expect(p.openPath("src/a.ts")).rejects.toThrow("完整路径");
     await expect(p.openPath("https://example.com")).rejects.toThrow("网址");
     await expect(p.openPath("\\\\srv\\share\\a.ts")).rejects.toThrow("网络路径");
+    await expect(p.openPath("/home/me/a\nb.ts")).rejects.toThrow("路径格式不正确");
+    await expect(p.revealPath(`/${"a".repeat(4096)}`)).rejects.toThrow("路径格式不正确");
+    await expect(p.revealPath("C:\\work\u0007.ts")).rejects.toThrow("路径格式不正确");
     await expect(p.revealPath("~/a.ts")).resolves.toBeUndefined();
     expect(info).toHaveBeenCalled();
     info.mockRestore();

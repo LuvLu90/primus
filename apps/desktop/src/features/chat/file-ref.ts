@@ -105,6 +105,12 @@ const DOTFILES = new Map<string, FileIconName>([
   [".dockerignore", "docker"],
 ]);
 
+/** 不带扩展名也认作文件的名字：Makefile 这类与 .gitignore 这类点文件 */
+const isKnownBare = (name: string) => {
+  const lower = name.toLowerCase();
+  return KNOWN_BARE.has(lower) || DOTFILES.has(lower);
+};
+
 /** 按文件名选彩色文件类型图标（附件、工具行与文件引用共用）；认不出的用通用 file */
 export function fileIconForName(fileName: string): FileIconName {
   const lower = fileName.toLowerCase();
@@ -215,18 +221,15 @@ export function fileRefFromHref(href: string): FileRef | null {
     let rest = m?.[2] ?? "";
     if (/^[A-Za-z]:$/.test(authority)) rest = authority + rest;
     else if (authority && authority.toLowerCase() !== "localhost") return null;
-    raw = safeDecode(rest);
-    // file:///C:/x → C:/x
-    if (/^\/[A-Za-z]:[\\/]/.test(raw)) raw = raw.slice(1);
+    raw = rest;
   } else {
     if (SCHEME.test(raw) && !WIN_ABS.test(raw)) {
       // chat-panel.tsx:42 也满足 “协议:” 的形状：只有冒号后面全是行号时才当路径
       if (!/^[^:/\\]+\.[A-Za-z][A-Za-z0-9]{0,9}:\d+(?:[-:]\d+)?$/.test(raw)) return null;
     }
     if (/^www\./i.test(raw)) return null;
-    raw = safeDecode(raw);
   }
-  if (!plausibleChars(raw, isFileUri)) return null;
+  // 行号同样按原文识别再解码：文件名里编码的 %3A（report%3A2026）解码后不能被当成行号
   let pos: Position = {};
   if (hash !== null) pos = parseHashLines(safeDecode(hash)) ?? {};
   if (!pos.line) {
@@ -234,6 +237,14 @@ export function fileRefFromHref(href: string): FileRef | null {
     raw = split.path;
     pos = split.pos;
   }
+  raw = safeDecode(raw);
+  if (isFileUri) {
+    // file:///C:/x → C:/x
+    if (/^\/[A-Za-z]:[\\/]/.test(raw)) raw = raw.slice(1);
+    // file: 地址只认绝对路径：file:notes.txt 不能当成工作区相对路径
+    if (!WIN_ABS.test(raw) && !raw.startsWith("/")) return null;
+  }
+  if (!plausibleChars(raw, isFileUri)) return null;
   if (!raw) return null;
   return build(raw, pos);
 }
@@ -271,12 +282,12 @@ export function fileRefFromCode(code: string): FileRef | null {
   if (ref.isDir) return hasSep(raw.slice(0, -1)) || isAnchored(raw) || raw.length > 1 ? ref : null;
   if (hasSep(raw)) {
     if (ext) return ref;
-    if (KNOWN_BARE.has(ref.name.toLowerCase())) return ref;
+    if (isKnownBare(ref.name)) return ref;
     // 无扩展名：只认锚定的绝对 / 相对路径，且至少两段（/compact 这类斜杠命令不算）
     const segments = raw.split(/[\\/]/).filter(Boolean);
     return isAnchored(raw) && segments.length >= 2 ? ref : null;
   }
-  if (KNOWN_BARE.has(ref.name.toLowerCase())) return ref;
+  if (isKnownBare(ref.name)) return ref;
   if (!ext || ext === "log" || !ICON_BY_EXT.has(ext)) return null;
   return ref;
 }

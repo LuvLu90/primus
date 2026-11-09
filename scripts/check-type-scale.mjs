@@ -61,6 +61,8 @@ export function stripComments(code) {
       stop = Math.min(n, stop + 1);
     } else if (
       c === "/" &&
+      // JSX 自闭合标签 `<X a={b} />` 的斜杠不是正则开头
+      !(prev === "}" && next === ">") &&
       (prev === "" || "(,=:[!&|?{};+-*%~^".includes(prev) || /\breturn\s*$/.test(out.slice(-12)))
     ) {
       // 正则字面量：到未转义、不在字符类里的 / 为止（不跨行）

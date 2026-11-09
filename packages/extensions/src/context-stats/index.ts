@@ -118,13 +118,20 @@ export function collectContextStats(
 ): ContextStatsData {
   const prompt = ctx.getSystemPrompt?.() ?? "";
   const options = ctx.getSystemPromptOptions?.() ?? fallbackOptions ?? {};
-  // 记忆文件（AGENTS.md 等）：整段写进了系统提示词的才算
+  // 记忆文件（AGENTS.md 等）：系统提示词里有 Core 写入的整段文件块才算（与 agent-core system-prompt.ts
+  // renderProjectContext 的格式一致）；空文件也按块判断，扩展把它从提示词里去掉后不再列出
   const memory = (options.contextFiles ?? [])
-    .filter((f) => prompt.includes(f.content))
+    .filter((f) =>
+      prompt.includes(
+        `<project_instructions path="${f.path}">\n${f.content}\n</project_instructions>`,
+      ),
+    )
     .map((f) => f.path);
   // 技能：系统提示词 <available_skills> 里实际列出的条目（不给模型调用的不列；
-  // read / bash 都关闭时 Core 不列技能，项目文件里碰巧出现技能名也不算）
-  const listed = /<available_skills>([\s\S]*?)<\/available_skills>/.exec(prompt)?.[1] ?? "";
+  // read / bash 都关闭时 Core 不列技能，项目文件里碰巧出现技能名也不算）。
+  // Core 的技能段排在项目文件之后：取最后一段，项目文件里写的 <available_skills> 示例不算
+  const blocks = [...prompt.matchAll(/<available_skills>([\s\S]*?)<\/available_skills>/g)];
+  const listed = blocks.at(-1)?.[1] ?? "";
   const skills = (options.skills ?? [])
     .filter(
       (s) => !s.disableModelInvocation && listed.includes(`<name>${escapeXml(s.name)}</name>`),

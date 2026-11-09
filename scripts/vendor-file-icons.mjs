@@ -186,8 +186,13 @@ export function readIcon(pkgDir, source, iconName) {
   for (const k of Object.keys(root.attrs)) {
     if (ROOT_RENDER_ATTR.test(k)) throw new Error(`${iconName}: 不支持根元素属性 ${k}`);
   }
+  // viewBox：四个有限数值，宽高大于零（0 0 0 24、. 这类不渲染）
   const viewBox = root.attrs.viewBox;
-  if (!/^-?[\d.]+ -?[\d.]+ [\d.]+ [\d.]+$/.test(viewBox ?? ""))
+  const box = (viewBox ?? "")
+    .trim()
+    .split(/[\s,]+/)
+    .map(Number);
+  if (box.length !== 4 || !box.every(Number.isFinite) || box[2] <= 0 || box[3] <= 0)
     throw new Error(`${iconName}: viewBox 无效`);
   // 根元素的 fill 是子元素的默认填色（SVG 默认黑色：没写就当作必须显式填色）
   const nodes = normalize(root.children, iconName, root.attrs.fill);

@@ -122,6 +122,8 @@ describe("findIconUsageIssues", () => {
       "/>",
       '<Icon name={icon} className={cn(failed && "text-danger")} />',
       '<Icon name="x" size={compact ? "xs" : "sm"} />',
+      '<Icon name="x" size={compact2 ? "xs" : "sm"} />',
+      "<Icon name=\"x\" size='md' />",
     ].join("\n");
     expect(findIconUsageIssues(code)).toEqual([]);
   });
@@ -131,11 +133,17 @@ describe("findIconUsageIssues", () => {
       '<Icon name="x" size={compact ? 12 : "sm"} />',
       '<Icon name="x" size={compact ? "tiny" : "sm"} />',
       '<Icon name="x" size={s} />',
+      '<Icon name="x" size="tiny" />',
+      '<Icon name="x" size="24" />',
+      '<Icon name="x" size={compact2 ? .5 : "sm"} />',
     ].join("\n");
     expect(findIconUsageIssues(code).map((i) => [i.line, i.kind])).toEqual([
       [1, "图标尺寸"],
       [2, "图标尺寸"],
       [3, "图标尺寸"],
+      [4, "图标尺寸"],
+      [5, "图标尺寸"],
+      [6, "图标尺寸"],
     ]);
   });
 

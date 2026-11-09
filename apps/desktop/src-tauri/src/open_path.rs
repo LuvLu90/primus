@@ -94,7 +94,7 @@ pub enum OpenOutcome {
 pub(crate) struct CheckedPath {
     /// 交给系统打开的路径（展开 `~` 后的原路径；不用规范化结果，避免映射盘变成网络路径）
     pub(crate) path: PathBuf,
-    /// 是否是可执行或脚本类文件（自身或链接目标的扩展名）
+    /// 是否是可执行或脚本类文件（自身或链接目标的扩展名；Unix 上另含带执行权限的文件）
     pub(crate) risky: bool,
 }
 
@@ -111,6 +111,18 @@ pub(crate) fn is_risky(path: &Path) -> bool {
             && name.ends_with(ext)
             && name[..name.len() - ext.len()].ends_with('.')
     })
+}
+
+/// Unix：带执行权限的普通文件（无扩展名的脚本、程序）。默认打开程序可能直接运行它，改为在文件夹中显示。
+#[cfg(unix)]
+fn is_executable(target: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(target).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable(_target: &Path) -> bool {
+    false
 }
 
 /// 网址或其他协议（`http:`、`mailto:`、`ms-settings:`…）；Windows 盘符（`C:`）不算。
@@ -189,7 +201,7 @@ pub(crate) fn check_path_with_home(raw: &str, home: Option<&Path>) -> Result<Che
         }
         Err(e) => return Err(format!("无法访问 {}：{e}", path.display())),
     };
-    let risky = is_risky(&path) || is_risky(&target);
+    let risky = is_risky(&path) || is_risky(&target) || is_executable(&target);
     Ok(CheckedPath { path, risky })
 }
 
@@ -344,5 +356,25 @@ mod tests {
         let ok = check_path_with_home(link.to_str().unwrap(), None).unwrap();
         assert_eq!(ok.path, link);
         assert!(ok.risky);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executable_without_extension_is_risky() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = TempDir::new();
+        let script = tmp.0.join("deploy");
+        std::fs::write(&script, "#!/bin/sh\n").unwrap();
+        assert!(
+            !check_path_with_home(script.to_str().unwrap(), None)
+                .unwrap()
+                .risky
+        );
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(
+            check_path_with_home(script.to_str().unwrap(), None)
+                .unwrap()
+                .risky
+        );
     }
 }

@@ -595,7 +595,8 @@ html.window-effects.glass-clear body {
   .text-pulse,
   .shimmer-text,
   .step-in,
-  .think-spark > path {
+  /* :nth-child(n) 把优先级抬到与上面的逐个动画规则相同，后写的覆盖生效 */
+  .think-spark > path:nth-child(n) {
     animation: none;
   }
 }
@@ -717,7 +718,8 @@ html.window-effects.glass-clear body {
   background: color-mix(in srgb, var(--color-file-ref) 22%, transparent);
 }
 .md-file:focus-visible {
-  outline: none;
+  /* 透明轮廓：平时不可见，强制颜色（Windows 对比度主题）下 box-shadow 失效时由系统色显示焦点 */
+  outline: 2px solid transparent;
   box-shadow:
     inset 0 0 0 1px color-mix(in srgb, var(--color-file-ref) 40%, transparent),
     0 0 0 2px color-mix(in srgb, var(--color-file-ref) 45%, transparent);

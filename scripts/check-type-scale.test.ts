@@ -47,6 +47,7 @@ describe("findViolations", () => {
       '<span className="text-[#727274] text-[var(--x)] text-fg/80 text-black/[0.5]">',
       "// 以前是 text-[13px]",
       "/* leading-[22px] */",
+      "<Icon name={x} /> // 以前是 text-[13px]",
     ].join("\n");
     expect(findViolations(code)).toEqual([]);
   });

@@ -156,18 +156,22 @@ export function parseSvg(fragment) {
   return root.children;
 }
 
+/** 能确认覆盖整幅 24×24 画布的裁剪：只有一个无圆角、无变换的 0,0 起点矩形，clipPath 自身也不带变换等属性 */
 function isFullClip(defs, id) {
   const clip = defs
     .flatMap((d) => d.children)
     .find((c) => c.tag === "clipPath" && c.attrs.id === id);
   const rect = clip?.children[0];
+  if (clip?.children.length !== 1 || rect.tag !== "rect" || rect.children.length) return false;
+  if (Object.keys(clip.attrs).some((k) => k !== "id")) return false;
+  // 矩形上除宽高、0 起点与填色外的属性（rx / ry / transform…）都可能让裁剪小于画布
+  const zero = (v) => v === undefined || Number(v) === 0;
   return (
-    clip?.children.length === 1 &&
-    rect.tag === "rect" &&
     rect.attrs.width === "24" &&
     rect.attrs.height === "24" &&
-    !rect.attrs.x &&
-    !rect.attrs.y
+    zero(rect.attrs.x) &&
+    zero(rect.attrs.y) &&
+    Object.keys(rect.attrs).every((k) => ["width", "height", "x", "y", "fill"].includes(k))
   );
 }
 
