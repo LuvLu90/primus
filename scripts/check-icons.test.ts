@@ -121,8 +121,26 @@ describe("findIconUsageIssues", () => {
       '  className={cn("opacity-0 group-hover/step:opacity-100", open && "rotate-90")}',
       "/>",
       '<Icon name={icon} className={cn(failed && "text-danger")} />',
+      '<Icon name="x" size={compact ? "xs" : "sm"} />',
     ].join("\n");
     expect(findIconUsageIssues(code)).toEqual([]);
+  });
+
+  it("size 表达式里有非令牌或数值时仍报出", () => {
+    const code = [
+      '<Icon name="x" size={compact ? 12 : "sm"} />',
+      '<Icon name="x" size={compact ? "tiny" : "sm"} />',
+      '<Icon name="x" size={s} />',
+    ].join("\n");
+    expect(findIconUsageIssues(code).map((i) => [i.line, i.kind])).toEqual([
+      [1, "图标尺寸"],
+      [2, "图标尺寸"],
+      [3, "图标尺寸"],
+    ]);
+  });
+
+  it("字符串里的 // 不当注释：后面的违规照样报出", () => {
+    expect(findIconDataColors('a: ["/repo//cache", { fill: "#000" }]')).toHaveLength(2);
   });
 });
 

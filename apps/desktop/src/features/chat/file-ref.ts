@@ -200,9 +200,22 @@ const isAnchored = (p: string) =>
 export function fileRefFromHref(href: string): FileRef | null {
   let raw = href.trim();
   if (!raw || raw.startsWith("#") || raw.startsWith("//")) return null;
+  // 先按原文分出 #片段再解码：文件名里编码的 %23 解码成 # 后不能被当成片段
+  let hash: string | null = null;
+  const hashAt = raw.indexOf("#");
+  if (hashAt >= 0) {
+    hash = raw.slice(hashAt + 1);
+    raw = raw.slice(0, hashAt);
+  }
   const isFileUri = /^file:/i.test(raw);
   if (isFileUri) {
-    raw = safeDecode(raw.replace(/^file:(?:\/\/(?:localhost)?)?/i, ""));
+    // 只接受本机地址：file:///x、file://localhost/x、file:/x；file://server/share 是网络引用，不算
+    const m = /^file:(?:\/\/([^/\\]*))?(.*)$/is.exec(raw);
+    const authority = m?.[1] ?? "";
+    let rest = m?.[2] ?? "";
+    if (/^[A-Za-z]:$/.test(authority)) rest = authority + rest;
+    else if (authority && authority.toLowerCase() !== "localhost") return null;
+    raw = safeDecode(rest);
     // file:///C:/x → C:/x
     if (/^\/[A-Za-z]:[\\/]/.test(raw)) raw = raw.slice(1);
   } else {
@@ -215,11 +228,7 @@ export function fileRefFromHref(href: string): FileRef | null {
   }
   if (!plausibleChars(raw, isFileUri)) return null;
   let pos: Position = {};
-  const hashAt = raw.indexOf("#");
-  if (hashAt >= 0) {
-    pos = parseHashLines(raw.slice(hashAt + 1)) ?? {};
-    raw = raw.slice(0, hashAt);
-  }
+  if (hash !== null) pos = parseHashLines(safeDecode(hash)) ?? {};
   if (!pos.line) {
     const split = splitColonLines(raw);
     raw = split.path;

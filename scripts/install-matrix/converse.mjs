@@ -94,7 +94,12 @@ function setDefaultModel(dir, modelId) {
   const file = join(dir, "settings.json");
   let settings = {};
   if (existsSync(file)) {
-    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    let parsed;
+    try {
+      parsed = JSON.parse(readFileSync(file, "utf8"));
+    } catch (e) {
+      throw new Error(`无法解析 ${file}：${e instanceof Error ? e.message : e}`);
+    }
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) settings = parsed;
   }
   settings.defaultProvider = PROVIDER_ID;

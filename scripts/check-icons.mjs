@@ -7,6 +7,9 @@
 import { lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { stripComments } from "./check-type-scale.mjs";
+
+export { stripComments };
 
 /** 要扫描的目录（相对仓库根） */
 export const SCAN_DIRS = ["apps/desktop/src", "packages/ui"];
@@ -36,12 +39,6 @@ export const FORBIDDEN_PACKAGES = [
   "@mui/icons-material",
   "@fortawesome/",
 ];
-
-/** 去掉注释（块注释保留换行，行号不变），避免注释里的示例被误报 */
-export function stripComments(code) {
-  const blank = (m) => m.replace(/[^\n]/g, " ");
-  return code.replace(/\/\*[\s\S]*?\*\//g, blank).replace(/(^|[^:\\"'`])\/\/.*$/gm, "$1");
-}
 
 const lineOf = (code, index) => code.slice(0, index).split("\n").length;
 
@@ -83,6 +80,8 @@ export function findIconDataColors(code, { fileTokens = false } = {}) {
 /** 颜色类：允许的令牌色（继承文字颜色或设计令牌），其余（text-white、text-fg/75、text-[#…]）不允许 */
 const TOKEN_TEXT =
   /^text-(?:fg|muted|accent|danger|warning|success|select|surface|on-danger|inherit|current)$/;
+/** <Icon size> 的尺寸令牌（--spacing-icon-*） */
+const ICON_SIZES = new Set(["2xs", "xs", "sm", "md", "lg", "xl"]);
 const BAD_ICON_PROP = /^(?:fill|stroke|color|strokeWidth|opacity|style)$/;
 
 /** <Icon …> 上的透明度、任意颜色与旧式数值属性 */
@@ -95,8 +94,16 @@ export function findIconUsageIssues(code) {
     for (const p of attrs.matchAll(/(?<![\w-])([A-Za-z]+)=/g)) {
       if (BAD_ICON_PROP.test(p[1])) out.push({ line, kind: "图标属性", what: p[1] });
     }
-    if (/\bsize=\{/.test(attrs))
-      out.push({ line, kind: "图标尺寸", what: "size 只能是 2xs / xs / sm / md / lg / xl" });
+    // size 只能是尺寸令牌：size="sm"，或每个分支都是令牌字面量的表达式（size={compact ? "xs" : "sm"}）
+    for (const sz of attrs.matchAll(/\bsize=\{([^}]*)\}/g)) {
+      const literals = [...sz[1].matchAll(/["'`]([^"'`]*)["'`]/g)].map((l) => l[1]);
+      const tokensOnly =
+        literals.length > 0 &&
+        literals.every((l) => ICON_SIZES.has(l)) &&
+        !/\d/.test(sz[1].replace(/["'`][^"'`]*["'`]/g, ""));
+      if (!tokensOnly)
+        out.push({ line, kind: "图标尺寸", what: "size 只能是 2xs / xs / sm / md / lg / xl" });
+    }
     for (const c of attrs.matchAll(
       /(?<![\w-])(?:[\w-]+:)*((?:text|fill|stroke|opacity)-[^\s"'`}]+)/g,
     )) {

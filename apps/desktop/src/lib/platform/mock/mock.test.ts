@@ -680,6 +680,8 @@ describe("mock 打开文件", () => {
     const p = createMockPlatform();
     await expect(p.openPath("C:\\work\\a.ts")).resolves.toBe("opened");
     await expect(p.openPath("/home/me/run.sh")).resolves.toBe("revealed");
+    await expect(p.openPath("/home/me/tool.rb")).resolves.toBe("revealed");
+    await expect(p.openPath("C:\\work\\.exe")).resolves.toBe("revealed");
     await expect(p.openPath("src/a.ts")).rejects.toThrow("完整路径");
     await expect(p.openPath("https://example.com")).rejects.toThrow("网址");
     await expect(p.openPath("\\\\srv\\share\\a.ts")).rejects.toThrow("网络路径");

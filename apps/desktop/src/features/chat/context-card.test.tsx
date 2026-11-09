@@ -55,6 +55,13 @@ describe("上下文卡片", () => {
     expect(button.querySelector("svg")).toBeTruthy();
   });
 
+  it("Core 没给 percent 时按钮与卡片一样按 tokens / contextWindow 计算", () => {
+    render(
+      <ContextButton {...base} usage={{ tokens: 50_000, contextWindow: 200_000, percent: null }} />,
+    );
+    expect(screen.getByRole("button", { name: "上下文 25%" })).toBeTruthy();
+  });
+
   it("清单未到达前：只有已用与可用空间（Core 的真实数值）", async () => {
     const onOpen = vi.fn();
     render(

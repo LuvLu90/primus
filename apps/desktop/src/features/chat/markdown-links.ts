@@ -53,9 +53,12 @@ function sameTarget(label: string, ref: FileRef): boolean {
 
 function transform(children: Token[], TokenCtor: StateCore["Token"]): Token[] {
   const out: Token[] = [];
+  // 外链文字里的行内代码保持原样，不变成嵌在链接里的文件按钮（点它会绕过外链确认）
+  let inLink = false;
   for (let i = 0; i < children.length; i++) {
     const tok = children[i] as Token;
-    if (tok.type === "code_inline") {
+    if (tok.type === "link_close") inLink = false;
+    if (tok.type === "code_inline" && !inLink) {
       const ref = fileRefFromCode(tok.content);
       if (ref) {
         const t = new TokenCtor("file_ref", "", 0);
@@ -84,6 +87,7 @@ function transform(children: Token[], TokenCtor: StateCore["Token"]): Token[] {
         tok.attrSet("class", "md-link");
         (children[close] as Token).meta = { external: true };
       }
+      inLink = true;
     }
     out.push(tok);
   }

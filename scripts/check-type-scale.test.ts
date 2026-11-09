@@ -50,6 +50,21 @@ describe("findViolations", () => {
     ].join("\n");
     expect(findViolations(code)).toEqual([]);
   });
+
+  it("字符串、模板字符串与正则里的 // 不当注释，JSX 文字里的网址也不吞后面的内容", () => {
+    const code = [
+      'const p = "/repo//cache"; const c = "text-[13px]";',
+      "const t = `a//b`; const d = 'leading-[22px]';",
+      'const r = /\\/\\//; const e = "text-[12px]"; // text-[99px]',
+      '<a>https://x.dev</a><b className="text-[11px]" />',
+    ].join("\n");
+    expect(findViolations(code).map((v) => [v.line, v.what])).toEqual([
+      [1, "text-[13px]"],
+      [2, "leading-[22px]"],
+      [3, "text-[12px]"],
+      [4, "text-[11px]"],
+    ]);
+  });
 });
 
 describe("run", () => {

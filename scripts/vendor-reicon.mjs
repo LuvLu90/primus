@@ -130,7 +130,15 @@ export function parseSvg(fragment) {
   const root = { tag: "#root", attrs: {}, children: [] };
   const stack = [root];
   const re = /<(\/?)([a-zA-Z]+)((?:\s+[\w:-]+="[^"]*")*)\s*(\/?)>/g;
+  // 标签之间只允许空白与注释：其他内容（如单引号属性的元素）说明没解析到，不能静默跳过
+  const checkGap = (gap) => {
+    const rest = gap.replace(/<!--[\s\S]*?-->/g, "").trim();
+    if (rest) throw new Error(`无法解析的 SVG 内容：${rest.slice(0, 80)}`);
+  };
+  let last = 0;
   for (const m of fragment.matchAll(re)) {
+    checkGap(fragment.slice(last, m.index));
+    last = m.index + m[0].length;
     const [, closing, tag, rawAttrs, selfClosing] = m;
     if (closing) {
       const top = stack.pop();
@@ -143,6 +151,7 @@ export function parseSvg(fragment) {
     stack.at(-1).children.push(node);
     if (!selfClosing) stack.push(node);
   }
+  checkGap(fragment.slice(last));
   if (stack.length !== 1) throw new Error("SVG 片段未闭合");
   return root.children;
 }

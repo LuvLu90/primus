@@ -74,6 +74,20 @@ describe("链接地址识别为文件引用", () => {
     expect(fileRefFromHref("file:///home/me/my%20file.ts")?.path).toBe("/home/me/my file.ts");
   });
 
+  it("先分出 #片段再解码：编码的 %23 属于文件名", () => {
+    expect(fileRefFromHref("file:///home/me/report%23final.pdf")?.path).toBe(
+      "/home/me/report#final.pdf",
+    );
+    expect(fileRefFromHref("docs/a%23b.md#L4")).toMatchObject({ path: "docs/a#b.md", line: 4 });
+  });
+
+  it("file:// 只接受本机地址，带主机名的网络引用不算", () => {
+    expect(fileRefFromHref("file://server/share/report.pdf")).toBeNull();
+    expect(fileRefFromCode("file://server/share/report.pdf")).toBeNull();
+    expect(fileRefFromHref("file://localhost/home/me/a.ts")?.path).toBe("/home/me/a.ts");
+    expect(fileRefFromHref("file://C:/Users/me/a.ts")?.path).toBe("C:/Users/me/a.ts");
+  });
+
   it("文件夹以斜杠结尾", () => {
     expect(fileRefFromHref("src/components/")?.isDir).toBe(true);
     expect(fileRefFromHref("src/a.ts")?.isDir).toBe(false);

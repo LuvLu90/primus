@@ -202,14 +202,34 @@ export function MessageIndex({
   };
 
   const onPointerEnter = (e: PointerEvent<HTMLDivElement>) => {
-    // 只在进入时读一次布局，之后的移动只做减法
+    // 每次都重新读刻度条位置：指针停留期间窗口或聊天区高度可能变化（刻度条垂直居中，会跟着移动）
     pointer.current.railTop = e.currentTarget.getBoundingClientRect().top;
     e.currentTarget.setAttribute("data-scrub", "");
     track(e.clientY - pointer.current.railTop);
   };
-  const onPointerMove = (e: PointerEvent<HTMLDivElement>) => {
-    if (!e.currentTarget.hasAttribute("data-scrub")) onPointerEnter(e);
-    else track(e.clientY - pointer.current.railTop);
+  const onPointerMove = onPointerEnter;
+
+  /** 指针离开：键盘焦点（focus-visible）仍在某个刻度上时保留它的放大与预览，否则回落 */
+  const onPointerLeave = () => {
+    const rail = railRef.current;
+    const focused = document.activeElement;
+    let keyboard = false;
+    try {
+      keyboard = !!focused && focused.matches(":focus-visible");
+    } catch {
+      keyboard = false;
+    }
+    const at =
+      rail && keyboard
+        ? Array.from(rail.querySelectorAll("button[data-tick]")).indexOf(focused as Element)
+        : -1;
+    if (at < 0) {
+      release();
+      return;
+    }
+    rail?.removeAttribute("data-scrub");
+    clearTimeout(hideTimer.current);
+    track(RAIL_PAD + TICK_PITCH * (at + 0.5));
   };
 
   // 键盘：Tab 进入后上下方向键 / Home / End 在刻度间移动，聚焦的刻度同样有“划过”的放大与预览
@@ -248,7 +268,7 @@ export function MessageIndex({
         ref={railRef}
         onPointerEnter={onPointerEnter}
         onPointerMove={onPointerMove}
-        onPointerLeave={release}
+        onPointerLeave={onPointerLeave}
         onKeyDown={onKeyDown}
         className="index-rail pointer-events-auto relative flex flex-col py-1"
       >
@@ -286,7 +306,7 @@ export function MessageIndex({
           <div
             role="tooltip"
             onMouseEnter={() => clearTimeout(hideTimer.current)}
-            onMouseLeave={release}
+            onMouseLeave={onPointerLeave}
             className="index-pop pointer-events-auto w-72 rounded-2xl bg-surface/95 px-3.5 py-2.5 shadow-[0_8px_30px_-8px_rgb(0_0_0/0.18)] ring-1 ring-border backdrop-blur-md"
             style={{ translate: "0 -50%" }}
           >

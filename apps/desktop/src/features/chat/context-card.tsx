@@ -78,9 +78,10 @@ export interface ContextCardProps {
 }
 
 export function ContextButton(props: ContextCardProps) {
-  const { usage } = props;
-  const known = usage?.percent != null && usage.tokens != null;
-  const percent = known ? Math.min(100, Math.max(0, usage?.percent ?? 0)) : 0;
+  // 与卡片共用 summarizeContext：Core 没给 percent 时按 tokens / contextWindow 算，两处显示一致
+  const b = summarizeContext(props.usage);
+  const known = b.usedPercent !== null;
+  const percent = b.usedPercent ?? 0;
   const shown = known ? formatPercent(percent) : "—";
   const r = 5.5;
   const circ = 2 * Math.PI * r;

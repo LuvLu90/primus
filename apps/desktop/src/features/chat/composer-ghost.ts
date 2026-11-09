@@ -3,7 +3,7 @@
 import { cn } from "@/lib/utils";
 
 const base =
-  "flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-full text-xs outline-none transition-colors disabled:opacity-40";
+  "flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-full text-xs outline-hidden transition-colors disabled:opacity-40";
 
 const tones = {
   /** 默认：弱化文字色，悬停变正文色 */

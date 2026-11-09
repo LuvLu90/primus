@@ -118,6 +118,10 @@ export const PALETTE = {
   "#35495e": "vue-navy",
 };
 
+/** 根 <svg> 上会影响渲染、但生成结果不保留的属性 */
+const ROOT_RENDER_ATTR =
+  /^(?:opacity|fill-opacity|fill-rule|clip-rule|clip-path|mask|filter|transform|style|color|display|visibility|stroke(?:-[a-z]+)?)$/;
+
 const ALLOWED_TAGS = new Set(["path", "circle", "rect", "ellipse", "polygon", "g"]);
 const KEEP_ATTRS = new Set([
   "d",
@@ -178,6 +182,10 @@ export function readIcon(pkgDir, source, iconName) {
   if (!existsSync(file)) throw new Error(`Material Icon Theme 没有图标 ${source}（${file}）`);
   const [root, ...rest] = parseSvg(readFileSync(file, "utf8").replace(/<\?xml[^>]*>/, ""));
   if (root?.tag !== "svg" || rest.length) throw new Error(`${iconName}: 根元素不是单个 <svg>`);
+  // 根元素上的渲染属性（opacity、transform、style…）生成时不会保留，不能静默丢掉
+  for (const k of Object.keys(root.attrs)) {
+    if (ROOT_RENDER_ATTR.test(k)) throw new Error(`${iconName}: 不支持根元素属性 ${k}`);
+  }
   const viewBox = root.attrs.viewBox;
   if (!/^-?[\d.]+ -?[\d.]+ [\d.]+ [\d.]+$/.test(viewBox ?? ""))
     throw new Error(`${iconName}: viewBox 无效`);

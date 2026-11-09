@@ -98,6 +98,15 @@ export function isMcpTool(tool: StatsTool): boolean {
   );
 }
 
+/** 与 Core 列技能时的转义一致（agent-core skills.ts formatSkillsForPrompt） */
+const escapeXml = (s: string) =>
+  s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+
 const byName = (a: string, b: string) => a.localeCompare(b);
 
 /** 按当前会话列出上下文里已加载的内容：`ctx` 为命令上下文（系统提示词），`tools` 为扩展 API（工具列表） */
@@ -113,9 +122,13 @@ export function collectContextStats(
   const memory = (options.contextFiles ?? [])
     .filter((f) => prompt.includes(f.content))
     .map((f) => f.path);
-  // 技能：系统提示词里列出的（不给模型调用的不列）
+  // 技能：系统提示词 <available_skills> 里实际列出的条目（不给模型调用的不列；
+  // read / bash 都关闭时 Core 不列技能，项目文件里碰巧出现技能名也不算）
+  const listed = /<available_skills>([\s\S]*?)<\/available_skills>/.exec(prompt)?.[1] ?? "";
   const skills = (options.skills ?? [])
-    .filter((s) => !s.disableModelInvocation && prompt.includes(s.name))
+    .filter(
+      (s) => !s.disableModelInvocation && listed.includes(`<name>${escapeXml(s.name)}</name>`),
+    )
     .map((s) => s.name);
 
   const all = tools.getAllTools?.() ?? [];

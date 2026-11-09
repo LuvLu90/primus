@@ -92,6 +92,12 @@ describe("primus-context-stats 上下文清单", () => {
     ]);
   });
 
+  it("技能只认 <available_skills> 里列出的条目，提示词别处出现技能名不算", () => {
+    const prompt = `你是乾元。\n<project_context>\nAGENTS.md\n${AGENTS}\n用 pdf 导出</project_context>`;
+    const data = collectContextStats(ctx({ getSystemPrompt: () => prompt }), TOOLS);
+    expect(data.groups.find((g) => g.key === "skills")?.items).toEqual([]);
+  });
+
   it("统计调用过的工具：优先当前分支，退回全部记录；只看 assistant 的 toolCall；读取出错为空", () => {
     expect(countUsedTools({ ui: {}, sessionManager: { getEntries: () => ENTRIES } })).toHaveLength(
       3,

@@ -371,11 +371,20 @@ function ThoughtStep({ text }: { text: string }) {
   const [open, setOpen] = useState(true);
   const id = useId();
   const tailRef = useRef<HTMLDivElement>(null);
-  // 贴着最新内容
+  // 贴着最新内容：平滑揭示时 text 不变、显示的内容仍在逐帧变长，所以按内容尺寸变化滚到底
   // biome-ignore lint/correctness/useExhaustiveDependencies: 内容变长时（text）也要滚到底
   useLayoutEffect(() => {
     const el = tailRef.current;
-    if (open && el) el.scrollTop = el.scrollHeight;
+    if (!open || !el) return;
+    const stick = () => {
+      el.scrollTop = el.scrollHeight;
+    };
+    stick();
+    const content = el.firstElementChild;
+    if (!content || typeof ResizeObserver !== "function") return;
+    const observer = new ResizeObserver(stick);
+    observer.observe(content);
+    return () => observer.disconnect();
   }, [text, open]);
   return (
     <div>

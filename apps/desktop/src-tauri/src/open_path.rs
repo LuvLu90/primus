@@ -98,14 +98,16 @@ pub(crate) struct CheckedPath {
     pub(crate) risky: bool,
 }
 
-/// 文件名的扩展名是否在 [`RISKY_EXTENSIONS`] 中（大小写不敏感；末尾的点与空格按 Windows 规则忽略）。
+/// 文件名的扩展名是否在 [`RISKY_EXTENSIONS`] 中（大小写不敏感；末尾的点与空格按 Windows 规则忽略；
+/// 只有扩展名的 `.exe` 也算）。
 pub(crate) fn is_risky(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
         return false;
     };
     let name = name.trim_end_matches(['.', ' ']).to_ascii_lowercase();
+    // 只有扩展名的文件（`.exe`）同样会被系统按扩展名运行
     RISKY_EXTENSIONS.iter().any(|ext| {
-        name.len() > ext.len() + 1
+        name.len() > ext.len()
             && name.ends_with(ext)
             && name[..name.len() - ext.len()].ends_with('.')
     })
@@ -223,6 +225,8 @@ mod tests {
             "a.jnlp",
             "help.chm",
             "disk.iso",
+            ".exe",
+            ".BAT",
         ] {
             assert!(is_risky(Path::new(name)), "{name}");
         }
@@ -231,7 +235,6 @@ mod tests {
             "README.md",
             "data.json",
             "exe",
-            ".exe",
             "notes.txt",
             "photo.png",
             "x.jsx",

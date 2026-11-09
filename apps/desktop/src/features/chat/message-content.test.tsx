@@ -112,6 +112,19 @@ describe("回复中的文件引用与网页链接", () => {
     expect(screen.queryByRole("button")).toBeNull();
   });
 
+  it("外链文字里的行内代码不变成文件按钮，点击仍先确认外链", async () => {
+    const openPath = vi.fn(async () => "opened" as const);
+    const openExternal = vi.fn(async () => {});
+    setPlatformForTesting({ ...createMockPlatform(), openPath, openExternal });
+    render(<MarkdownText text="见 [`src/a.ts`](https://example.com/x)" streaming={false} />);
+    const link = screen.getByRole("link");
+    expect(link.querySelector("[data-file-ref]")).toBeNull();
+    fireEvent.click(link.querySelector("code") as HTMLElement);
+    expect(await screen.findByRole("button", { name: t.linkOpen })).not.toBeNull();
+    expect(openPath).not.toHaveBeenCalled();
+    expect(openExternal).not.toHaveBeenCalled();
+  });
+
   it("原型属性名当扩展名的链接也能渲染（通用文件图标）", () => {
     const html = renderMarkdown("[x](a.constructor) [y](b.__proto__)");
     expect(html).toContain('data-file-ref="a.constructor"');

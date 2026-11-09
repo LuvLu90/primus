@@ -28,10 +28,60 @@ const PATTERNS = [
   { re: /\b(?:fontSize|lineHeight)\s*:/g, kind: "内联字号/行高" },
 ];
 
-/** 去掉注释（块注释保留换行，行号不变），避免注释里的示例被误报 */
+/**
+ * 去掉注释（块注释保留换行，行号不变），避免注释里的示例被误报。
+ * 按源码语法逐字扫描：字符串、模板字符串与正则字面量里的 `//`、`/*` 不算注释（如 "/repo//cache"）；
+ * JSX 文字里的网址（`https://…`，`//` 前是冒号）也不算。check-icons.mjs 共用这一份。
+ */
 export function stripComments(code) {
-  const blank = (m) => m.replace(/[^\n]/g, " ");
-  return code.replace(/\/\*[\s\S]*?\*\//g, blank).replace(/(^|[^:\\])\/\/.*$/gm, "$1");
+  let out = "";
+  let i = 0;
+  // 上一个非空白字符：决定 `/` 是除号还是正则开头
+  let prev = "";
+  const n = code.length;
+  while (i < n) {
+    const c = code[i];
+    const next = code[i + 1];
+    if (c === "/" && next === "/" && prev !== ":") {
+      while (i < n && code[i] !== "\n") i++;
+      continue;
+    }
+    if (c === "/" && next === "*") {
+      const end = code.indexOf("*/", i + 2);
+      const stop = end < 0 ? n : end + 2;
+      out += code.slice(i, stop).replace(/[^\n]/g, " ");
+      i = stop;
+      continue;
+    }
+    let stop = i + 1;
+    if (c === '"' || c === "'" || c === "`") {
+      // 字符串：' " 到行尾为止（未闭合时不吞后面的行），模板字符串可跨行
+      while (stop < n && code[stop] !== c && (c === "`" || code[stop] !== "\n"))
+        stop += code[stop] === "\\" ? 2 : 1;
+      stop = Math.min(n, stop + 1);
+    } else if (
+      c === "/" &&
+      (prev === "" || "(,=:[!&|?{};+-*%~^".includes(prev) || /\breturn\s*$/.test(out.slice(-12)))
+    ) {
+      // 正则字面量：到未转义、不在字符类里的 / 为止（不跨行）
+      let inClass = false;
+      while (stop < n && code[stop] !== "\n") {
+        const ch = code[stop];
+        if (ch === "\\") stop += 1;
+        else if (ch === "[") inClass = true;
+        else if (ch === "]") inClass = false;
+        else if (ch === "/" && !inClass) break;
+        stop += 1;
+      }
+      stop = Math.min(n, stop + 1);
+    }
+    const chunk = code.slice(i, stop);
+    out += chunk;
+    const last = chunk.trimEnd();
+    if (last) prev = last[last.length - 1];
+    i = stop;
+  }
+  return out;
 }
 
 /** 返回一段代码中的违规位置 */

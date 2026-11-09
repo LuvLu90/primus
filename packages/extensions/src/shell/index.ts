@@ -6,8 +6,8 @@
 
 /** 命令工具只有 PowerShell 时追加到系统提示词末尾的写法要点 */
 export const POWERSHELL_PROMPT = `
-# 命令工具：PowerShell
-本机的命令工具是 PowerShell（可能是 Windows PowerShell 5.1），不是 bash。命令必须是 PowerShell 语法：
+# powershell 工具
+\`powershell\` 工具运行的是 PowerShell（可能是 Windows PowerShell 5.1），不是 bash。传给它的命令必须是 PowerShell 语法：
 - 串联命令用 \`;\`，不要用 \`&&\` / \`||\`（5.1 不支持）；需要“前一条成功才继续”时写 \`cmd1; if ($LASTEXITCODE -eq 0) { cmd2 }\`（cmdlet 用 \`$?\` 判断）。
 - 文件操作用 cmdlet：\`Get-ChildItem -Force\`、\`Remove-Item -Recurse -Force\`、\`New-Item -ItemType Directory -Force\`、\`Copy-Item\`、\`Move-Item\`；不要用 \`rm -rf\`、\`ls -la\`、\`mkdir -p\`、\`touch\`。
 - 环境变量写 \`$env:NAME\`，设置写 \`$env:NAME = "值"\`；路径用 Windows 形式（\`D:\\work\\x\`），不要用 \`/d/work/x\`。
