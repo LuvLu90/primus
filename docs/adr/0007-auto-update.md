@@ -20,7 +20,7 @@
 
 ### 更新源
 - 固定的 GitHub Release `update-feed`（标为 prerelease、不设 Latest，不触发 `v*` 发布）存放两个 Tauri 2 静态清单：`stable.json`、`beta.json`；地址 `https://github.com/skaduv/primus/releases/download/update-feed/<通道>.json`。
-- 清单由 `scripts/gen-update-manifest.mjs` 生成：`platforms` 含 `windows-x86_64-msi`、`windows-x86_64-nsis`、`windows-aarch64-msi`、`windows-aarch64-nsis`，`url` 指向本次版本 Release 的附件，`signature` 为同名 `.sig` 的内容，`notes` 取 Release 说明。正式版同时写 `stable.json` 与 `beta.json`，预发布只写 `beta.json`；现有清单版本更高的通道不覆盖（重建旧标签不回退，Beta 用户在正式版更高时也收到正式版），同一版本允许覆盖（清单尚未指向该标签时重跑发布）。发布作业先下载现有清单再比较，用 `--clobber` 上传。
+- 清单由 `scripts/gen-update-manifest.mjs` 生成：`platforms` 含 `windows-x86_64-msi`、`windows-x86_64-nsis`、`windows-aarch64-msi`、`windows-aarch64-nsis`，`url` 指向本次版本 Release 的附件，`signature` 为同名 `.sig` 的内容（`.sig` 由构建作业经 workflow artifact 交给发布作业，不作为 Release 附件），`notes` 取 Release 说明。正式版同时写 `stable.json` 与 `beta.json`，预发布只写 `beta.json`；现有清单版本更高的通道不覆盖（重建旧标签不回退，Beta 用户在正式版更高时也收到正式版），同一版本允许覆盖（清单尚未指向该标签时重跑发布）。发布作业先下载现有清单再比较，用 `--clobber` 上传。
 - 清单已指向某标签的安装包时，发布工作流拒绝原地重建该标签：`--clobber` 换掉安装包后、清单更新前（或中途失败后），客户端会用旧清单里的签名校验新安装包而拒绝更新。需要重新出包时升版本号发布新标签。
 - `build-msi.mjs` 在 `Primus.exe.build.json` 里记录编译时 `TAURI_SIGNING_PUBLIC_KEY` 的指纹；`--skip-tauri` 与 `build-nsis.mjs` 复用 exe 时，若这次要签 `.sig`，内置公钥必须与签名公钥一致（未内置、不一致或旧记录无法确认都拒绝复用），避免出现带签名却装上后无法更新的安装包。
 - `endpoints(channel)` 返回地址列表，插件按顺序尝试；暂不做国内镜像，以后在列表里追加即可。调试构建可用 `PRIMUS_UPDATE_ENDPOINT` 覆盖为本地地址。
