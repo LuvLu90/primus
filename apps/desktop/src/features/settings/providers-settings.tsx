@@ -147,10 +147,11 @@ export function ProviderSettings() {
   return (
     <section className="flex flex-col gap-2">
       <h3 className="px-1 text-xs font-medium text-muted">{t.title}</h3>
-      {loadError && !providers && (
+      {loadError && (
         <div role="alert" className="rounded-2xl px-4 py-3 text-sm ring-1 ring-danger/40">
           <p className="font-medium text-danger">{loadError}</p>
-          <p className="mt-1 text-muted">{t.loadFailedRecover}</p>
+          {/* 之前读到过列表时显示的是旧列表，只提示读取失败；从未读到时说明保存会重建配置 */}
+          {!providers && <p className="mt-1 text-muted">{t.loadFailedRecover}</p>}
         </div>
       )}
       {actionError && (
@@ -372,7 +373,7 @@ function ProviderDialog({
   };
   const hasSavedKey = provider?.hasKey ?? false;
 
-  /** 协议或地址变了：进行中的获取结果作废（不再并入列表），可以立即重新获取 */
+  /** 协议、地址或密钥变了：进行中的获取结果与错误作废（不再并入列表），可以立即重新获取 */
   const invalidateFetch = () => {
     fetchSeq.current++;
     setFetching(false);
@@ -550,7 +551,10 @@ function ProviderDialog({
                 id={ids.apiKey}
                 type="password"
                 value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
+                onChange={(e) => {
+                  invalidateFetch();
+                  setApiKey(e.target.value);
+                }}
                 placeholder={hasSavedKey ? td.apiKeyKeep : td.apiKeyPlaceholder}
                 spellCheck={false}
                 autoComplete="off"

@@ -115,6 +115,9 @@ describe("回复错误归类", () => {
     expect(classifyError("TLS handshake failed")).toEqual({ category: "connection" });
     expect(classifyError("SSL routines: wrong version number")).toEqual({ category: "connection" });
     expect(connectionReason("self-signed certificate in chain")).toBe("certificate");
+    expect(
+      classifyError('{"type":"invalid_request_error","message":"TLS client certs not allowed"}'),
+    ).toEqual({ category: "invalid" });
   });
 
   it("错误文本中的疑似密钥替换成 ***", () => {
@@ -124,6 +127,7 @@ describe("回复错误归类", () => {
     expect(out).not.toMatch(/abcdefgh12345678|secret-key-9999|zzzzzzzzzz/);
     expect(out).toContain("Bearer ***");
     expect(out).toContain("sk-ant-***");
+    expect(redactSecrets("credential: abcd-1234-efgh rejected")).toBe("credential: *** rejected");
     expect(redactSecrets("Connection error.")).toBe("Connection error.");
   });
 });

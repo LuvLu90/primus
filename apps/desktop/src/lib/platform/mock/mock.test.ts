@@ -85,6 +85,12 @@ describe("mock 平台", () => {
     await expect(
       platform.providerSave({ ...base, baseUrl: "https://y/v1?tenant=a" }),
     ).rejects.toThrow("查询参数");
+    await expect(
+      platform.providerSave({ ...base, baseUrl: "https://user:pw@y/v1" }),
+    ).rejects.toThrow("接口地址");
+    await expect(platform.providerSave({ ...base, baseUrl: "https://y:99999/v1" })).rejects.toThrow(
+      "接口地址",
+    );
 
     // 默认模型所在渠道停用后回退到其他模型，重新启用也不恢复旧默认值（回退结果已写回）
     const ioplyView = created.providers.find((p) => p.id === "ioply");

@@ -87,6 +87,8 @@ export function classifyError(errorMessage: string | undefined): ErrorInfo {
   if (RATE_LIMIT.test(text)) return { category: "rateLimit" };
   if (AUTH.test(text)) return { category: "auth" };
   if (SERVER.test(text)) return { category: "server" };
+  // 渠道明确说是无效请求时不因文本里提到 TLS 等字样归为连接错误
+  if (/invalid_request_error/i.test(text)) return { category: "invalid" };
   if (CONNECTION.test(text)) return { category: "connection", reason: connectionReason(text) };
   if (INVALID.test(text)) return { category: "invalid" };
   return { category: "unknown" };
@@ -100,7 +102,7 @@ const SECRET_PATTERNS: [RegExp, string][] = [
   [/\b(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi, "$1***"],
   [/\b(sk-(?:ant-|proj-)?)[A-Za-z0-9_-]{8,}/g, "$1***"],
   [
-    /((?:x-api-key|api[_-]?key|apikey|access[_-]?token|secret|password)["']?\s*[:=]\s*["']?)[^\s"',;}]{4,}/gi,
+    /((?:x-api-key|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|secret|password|credentials?)["']?\s*[:=]\s*["']?)[^\s"',;}]{4,}/gi,
     "$1***",
   ],
 ];

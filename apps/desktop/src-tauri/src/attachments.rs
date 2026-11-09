@@ -93,6 +93,10 @@ pub(crate) fn process(bytes: &[u8], max_edge: u32) -> Result<AttachmentImage, St
     reader.limits(limits);
     let decode_err = |e: image::ImageError| format!("图片无法解码：{e}");
     let mut decoder = reader.into_decoder().map_err(decode_err)?;
+    // from_decoder 按 total_bytes 一次分配输出缓冲，不经过 Limits：16 位、浮点等格式每像素字节更多，先按同一预算拦下
+    if decoder.total_bytes() > MAX_PIXELS * 4 {
+        return Err("图片尺寸过大".into());
+    }
     // 先按 EXIF 方向旋转 / 镜像：重新编码会丢掉 EXIF，不校正的话缩略图与发给模型的图片方向都会错
     let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
     let mut img = DynamicImage::from_decoder(decoder).map_err(decode_err)?;
