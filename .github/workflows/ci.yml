@@ -50,6 +50,8 @@ jobs:
       - run: pnpm lint
       - run: pnpm check:forbidden-sdk # 与 Windows 作业相同，尽早失败
       - run: pnpm check:tauri-imports
+      - run: pnpm check:type-scale
+      - run: pnpm check:icons
       - run: pnpm test
       - run: pnpm --filter @primus/desktop typecheck
       - run: pnpm --filter @primus/protocol typecheck # 协议类型与 Core 文档示例的编译期对照

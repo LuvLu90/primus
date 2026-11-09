@@ -1,7 +1,7 @@
 "use client";
 
-import { Download, X } from "lucide-react";
 import { useEffect } from "react";
+import { Icon } from "@/components/icons";
 import { GlassSurface } from "@/components/ui/glass-surface";
 import { strings } from "@/lib/strings";
 import { useRestartUpdate } from "./restart-update";
@@ -36,7 +36,7 @@ export function UpdatePrompt() {
       >
         <GlassSurface blur={24} radius={22} tint={0.8}>
           <div className="flex gap-3 p-4 text-fg">
-            <Download aria-hidden size={18} className="mt-0.5 shrink-0 text-muted" />
+            <Icon name="download" size="lg" className="text-muted" />
             <div className="min-w-0 flex-1">
               <p role="status" className="text-sm font-medium">
                 {text}
@@ -72,7 +72,7 @@ export function UpdatePrompt() {
               onClick={() => dismiss(pending.version)}
               className="-mt-1 -mr-1 inline-flex size-7 shrink-0 items-center justify-center rounded-full text-muted transition-colors hover:bg-hover hover:text-fg"
             >
-              <X aria-hidden size={14} />
+              <Icon name="x" size="sm" />
             </button>
           </div>
         </GlassSurface>

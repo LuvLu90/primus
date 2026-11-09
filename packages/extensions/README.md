@@ -9,7 +9,7 @@
 | `checkpoint` | `turn_start`、`tool_call`（write/edit） | 影子仓库快照、回滚、变更清单 | `primus:changes`；`/primus-restore`、`/primus-revert-file` |
 | `subagent` | 自定义工具 `subagent` | 子 Agent 进程管理与结果汇总 | `primus:subagents` |
 | `plan` | `setActiveTools`、自定义工具 `todo` | 计划模式、待办 | `primus:plan`、`primus:todo`；`/primus-plan` |
-| `shell` | `tool_call`（bash/powershell） | Windows 编码修正、环境变量清理 | — |
+| `shell` | `before_agent_start`；`tool_call`（bash/powershell） | 命令工具只有 PowerShell 时往系统提示词追加 PowerShell 写法要点（技术方案第 12.3 节）；Windows 编码修正、环境变量清理 | — |
 | `narrate` | `before_agent_start` | 往系统提示词末尾追加“进度说明”：调用工具前、每个阶段结束时用一两句话说明在做什么，最后一条回复写总结（桌面端按“工作过程 + 总结”展示） | — |
 
 数据格式：`{ "v": 1, "type": "<主题>", "data": { ... } }`，通过 `ctx.ui.setWidget("primus:<主题>", [JSON])` 发送。

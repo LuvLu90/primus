@@ -14,6 +14,7 @@ mod fs_watch;
 mod git;
 mod job;
 mod model_catalog;
+mod open_path;
 mod paths;
 mod platform;
 mod providers;
@@ -134,6 +135,8 @@ pub fn run() {
                 let model_config = app.state::<core_config::ModelConfigState>();
                 let seeded = model_config.seed_and_migrate();
                 model_config.refresh();
+                // 命令工具：Windows 上找得到 PowerShell 时优先用它（Git Bash 只作后备），在拉起 Core 之前写好
+                model_config.apply_shell_tools(platform::powershell_available());
                 if seeded {
                     // 内置渠道的模型列表在后台获取一次，不阻塞启动；失败时留空，设置页提示用户获取
                     let handle = app.handle().clone();
@@ -201,6 +204,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::window_set_bounds,
             commands::open_external,
+            commands::open_path,
+            commands::reveal_path,
             commands::workspace_open,
             commands::workspace_list,
             commands::workspace_inspect,

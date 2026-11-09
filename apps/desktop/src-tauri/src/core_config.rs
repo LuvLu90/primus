@@ -184,6 +184,61 @@ fn clear_default(core_dir: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Windows 上命令工具改用 PowerShell 时写进 `settings.json` 的 `defaultTools`（技术方案第 12.3 节）。
+/// 用 `+`/`-` 修饰项而不是完整清单：只把 `bash` 换成 `powershell`，Core 默认的其他工具与项目级设置照常叠加。
+pub(crate) const POWERSHELL_DEFAULT_TOOLS: [&str; 2] = ["-bash", "+powershell"];
+
+/// 按本机能否找到 PowerShell 调整设置中的 `defaultTools`，返回是否有改动：
+/// - 找得到且没有 `defaultTools`：写入 [`POWERSHELL_DEFAULT_TOOLS`]，模型的命令工具优先用 PowerShell；
+/// - 找不到且 `defaultTools` 正是本 App 写入的值：删掉，回到 Core 默认的 `bash`（Git Bash）；
+/// - 用户自己配置过的 `defaultTools`（其他任何值）一律不动。
+fn apply_shell_tools(settings: &mut Map<String, Value>, powershell: bool) -> bool {
+    let managed = json!(POWERSHELL_DEFAULT_TOOLS);
+    match settings.get("defaultTools") {
+        None if powershell => {
+            settings.insert("defaultTools".into(), managed);
+            true
+        }
+        Some(current) if !powershell && *current == managed => {
+            settings.remove("defaultTools");
+            true
+        }
+        _ => false,
+    }
+}
+
+/// 严格读取 `settings.json`：文件不存在时为空设置；存在但读不出或不是 JSON 对象时返回错误（不备份、不当作空设置），
+/// 避免把用户写坏的设置文件覆盖成只剩本 App 写入的几项。
+fn read_settings_strict(core_dir: &Path) -> io::Result<Map<String, Value>> {
+    let file = core_dir.join(SETTINGS_FILE);
+    let text = match fs::read_to_string(&file) {
+        Ok(text) => text,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Map::new()),
+        Err(e) => return Err(e),
+    };
+    match serde_json::from_str::<Value>(&text) {
+        Ok(Value::Object(map)) => Ok(map),
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{SETTINGS_FILE} 不是 JSON 对象"),
+        )),
+        Err(e) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{SETTINGS_FILE} 无法解析：{e}"),
+        )),
+    }
+}
+
+/// 把命令工具的选择写进 `settings.json`（见 [`apply_shell_tools`]），保留其他设置项。只影响之后拉起的 Core 进程。
+/// `settings.json` 存在但无法解析时不写入并返回错误（由调用方记日志），不覆盖用户的文件。
+pub(crate) fn set_shell_tools(core_dir: &Path, powershell: bool) -> io::Result<bool> {
+    let mut settings = read_settings_strict(core_dir)?;
+    if !apply_shell_tools(&mut settings, powershell) {
+        return Ok(false);
+    }
+    write_settings(core_dir, &settings)
+}
+
 /// 应用渠道配置：写 `models.json`，默认模型失效时改为第一个可用模型（没有时清除）。返回可用模型。
 pub(crate) fn apply(
     store: &ProviderStore,
@@ -429,6 +484,15 @@ impl ModelConfigState {
             self.regenerate(&mut inner, store);
         }
         self.notify()
+    }
+
+    /// 启动时按本机能否找到 PowerShell 选择命令工具（第 12.3 节）。与默认模型的写入共用一把锁，避免并发改写
+    /// `settings.json`。失败只记日志，Core 照常使用默认的 `bash`。
+    pub(crate) fn apply_shell_tools(&self, powershell: bool) {
+        let _inner = self.lock();
+        if let Err(e) = set_shell_tools(&self.core_dir, powershell) {
+            eprintln!("[core_config] 跳过命令工具设置（未写入 settings.json）：{e}");
+        }
     }
 
     pub(crate) fn info(&self) -> ModelsInfo {
@@ -683,6 +747,65 @@ impl ModelConfigState {
 mod tests {
     use super::*;
     use crate::providers::Input;
+
+    #[test]
+    fn shell_tools_prefer_powershell_and_keep_user_choice() {
+        let dir = temp_dir("shell-tools");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join(SETTINGS_FILE),
+            r#"{"defaultProvider":"p","defaultModel":"m"}"#,
+        )
+        .unwrap();
+        // 找得到 PowerShell：写入修饰项，保留其他设置；再次执行不重写
+        assert!(set_shell_tools(&dir, true).unwrap());
+        let settings = read_settings(&dir);
+        assert_eq!(settings["defaultTools"], json!(["-bash", "+powershell"]));
+        assert_eq!(settings["defaultProvider"], "p");
+        assert!(!set_shell_tools(&dir, true).unwrap());
+        // 找不到 PowerShell：删掉本 App 写入的值，回到 Core 默认的 bash
+        assert!(set_shell_tools(&dir, false).unwrap());
+        let settings = read_settings(&dir);
+        assert!(!settings.contains_key("defaultTools"));
+        assert_eq!(settings["defaultModel"], "m");
+        assert!(!set_shell_tools(&dir, false).unwrap());
+        // 用户自己配置的 defaultTools 不论能否找到 PowerShell 都不动
+        let mut user = Map::new();
+        user.insert(
+            "defaultTools".into(),
+            json!(["read", "bash", "edit", "write"]),
+        );
+        assert!(!apply_shell_tools(&mut user, true));
+        assert!(!apply_shell_tools(&mut user, false));
+        assert_eq!(
+            user["defaultTools"],
+            json!(["read", "bash", "edit", "write"])
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn shell_tools_skip_unparsable_settings() {
+        let dir = temp_dir("shell-tools-broken");
+        fs::create_dir_all(&dir).unwrap();
+        // 没有 settings.json：正常写入
+        assert!(set_shell_tools(&dir, true).unwrap());
+        assert_eq!(
+            read_settings(&dir)["defaultTools"],
+            json!(["-bash", "+powershell"])
+        );
+        // 存在但无法解析（或不是对象）：返回错误，文件原样保留，也不生成 .bak
+        for broken in ["{\"defaultModel\": \"m\",", "[1, 2]"] {
+            fs::write(dir.join(SETTINGS_FILE), broken).unwrap();
+            for powershell in [true, false] {
+                let err = set_shell_tools(&dir, powershell).unwrap_err();
+                assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+                assert_eq!(fs::read_to_string(dir.join(SETTINGS_FILE)).unwrap(), broken);
+            }
+        }
+        assert!(!dir.join(format!("{SETTINGS_FILE}.bak")).exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     fn temp_dir(tag: &str) -> PathBuf {
         let dir =

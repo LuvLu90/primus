@@ -1,9 +1,9 @@
 "use client";
 
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Archive, ArchiveRestore, Ellipsis, Search, Trash2 } from "lucide-react";
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
+import { Icon } from "@/components/icons";
 import {
   GlassDialog,
   GlassDialogClose,
@@ -144,7 +144,7 @@ export function SessionList() {
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3">
       <label className="flex h-8 shrink-0 items-center gap-2 rounded-full bg-hover px-3 text-sm">
-        <Search aria-hidden size={14} className="text-muted" />
+        <Icon name="search" size="sm" className="text-muted" />
         <input
           type="search"
           value={query}
@@ -289,12 +289,17 @@ function SessionRow({
   const items = (
     <>
       <GlassPopoverItem
-        icon={session.archived ? <ArchiveRestore /> : <Archive />}
+        icon={<Icon name={session.archived ? "archive-restore" : "archive"} />}
         label={session.archived ? t.unarchive : t.archive}
         onSelect={onArchive}
       />
       <GlassPopoverSeparator />
-      <GlassPopoverItem icon={<Trash2 />} label={t.delete} destructive onSelect={onDelete} />
+      <GlassPopoverItem
+        icon={<Icon name="trash" />}
+        label={t.delete}
+        destructive
+        onSelect={onDelete}
+      />
     </>
   );
   return (
@@ -329,9 +334,9 @@ function SessionRow({
               className="size-1.5 shrink-0 rounded-full bg-accent"
             />
           )}
-          <span className="truncate text-[13px] leading-tight">{title}</span>
+          <span className="truncate text-sm leading-tight">{title}</span>
         </span>
-        <span className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted">
+        <span className="mt-0.5 flex items-center gap-1.5 text-2xs text-muted">
           <span>{relativeTime(session.updatedAt, now)}</span>
           {session.archived && <span>· {t.archived}</span>}
         </span>
@@ -344,7 +349,7 @@ function SessionRow({
             aria-label={`${t.moreActions}：${title}`}
             className="absolute right-1.5 flex size-6 items-center justify-center rounded-full text-muted opacity-0 outline-none hover:bg-hover focus-visible:opacity-100 group-hover:opacity-100 data-[state=open]:opacity-100"
           >
-            <Ellipsis aria-hidden size={14} />
+            <Icon name="more" size="sm" />
           </button>
         </GlassPopoverTrigger>
         <GlassPopoverContent side="right" align="start" sideOffset={6} tint={0.75} minWidth={160}>

@@ -5,24 +5,8 @@
 //   标题按类别 → 一句人话的解释与建议 → 操作（重试、检查模型渠道、检测连接）→ 元信息 → 可折叠的详细信息（可复制）。
 // 颜色只用设计令牌（danger / warning / success 及其透明度），浅色深色一致；动画只用 step-in 与 motion-safe，尊重“减少动态效果”。
 import type { AssistantMessage } from "@primus/protocol";
-import {
-  Activity,
-  Ban,
-  ChevronRight,
-  CircleAlert,
-  CircleCheck,
-  CircleStop,
-  CircleX,
-  Gauge,
-  KeyRound,
-  type LucideIcon,
-  RotateCcw,
-  RotateCw,
-  ServerCrash,
-  Settings2,
-  WifiOff,
-} from "lucide-react";
 import { type ReactNode, useEffect, useId, useState } from "react";
+import { Icon, type IconName } from "@/components/icons";
 import { getPlatform } from "@/lib/platform";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
@@ -40,14 +24,14 @@ import {
 
 const t = strings.chat.replyError;
 
-const ICONS: Record<ErrorCategory, LucideIcon> = {
-  connection: WifiOff,
-  auth: KeyRound,
-  rateLimit: Gauge,
-  server: ServerCrash,
-  invalid: Ban,
-  aborted: CircleStop,
-  unknown: CircleAlert,
+const ICONS: Record<ErrorCategory, IconName> = {
+  connection: "wifi-off",
+  auth: "key",
+  rateLimit: "gauge",
+  server: "server",
+  invalid: "ban",
+  aborted: "stop-circle",
+  unknown: "alert-circle",
 };
 
 /** 限流与中止是“等一等 / 自己停的”，用警示色；其余用危险色 */
@@ -64,7 +48,7 @@ export interface ErrorActions {
 }
 
 const buttonBase =
-  "inline-flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-[12px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-50";
+  "inline-flex h-7 items-center gap-1.5 rounded-lg px-2.5 text-xs font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-50";
 const primaryButton = cn(buttonBase, "bg-fg text-surface hover:bg-fg/85");
 const secondaryButton = cn(buttonBase, "text-fg ring-1 ring-border ring-inset hover:bg-hover");
 
@@ -72,9 +56,7 @@ function Meta({ label, children, mono }: { label: string; children: ReactNode; m
   return (
     <div className="flex min-w-0 items-baseline gap-1">
       <dt className="shrink-0">{label}</dt>
-      <dd
-        className={cn("min-w-0 truncate text-fg/80 tabular-nums", mono && "font-mono text-[11px]")}
-      >
+      <dd className={cn("min-w-0 truncate text-fg/80 tabular-nums", mono && "font-mono text-2xs")}>
         {children}
       </dd>
     </div>
@@ -117,7 +99,6 @@ export function ErrorCard({
 }) {
   const info = classifyError(message.errorMessage);
   const copy = t.categories[info.category];
-  const Icon = ICONS[info.category];
   const warning = WARNING.has(info.category);
   const [open, setOpen] = useState(false);
   const { probe, run } = useProbe(message.provider);
@@ -151,7 +132,7 @@ export function ErrorCard({
       aria-labelledby={titleId}
       data-category={info.category}
       className={cn(
-        "step-in flex flex-col gap-2.5 rounded-xl border px-3.5 py-3 text-[13px]",
+        "step-in flex flex-col gap-2.5 rounded-xl border px-3.5 py-3 text-sm",
         warning ? "border-warning/25 bg-warning/[0.06]" : "border-danger/25 bg-danger/[0.05]",
       )}
     >
@@ -163,7 +144,7 @@ export function ErrorCard({
             warning ? "bg-warning/15 text-warning" : "bg-danger/12 text-danger",
           )}
         >
-          <Icon size={13} strokeWidth={2.2} />
+          <Icon name={ICONS[info.category]} size="sm" />
         </span>
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -171,11 +152,11 @@ export function ErrorCard({
               {strings.chat.replyFailed}：{copy.title}
             </h3>
             {info.reason && (
-              <span className="rounded-full bg-danger/10 px-1.5 py-px text-[11px] text-danger">
+              <span className="rounded-full bg-danger/10 px-1.5 py-px text-2xs text-danger">
                 {t.reasons[info.reason]}
               </span>
             )}
-            {retried && <span className="text-[11.5px] text-muted">{retried}</span>}
+            {retried && <span className="text-2xs text-muted">{retried}</span>}
           </div>
           <p className="text-fg/80 leading-relaxed">
             {copy.hint}
@@ -188,13 +169,13 @@ export function ErrorCard({
         <div className="flex flex-wrap items-center gap-1.5 pl-8.5">
           {actions?.onRetry && (
             <button type="button" className={primaryButton} onClick={actions.onRetry}>
-              <RotateCcw aria-hidden size={13} />
+              <Icon name="retry" size="sm" />
               {t.retry}
             </button>
           )}
           {settingsHelps && actions?.onOpenSettings && (
             <button type="button" className={secondaryButton} onClick={actions.onOpenSettings}>
-              <Settings2 aria-hidden size={13} />
+              <Icon name="tuning" size="sm" />
               {t.openSettings}
             </button>
           )}
@@ -205,9 +186,9 @@ export function ErrorCard({
               onClick={run}
               disabled={probe.state === "running"}
             >
-              <Activity
-                aria-hidden
-                size={13}
+              <Icon
+                name="activity"
+                size="sm"
                 className={cn(probe.state === "running" && "motion-safe:animate-pulse")}
               />
               {probe.state === "running" ? t.probing : t.probe}
@@ -219,16 +200,16 @@ export function ErrorCard({
       {(probe.state === "ok" || probe.state === "failed") && (
         <p
           role="status"
-          className="step-in flex items-start gap-1.5 pl-8.5 text-[12px] text-fg/80 leading-relaxed"
+          className="step-in flex items-start gap-1.5 pl-8.5 text-xs text-fg/80 leading-relaxed"
         >
           {probe.state === "ok" ? (
             <>
-              <CircleCheck aria-hidden size={13} className="mt-0.5 shrink-0 text-success" />
+              <Icon name="check-circle" size="sm" className="mt-0.5 text-success" />
               {fill(t.probeOk, { n: probe.count })}
             </>
           ) : (
             <>
-              <CircleX aria-hidden size={13} className="mt-0.5 shrink-0 text-danger" />
+              <Icon name="x-circle" size="sm" className="mt-0.5 text-danger" />
               {t.probeFailed}：{probe.reason}
             </>
           )}
@@ -237,7 +218,7 @@ export function ErrorCard({
 
       <div className="ml-8.5 flex flex-col gap-1.5 border-border border-t pt-2">
         <div className="flex items-center gap-2">
-          <dl className="flex min-w-0 flex-1 flex-wrap gap-x-3.5 gap-y-1 text-[11.5px] text-muted">
+          <dl className="flex min-w-0 flex-1 flex-wrap gap-x-3.5 gap-y-1 text-2xs text-muted">
             {message.provider && <Meta label={t.provider}>{providerName || message.provider}</Meta>}
             {message.model && (
               <Meta label={t.model} mono>
@@ -255,12 +236,12 @@ export function ErrorCard({
             aria-expanded={open}
             aria-controls={detailsId}
             onClick={() => setOpen((o) => !o)}
-            className="-mr-1 inline-flex shrink-0 items-center gap-0.5 rounded-md px-1 py-0.5 text-[11.5px] text-muted outline-none transition-colors hover:bg-hover hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40"
+            className="-mr-1 inline-flex shrink-0 items-center gap-0.5 rounded-md px-1 py-0.5 text-2xs text-muted outline-none transition-colors hover:bg-hover hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40"
           >
             {open ? t.hideDetails : t.details}
-            <ChevronRight
-              aria-hidden
-              size={13}
+            <Icon
+              name="chevron-right"
+              size="sm"
               className={cn(
                 "motion-safe:transition-[rotate] motion-safe:duration-200",
                 open && "rotate-90",
@@ -276,16 +257,16 @@ export function ErrorCard({
             <div className="absolute top-1 right-1">
               <CopyButton text={report} label={t.copyDetails} size="sm" />
             </div>
-            <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words px-2.5 py-2 pr-9 font-mono text-[11.5px] text-fg/85 leading-relaxed">
+            <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words px-2.5 py-2 pr-9 font-mono text-2xs text-fg/85 leading-relaxed">
               {message.errorMessage ? redactSecrets(message.errorMessage) : copy.title}
             </pre>
             {diagnostics.length > 0 && (
               <div className="border-tile-ring border-t px-2.5 py-2">
-                <p className="mb-1 text-[11px] text-muted">{t.diagnostics}</p>
+                <p className="mb-1 text-2xs text-muted">{t.diagnostics}</p>
                 <ul className="flex flex-col gap-1.5">
                   {diagnostics.map((d, i) => (
                     // biome-ignore lint/suspicious/noArrayIndexKey: 诊断记录随消息定稿，不会重排
-                    <li key={i} className="font-mono text-[11px] text-fg/80">
+                    <li key={i} className="font-mono text-2xs text-fg/80">
                       <span>{diagnosticLine(d)}</span>
                       {d.details && (
                         <pre className="mt-0.5 whitespace-pre-wrap break-words text-muted">
@@ -336,17 +317,13 @@ export function RetryNotice({
     <div
       role="status"
       aria-live="polite"
-      className="step-in flex items-center gap-2.5 rounded-xl border border-warning/25 bg-warning/[0.06] px-3.5 py-2.5 text-[13px]"
+      className="step-in flex items-center gap-2.5 rounded-xl border border-warning/25 bg-warning/[0.06] px-3.5 py-2.5 text-sm"
     >
       <span
         aria-hidden
         className="grid size-6 shrink-0 place-items-center rounded-full bg-warning/15 text-warning"
       >
-        <RotateCw
-          size={13}
-          strokeWidth={2.2}
-          className={cn(left === 0 && "motion-safe:animate-spin")}
-        />
+        <Icon name="refresh" size="sm" className={cn(left === 0 && "motion-safe:animate-spin")} />
       </span>
       <div className="flex min-w-0 flex-1 flex-col">
         <p className="text-fg">
@@ -357,7 +334,7 @@ export function RetryNotice({
           </span>
         </p>
         <p
-          className="truncate text-[12px] text-muted"
+          className="truncate text-xs text-muted"
           title={retry.errorMessage && redactSecrets(retry.errorMessage)}
         >
           {retry.errorMessage && redactSecrets(retry.errorMessage)}

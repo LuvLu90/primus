@@ -1,7 +1,7 @@
 "use client";
 
-import { FileDiff, FolderTree, ListChecks } from "lucide-react";
 import type { ReactNode } from "react";
+import { Icon, type IconName } from "@/components/icons";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/glass-tabs";
 import { strings } from "@/lib/strings";
 import { GlassPanel } from "./glass-panel";
@@ -9,10 +9,10 @@ import { seamBleedStyle, sidePanelSeamStyle, sideShellClass } from "./seam";
 
 const t = strings.inspectorTabs;
 
-function Empty({ icon, children }: { icon: ReactNode; children: ReactNode }) {
+function Empty({ icon, children }: { icon: IconName; children: ReactNode }) {
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center text-sm text-muted">
-      <span className="text-muted/70 [&_svg]:size-6">{icon}</span>
+      <Icon name={icon} size="xl" />
       <p>{children}</p>
     </div>
   );
@@ -31,13 +31,13 @@ export function InspectorPanel({ width }: { width: number }) {
               <TabsTrigger value="plan">{t.plan}</TabsTrigger>
             </TabsList>
             <TabsContent value="changes" className="flex flex-1 data-[state=inactive]:hidden">
-              <Empty icon={<FileDiff />}>{t.changesEmpty}</Empty>
+              <Empty icon="diff">{t.changesEmpty}</Empty>
             </TabsContent>
             <TabsContent value="files" className="flex flex-1 data-[state=inactive]:hidden">
-              <Empty icon={<FolderTree />}>{t.filesEmpty}</Empty>
+              <Empty icon="file-tree">{t.filesEmpty}</Empty>
             </TabsContent>
             <TabsContent value="plan" className="flex flex-1 data-[state=inactive]:hidden">
-              <Empty icon={<ListChecks />}>{t.planEmpty}</Empty>
+              <Empty icon="list-check">{t.planEmpty}</Empty>
             </TabsContent>
           </Tabs>
         </aside>

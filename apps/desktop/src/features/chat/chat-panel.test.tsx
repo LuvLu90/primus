@@ -587,20 +587,21 @@ describe("对话区（mock 事件流）", () => {
     fireEvent.click(button);
     const card = await screen.findByRole("dialog", { name: t.contextCard.title });
     expect(card.textContent).toContain(t.contextCard.usageTitle);
-    expect(card.textContent).toContain(t.contextCard.cacheRead);
+    expect(card.textContent).toContain(t.contextCard.cacheHit);
     await waitFor(() => expect(card.textContent).toMatch(/\$\d/));
-    // 分项在会话打开后已预取（先确认扩展命令已注册，再请求）；该命令不进入时间线
+    // 清单在会话打开后已预取（先确认扩展命令已注册，再请求）；该命令不进入时间线
     const statsPrompts = () =>
       records.filter((r) => r.type === "prompt" && r.message === "/primus-context-stats").length;
     expect(statsPrompts()).toBe(1);
     expect(records.filter((r) => r.type === "get_commands")).toHaveLength(1);
     expect(screen.queryByText("/primus-context-stats")).toBeNull();
-    // 打开卡片直接用缓存：不再现场请求分项或用量
+    // 打开卡片直接用缓存：不再现场请求清单或用量
     const statsCalls = records.filter((r) => r.type === "get_session_stats").length;
-    // 展开明细：分项（消息等）、可用空间与本会话调用过的工具；没有“延迟加载”
+    // 展开明细：已用、可用空间、已加载清单与本会话调用过的工具；没有估算值（“约”）与“延迟加载”
     fireEvent.click(screen.getByRole("button", { name: t.contextCard.expand }));
     expect(await screen.findByRole("list", { name: t.contextCard.groupsLabel })).toBeTruthy();
-    expect(screen.getByText(t.contextCard.categories.messages)).toBeTruthy();
+    expect(screen.getByText(t.contextCard.categories.systemTools)).toBeTruthy();
+    expect(card.textContent).not.toMatch(/约|估算/);
     expect(screen.getByText(t.contextCard.usedTools)).toBeTruthy();
     expect(screen.queryByText("延迟加载")).toBeNull();
     expect(screen.getByText(t.contextCard.free)).toBeTruthy();
@@ -690,7 +691,7 @@ describe("对话区（mock 事件流）", () => {
     const sent: string[] = [];
     const coreSend = platform.coreSend.bind(platform);
     vi.spyOn(platform, "coreSend").mockImplementation((key, record) => {
-      // 会话打开后预取上下文分项的只读命令与本用例无关
+      // 会话打开后预取上下文清单的只读命令与本用例无关
       const message = String((record as { message?: string }).message);
       if (record.type === "prompt" && message !== "/primus-context-stats") sent.push(message);
       return coreSend(key, record);
@@ -1021,8 +1022,12 @@ describe("对话区（mock 事件流）", () => {
       const scroller = screen
         .getByRole("heading", { name: t.welcomeTitle })
         .closest(".overflow-y-auto") as HTMLElement;
-      // 输入框 150px + 间距 16px
-      expect(scroller.style.paddingBottom).toBe("166px");
+      // 输入框 150px + 间距 20px
+      expect(scroller.style.paddingBottom).toBe("170px");
+      // 底部渐隐遮罩：输入框上沿之上 20px 内淡出，输入框后面不透出正文
+      expect(scroller.className).toContain("composer-fade");
+      expect(scroller.style.getPropertyValue("--composer-h")).toBe("150px");
+      expect(scroller.style.getPropertyValue("--composer-fade")).toBe("20px");
     } finally {
       spy.mockRestore();
     }

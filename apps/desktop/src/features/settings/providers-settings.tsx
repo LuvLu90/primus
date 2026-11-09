@@ -1,7 +1,7 @@
 "use client";
 
-import { ChevronDown, Pencil, Plus, Trash2 } from "lucide-react";
 import { type FormEvent, useEffect, useId, useRef, useState } from "react";
+import { Icon } from "@/components/icons";
 import {
   GlassDialog,
   GlassDialogClose,
@@ -192,7 +192,7 @@ export function ProviderSettings() {
                   onClick={() => setEditing(p)}
                   className={iconButtonClass}
                 >
-                  <Pencil aria-hidden size={15} />
+                  <Icon name="pen" />
                 </button>
                 <button
                   type="button"
@@ -202,7 +202,7 @@ export function ProviderSettings() {
                   onClick={() => setPendingDelete(p)}
                   className={cn(iconButtonClass, "hover:text-danger")}
                 >
-                  <Trash2 aria-hidden size={15} />
+                  <Icon name="trash" />
                 </button>
               </li>
             ))}
@@ -215,7 +215,7 @@ export function ProviderSettings() {
             disabled={busy !== null}
             className={buttonClass}
           >
-            <Plus aria-hidden size={14} />
+            <Icon name="plus" size="sm" />
             {t.add}
           </button>
         </div>
@@ -686,7 +686,7 @@ function ModelRow({
           <span className="min-w-0 flex-1">
             <span className="block truncate">{model.name}</span>
             {(model.name !== model.id || !model.listed) && (
-              <span className="block truncate text-[11px] text-muted">
+              <span className="block truncate text-2xs text-muted">
                 {model.name !== model.id ? model.id : null}
                 {model.name !== model.id && !model.listed ? " · " : null}
                 {!model.listed ? td.notListed : null}
@@ -703,9 +703,9 @@ function ModelRow({
             onClick={onToggleOpen}
             className={cn(iconButtonClass, "size-7")}
           >
-            <ChevronDown
-              aria-hidden
-              size={14}
+            <Icon
+              name="chevron-down"
+              size="sm"
               className={cn(
                 "transition-transform duration-200 motion-reduce:transition-none",
                 open && "rotate-180",
@@ -721,7 +721,7 @@ function ModelRow({
           className="mt-2 grid grid-cols-2 gap-x-3 gap-y-2 pl-6.5"
         >
           <div>
-            <label htmlFor={ctxId} className="mb-0.5 block text-[11px] text-muted">
+            <label htmlFor={ctxId} className="mb-0.5 block text-2xs text-muted">
               {td.contextWindow}
             </label>
             <input
@@ -734,13 +734,13 @@ function ModelRow({
               className={cn(inputClass, "px-2 py-1")}
             />
             {errors.includes("contextWindow") && (
-              <p id={`${ctxId}-error`} className="mt-0.5 text-[11px] text-danger">
+              <p id={`${ctxId}-error`} className="mt-0.5 text-2xs text-danger">
                 {td.errors.positiveInt}
               </p>
             )}
           </div>
           <div>
-            <label htmlFor={maxId} className="mb-0.5 block text-[11px] text-muted">
+            <label htmlFor={maxId} className="mb-0.5 block text-2xs text-muted">
               {td.maxTokens}
             </label>
             <input
@@ -753,7 +753,7 @@ function ModelRow({
               className={cn(inputClass, "px-2 py-1")}
             />
             {errors.includes("maxTokens") && (
-              <p id={`${maxId}-error`} className="mt-0.5 text-[11px] text-danger">
+              <p id={`${maxId}-error`} className="mt-0.5 text-2xs text-danger">
                 {td.errors.positiveInt}
               </p>
             )}

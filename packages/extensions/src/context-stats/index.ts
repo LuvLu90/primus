@@ -1,23 +1,16 @@
-// primus-context-stats：上下文卡片的分项统计（只读，不改动上下文；上下文管理仍只用 Core 内置机制，第 11 章）。
-// 前端在会话打开后发一次 `/primus-context-stats`，这里从 Core 公开的扩展 API 读取当前的系统提示词、
-// 工具定义、技能与记忆文件（AGENTS.md 等），按 Core 压缩时同样的方法（字符数 / 4）估算各分项 token，
-// 并从会话记录统计本会话实际调用过的工具，经 setWidget("primus:context-stats") 推给前端。
-// 之后每轮结束（agent_end）、切换模型（model_select）时主动重推，前端打开卡片时直接用缓存，不再现场请求。
-// “消息”与“可用空间”由前端用 Core 给出的总量推出。
+// primus-context-stats：上下文卡片的清单（只读，不改动上下文；上下文管理仍只用 Core 内置机制，第 11 章）。
+// 前端在会话打开后发一次 `/primus-context-stats`，这里从 Core 公开的扩展 API 读取当前声明给模型的工具、
+// 系统提示词里列出的技能与记忆文件（AGENTS.md 等），只给名称；并从会话记录统计本会话实际调用过的工具，
+// 经 setWidget("primus:context-stats") 推给前端。之后每轮结束（agent_end）、切换模型（model_select）时主动重推。
+// 不给任何 token 数：Core 不提供分项 token 统计，上下文的 token 数只以 Core 的 contextUsage 为准，不做估算。
 
 import {
   CONTEXT_STATS_COMMAND,
   CONTEXT_STATS_WIDGET,
-  type ContextStatsCategory,
   type ContextStatsData,
-  type ContextStatsItem,
+  type ContextStatsGroup,
   type ContextStatsUsedTool,
 } from "@primus/protocol";
-
-/** 与 Core 压缩时的估算一致：字符数 / 4，向上取整 */
-export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 4);
-}
 
 /** 扩展 API 中这里用到的部分（类型不从上游包导入，见 AGENTS.md 第 2.2 节） */
 export interface StatsTool {
@@ -105,20 +98,18 @@ export function isMcpTool(tool: StatsTool): boolean {
   );
 }
 
-/** 一个工具声明给模型的大小：名称、说明与参数 JSON Schema */
-function toolTokens(tool: StatsTool): number {
-  let schema = "";
-  try {
-    schema = JSON.stringify(tool.parameters ?? {}) ?? "";
-  } catch {
-    schema = "";
-  }
-  return estimateTokens(`${tool.name}${tool.description ?? ""}${schema}`);
-}
+/** 与 Core 列技能时的转义一致（agent-core skills.ts formatSkillsForPrompt） */
+const escapeXml = (s: string) =>
+  s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
 
-const byTokens = (a: ContextStatsItem, b: ContextStatsItem) => b.tokens - a.tokens;
+const byName = (a: string, b: string) => a.localeCompare(b);
 
-/** 按当前会话估算各分项：`ctx` 为命令上下文（系统提示词），`tools` 为扩展 API（工具列表） */
+/** 按当前会话列出上下文里已加载的内容：`ctx` 为命令上下文（系统提示词），`tools` 为扩展 API（工具列表） */
 export function collectContextStats(
   ctx: StatsContext,
   tools: StatsTools = {},
@@ -127,44 +118,43 @@ export function collectContextStats(
 ): ContextStatsData {
   const prompt = ctx.getSystemPrompt?.() ?? "";
   const options = ctx.getSystemPromptOptions?.() ?? fallbackOptions ?? {};
-  // 记忆文件（AGENTS.md 等）整段写进系统提示词
-  const memory = (options.contextFiles ?? [])
-    .filter((f) => prompt.includes(f.content))
-    .map((f) => ({ name: f.path, tokens: estimateTokens(`${f.path}\n${f.content}`) }));
-  // 技能：系统提示词里只列名称、说明与位置（模型按需再读技能文件）
+  // 记忆文件（AGENTS.md 等）：系统提示词里有 Core 写入的整段文件块才算（与 agent-core system-prompt.ts
+  // renderProjectContext 的格式一致）；空文件也按块判断，扩展把它从提示词里去掉后不再列出
+  const files = (options.contextFiles ?? []).map((f) => ({
+    path: f.path,
+    block: `<project_instructions path="${f.path}">\n${f.content}\n</project_instructions>`,
+  }));
+  const memory = files.filter((f) => prompt.includes(f.block)).map((f) => f.path);
+  // 技能：系统提示词 <available_skills> 里实际列出的条目（不给模型调用的不列；
+  // read / bash 都关闭时 Core 不列技能，项目文件里碰巧出现技能名也不算）。
+  // 先去掉项目文件块再找技能段：项目文件里写的 <available_skills> 示例不算；Core 的技能段排在最后
+  const outsideFiles = files.reduce((text, f) => text.split(f.block).join(""), prompt);
+  const blocks = [...outsideFiles.matchAll(/<available_skills>([\s\S]*?)<\/available_skills>/g)];
+  const listed = blocks.at(-1)?.[1] ?? "";
   const skills = (options.skills ?? [])
-    .filter((s) => !s.disableModelInvocation && prompt.includes(s.name))
-    .map((s) => ({
-      name: s.name,
-      tokens: estimateTokens(
-        `<skill><name>${s.name}</name><description>${s.description}</description><location>${s.filePath}</location></skill>`,
-      ),
-    }));
-  const sum = (items: ContextStatsItem[]) => items.reduce((n, i) => n + i.tokens, 0);
-  const systemPrompt = Math.max(0, estimateTokens(prompt) - sum(memory) - sum(skills));
+    .filter(
+      (s) => !s.disableModelInvocation && listed.includes(`<name>${escapeXml(s.name)}</name>`),
+    )
+    .map((s) => s.name);
 
   const all = tools.getAllTools?.() ?? [];
   const active = new Set(tools.getActiveTools?.() ?? all.map((t) => t.name));
   const declared = all.filter((t) => active.has(t.name) && t.exposure !== "hidden");
-  const toItem = (t: StatsTool) => ({ name: t.name, tokens: toolTokens(t) });
-  const mcp = declared.filter(isMcpTool).map(toItem);
-  const builtin = declared.filter((t) => !isMcpTool(t)).map(toItem);
+  const mcp = declared.filter(isMcpTool).map((t) => t.name);
+  const builtin = declared.filter((t) => !isMcpTool(t)).map((t) => t.name);
 
-  const category = (
-    key: ContextStatsCategory["key"],
-    items: ContextStatsItem[],
-    tokens = sum(items),
-  ): ContextStatsCategory => ({ key, tokens, items: [...items].sort(byTokens) });
+  const group = (key: ContextStatsGroup["key"], items: string[]): ContextStatsGroup => ({
+    key,
+    items: [...new Set(items)].sort(byName),
+  });
   return {
-    estimator: "chars/4",
-    categories: [
-      category("systemPrompt", [], systemPrompt),
-      category("systemTools", builtin),
-      category("mcpTools", mcp),
-      category("skills", skills),
-      category("memoryFiles", memory),
+    groups: [
+      group("systemTools", builtin),
+      group("mcpTools", mcp),
+      group("skills", skills),
+      group("memoryFiles", memory),
     ],
-    // 未启用的工具（延迟加载 / 只供代码模式 / 关闭）不在上下文里，不再列出；只给本会话实际调用过的
+    // 未启用的工具（延迟加载 / 只供代码模式 / 关闭）不在上下文里，不列出；只给本会话实际调用过的
     usedTools: countUsedTools(ctx),
   };
 }
@@ -183,7 +173,8 @@ export default function contextStats(pi: unknown): void {
     ]);
   };
   api.registerCommand(CONTEXT_STATS_COMMAND, {
-    description: "统计上下文窗口各分项的估算占用（上下文卡片用，只读）",
+    description:
+      "列出上下文里已加载的工具、技能、记忆文件与本会话调用过的工具（上下文卡片用，只读）",
     handler: async (_args, ctx) => {
       requested = true;
       try {

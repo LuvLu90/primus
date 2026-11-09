@@ -125,6 +125,8 @@ export function createTauriPlatform(): Platform {
     terminalClose: (terminalId) => call("terminalClose", { terminalId }),
 
     openExternal: (target) => call("openExternal", { target }),
+    openPath: (path) => call("openPath", { path }),
+    revealPath: (path) => call("revealPath", { path }),
     storageUsage: () => call("storageUsage"),
     storageClean: (category) => call("storageClean", { category }),
     diagnosticsExport: (options) => call("diagnosticsExport", { options }),

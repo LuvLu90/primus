@@ -375,8 +375,7 @@ describe("会话 store：流式消息重建（第 7.4 节）", () => {
         widgetLines: lines,
       }) as CoreRecord;
     const data = {
-      estimator: "chars/4",
-      categories: [{ key: "systemPrompt", tokens: 1200, items: [] }],
+      groups: [{ key: "skills", items: ["pdf"] }],
       usedTools: [{ name: "read", count: 2 }],
     };
     const s1 = applyChunks(initialSessionState, [
@@ -392,12 +391,21 @@ describe("会话 store：流式消息重建（第 7.4 节）", () => {
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
     expect(applyChunks(s1, [chunk([widget(undefined)])]).contextStats).toBeUndefined();
-    // 旧版扩展没有 usedTools：按空列表处理
-    const legacy = { estimator: "chars/4", categories: data.categories, deferredTools: ["lazy"] };
+    // 缺 usedTools：按空列表处理；只保留认识的字段
+    const partial = { groups: data.groups, extra: 1 };
     const s3 = applyChunks(initialSessionState, [
+      chunk([widget([JSON.stringify({ v: 1, type: "context-stats", data: partial })])]),
+    ]);
+    expect(s3.contextStats).toEqual({ groups: data.groups, usedTools: [] });
+    // 旧版扩展的分项估算（categories，没有 groups）：忽略，不显示估算值
+    const warn2 = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const legacy = { estimator: "chars/4", categories: [{ key: "skills", tokens: 1, items: [] }] };
+    const s4 = applyChunks(initialSessionState, [
       chunk([widget([JSON.stringify({ v: 1, type: "context-stats", data: legacy })])]),
     ]);
-    expect(s3.contextStats?.usedTools).toEqual([]);
+    expect(s4.contextStats).toBeUndefined();
+    expect(warn2).toHaveBeenCalled();
+    warn2.mockRestore();
   });
 });
 

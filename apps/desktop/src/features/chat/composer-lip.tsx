@@ -2,8 +2,8 @@
 
 // 输入框上沿后面的“唇条”：一条灰色小舌，显示当前 Git 分支与工作区（工作区选择从底栏移到这里，功能不变）。
 // 不是 Git 仓库时不显示分支；会话开始后工作区锁定，只显示名称。
-import { Folder, FolderOpen, GitBranch, X } from "lucide-react";
 import { useEffect, useState } from "react";
+import { Icon } from "@/components/icons";
 import { getPlatform } from "@/lib/platform";
 import type { GitBranch as Branch, WorkspaceInfo } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
@@ -46,14 +46,14 @@ export function ComposerLip({
   if (!workspace && locked) return null;
   const item = "lip-item-in flex min-w-0 items-center gap-1.5";
   return (
-    <div className="composer-lip mx-3.5 -mb-3 flex h-11 items-center gap-4 rounded-t-2xl bg-lip px-3.5 pb-3 text-[12px] text-muted shadow-[inset_0_0_0_1px_var(--color-border)]">
+    <div className="composer-lip mx-3.5 -mb-3 flex h-11 items-center gap-4 rounded-t-2xl bg-lip px-3.5 pb-3 text-xs text-muted shadow-[inset_0_0_0_1px_var(--color-border)]">
       {branch && (
         <span
           key={`${workspace?.path}:${branch.name}`}
           className={item}
           title={`${t.lip.branch}：${branch.name}${branch.detached ? `（${t.lip.detached}）` : ""}`}
         >
-          <GitBranch aria-hidden size={13} className="shrink-0" />
+          <Icon name="git-branch" size="sm" />
           <span className="max-w-40 truncate">{branch.name}</span>
         </span>
       )}
@@ -63,7 +63,7 @@ export function ComposerLip({
             type="button"
             className="flex items-center gap-1.5 outline-none transition-colors hover:text-fg focus-visible:text-fg data-[state=open]:text-fg"
           >
-            <FolderOpen aria-hidden size={13} />
+            <Icon name="folder-open" size="sm" />
             <span>{t.chooseFolder}</span>
           </button>
         </WorkspacePicker>
@@ -73,7 +73,7 @@ export function ComposerLip({
           className={item}
           title={`${t.currentWorkspace}：${workspace.path}\n${t.workspaceLocked}`}
         >
-          <Folder aria-hidden size={13} className="shrink-0" />
+          <Icon name="folder" size="sm" />
           <span className="max-w-48 truncate">{workspace.name}</span>
         </span>
       ) : (
@@ -86,10 +86,10 @@ export function ComposerLip({
               title={`${t.currentWorkspace}：${workspace.path}`}
               className="flex min-w-0 items-center gap-1.5 outline-none transition-colors hover:text-fg focus-visible:text-fg data-[state=open]:text-fg"
             >
-              <Folder
-                aria-hidden
-                size={13}
-                className="shrink-0 transition-opacity group-focus-within/ws:opacity-0 group-hover/ws:opacity-0"
+              <Icon
+                name="folder"
+                size="sm"
+                className="transition-opacity group-focus-within/ws:opacity-0 group-hover/ws:opacity-0"
               />
               <span className="max-w-48 truncate">{workspace.name}</span>
             </button>
@@ -99,9 +99,9 @@ export function ComposerLip({
             aria-label={`${t.clearWorkspace} ${workspace.name}`}
             title={t.clearWorkspace}
             onClick={onClear}
-            className="absolute -left-[3px] top-1/2 grid size-[19px] -translate-y-1/2 place-items-center rounded-full opacity-0 outline-none transition-opacity hover:bg-black/[0.07] hover:text-fg focus-visible:opacity-100 group-focus-within/ws:opacity-100 group-hover/ws:opacity-100 dark:hover:bg-white/[0.1]"
+            className="absolute -left-[3px] top-1/2 grid size-[19px] -translate-y-1/2 place-items-center rounded-full opacity-0 outline-none transition-opacity hover:bg-hover hover:text-fg focus-visible:opacity-100 group-focus-within/ws:opacity-100 group-hover/ws:opacity-100"
           >
-            <X aria-hidden size={12} strokeWidth={2} />
+            <Icon name="x" size="xs" />
           </button>
         </span>
       )}

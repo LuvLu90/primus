@@ -14,6 +14,8 @@
 | `generate-sbom.mjs` | `pnpm build:sbom`：用包管理器自带命令按锁文件生成 CycloneDX SBOM——`pnpm sbom`（工作区）→ `dist/sbom/primus-workspace.cdx.json`，`npm sbom`（agent-core）→ `dist/sbom/agent-core.cdx.json`；CI 上传为制品 `sbom-cyclonedx` |
 | `forbidden-sdk.json` | 被禁包名规则、`enforceCore`、导入图入口与 SBOM 配置 |
 | `check-tauri-imports.mjs` | 只允许 `src/lib/platform/tauri/` import `@tauri-apps/*` |
+| `check-icons.mjs` | 图标规范（技术方案第 16.1.1 节“图标”）：前端不得 import `lucide-react` 等图标库；`apps/desktop/src/components/icons/` 里的颜色只能是 `currentColor` / `none`；`<Icon>` 上不写透明度、任意颜色与数值 `size` / `strokeWidth` / `fill`（单测 `check-icons.test.ts`） |
+| `vendor-reicon.mjs` | 把 Reicon（MIT）的 Outline 图标收进 `apps/desktop/src/components/icons/icons.generated.ts`：读取手动下载解压的 `reicon-react` tarball（不引入依赖），按脚本内 `ICONS` 映射生成并校验颜色与线宽，之后用 Biome 格式化；来源与署名见该目录 `NOTICE.md` |
 | `check-naming.mjs` | `agent-core/` 之外不得出现上游项目原始名称（第 1.3 节） |
 | `cr-prereview.mjs` | 推送前 CodeRabbit CLI 本地预审（CLI 额度与 PR 审查额度分开）：`pnpm review:local` 手动审查当前分支相对 `origin/main` 合并基点的已提交改动（`PRIMUS_CR_BASE` 可改基准）；`pnpm hooks:install` 设 `core.hooksPath=.githooks` 启用 `pre-push` 自动预审。仅 critical / major 阻止推送；未装 CLI、限流或审查失败只提示不阻塞；跳过用 `PRIMUS_SKIP_CR=1 git push`（PowerShell：`$env:PRIMUS_SKIP_CR = "1"; git push; Remove-Item Env:PRIMUS_SKIP_CR`，推送后务必清除，否则后续推送都会跳过）或 `--no-verify`。待推送提交不是当前 HEAD 的引用无法审查，钩子拒绝推送；基准合并基点解析失败时停止预审、不改用其他分支。CLI 安装：PowerShell `irm https://cli.coderabbit.ai/install.ps1 \| iex`，再 `coderabbit auth login`（单测 `cr-prereview.test.ts`） |
 | `check-versions.mjs` | 工具链（含 `node-runtime.json`）与依赖版本与 `version-baseline.json`（技术方案第 2.4 节）一致，且全部精确锁定、无预发布版 |

@@ -2,7 +2,7 @@ import type { CoreBatch, CoreRecord } from "@primus/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { COMMANDS } from "../types";
 import { compareSemver, createMockPlatform } from "./index";
-import { chunk, promptScenario } from "./scenario";
+import { chunk, promptScenario, REFERENCES_TAG, TYPOGRAPHY_TAG } from "./scenario";
 
 const types = (records: CoreRecord[]) => records.map((r) => r.type);
 
@@ -600,6 +600,38 @@ describe("假事件流脚本", () => {
     expect(updates).toContain("toolcall_end");
     expect(updates.at(-1)).toBe("text_end");
   });
+
+  it("#排版：最终回答换成覆盖标题、粗体、行内代码、列表、表格与代码块的 Markdown 示例", () => {
+    const answerOf = (prompt: string) => {
+      const { messages } = promptScenario(prompt, 0);
+      const last = messages.at(-1) as { content: { type: string; text?: string }[] };
+      return last.content[0]?.text ?? "";
+    };
+    const sample = answerOf(`看看 ${TYPOGRAPHY_TAG}`);
+    for (const piece of ["## ", "### ", "**", "`", "- ", "| ", "```"])
+      expect(sample).toContain(piece);
+    expect(answerOf("你好")).toContain("你刚才说");
+  });
+
+  it("#引用：最终回答换成文件引用与网页链接混排的示例", () => {
+    const { messages } = promptScenario(`看看 ${REFERENCES_TAG}`, 0);
+    const last = messages.at(-1) as { content: { type: string; text?: string }[] };
+    const sample = last.content[0]?.text ?? "";
+    for (const piece of ["#L42-L58", ".tsx:120", "C:\\Program Files", "https://", "`console.log`"])
+      expect(sample).toContain(piece);
+    // 多种文件类型，用来检查彩色文件类型图标
+    for (const piece of [
+      "main.rs`",
+      ".py`",
+      ".docx`",
+      ".xlsx`",
+      ".pptx`",
+      ".zip`",
+      ".mp4`",
+      "`src/`",
+    ])
+      expect(sample).toContain(piece);
+  });
 });
 
 describe("mock 平台：输入框附件、分支与语音", () => {
@@ -645,5 +677,25 @@ describe("mock 平台：输入框附件、分支与语音", () => {
     const count = events.length;
     await vi.advanceTimersByTimeAsync(100);
     expect(events).toHaveLength(count);
+  });
+});
+
+describe("mock 打开文件", () => {
+  it("绝对路径打开、可执行文件改为在文件夹中显示、相对路径与网址拒绝", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const p = createMockPlatform();
+    await expect(p.openPath("C:\\work\\a.ts")).resolves.toBe("opened");
+    await expect(p.openPath("/home/me/run.sh")).resolves.toBe("revealed");
+    await expect(p.openPath("/home/me/tool.rb")).resolves.toBe("revealed");
+    await expect(p.openPath("C:\\work\\.exe")).resolves.toBe("revealed");
+    await expect(p.openPath("src/a.ts")).rejects.toThrow("完整路径");
+    await expect(p.openPath("https://example.com")).rejects.toThrow("网址");
+    await expect(p.openPath("\\\\srv\\share\\a.ts")).rejects.toThrow("网络路径");
+    await expect(p.openPath("/home/me/a\nb.ts")).rejects.toThrow("路径格式不正确");
+    await expect(p.revealPath(`/${"a".repeat(4096)}`)).rejects.toThrow("路径格式不正确");
+    await expect(p.revealPath("C:\\work\u0007.ts")).rejects.toThrow("路径格式不正确");
+    await expect(p.revealPath("~/a.ts")).resolves.toBeUndefined();
+    expect(info).toHaveBeenCalled();
+    info.mockRestore();
   });
 });

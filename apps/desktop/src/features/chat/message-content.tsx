@@ -4,6 +4,7 @@
 import MarkdownIt from "markdown-it";
 import { usePathname } from "next/navigation";
 import { type MouseEvent, memo, useEffect, useMemo, useRef, useState } from "react";
+import { Icon } from "@/components/icons";
 import {
   GlassDialog,
   GlassDialogClose,
@@ -14,20 +15,15 @@ import {
 import { getPlatform } from "@/lib/platform";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
+import { useFileRefActions } from "./file-ref-actions";
+import { linksPlugin } from "./markdown-links";
 
 // 不渲染原始 HTML（回复内容不可信，html: false 时所有 HTML 标签按文本转义）；链接自动识别
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true, typographer: false });
 // 不加载远程图片（技术方案：Markdown 禁用原始 HTML、不加载远程图片）：图片语法按普通文本显示
 md.disable("image");
-// 链接不在应用窗口内跳转：点击时由 MarkdownText 拦截，确认后交给系统浏览器（open_external）
-const defaultLinkOpen =
-  md.renderer.rules.link_open ??
-  ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
-md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
-  tokens[idx]?.attrSet("target", "_blank");
-  tokens[idx]?.attrSet("rel", "noreferrer noopener");
-  return defaultLinkOpen(tokens, idx, options, env, self);
-};
+// 文件引用胶囊、外部链接图标（见 markdown-links.ts）
+linksPlugin(md);
 
 export function renderMarkdown(text: string): string {
   return md.render(text);
@@ -127,8 +123,11 @@ export const MarkdownText = memo(function MarkdownText({
     setLinkError(null);
   }, [pathname]);
 
-  // 回复内容不可信：只处理 http/https 链接，打开前先确认（技术方案：点击外部链接前先确认）
+  const fileRefs = useFileRefActions();
+  // 文件引用：点击用系统默认程序打开，右键弹出操作菜单（file-ref-actions.tsx）。
+  // 回复内容不可信：链接只处理 http/https，打开前先确认（技术方案：点击外部链接前先确认）
   const onClick = (e: MouseEvent<HTMLDivElement>) => {
+    if (fileRefs.onClick(e)) return;
     const anchor = (e.target as HTMLElement).closest?.("a");
     if (!anchor) return;
     e.preventDefault();
@@ -151,22 +150,24 @@ export const MarkdownText = memo(function MarkdownText({
 
   return (
     <>
-      {/* biome-ignore lint/a11y/useKeyWithClickEvents lint/a11y/noStaticElementInteractions: 只拦截内部链接的点击，链接本身可用键盘聚焦并以 Enter 触发 click */}
+      {/* biome-ignore lint/a11y/useKeyWithClickEvents lint/a11y/noStaticElementInteractions: 只拦截内部链接与文件引用按钮的点击，它们本身可用键盘聚焦并以 Enter 触发 click */}
       <div
         className={cn("md", className)}
         onClick={onClick}
+        onContextMenu={fileRefs.onContextMenu}
         // biome-ignore lint/security/noDangerouslySetInnerHtml: markdown-it 关闭了 html，输入中的标签已转义
         dangerouslySetInnerHTML={{ __html: html }}
       />
+      {fileRefs.ui}
       {pendingLink !== null && (
         <GlassDialog open onOpenChange={(open) => !open && setPendingLink(null)}>
           <GlassDialogContent>
             <GlassDialogTitle>{strings.chat.linkTitle}</GlassDialogTitle>
             <GlassDialogDescription>{strings.chat.linkDescription}</GlassDialogDescription>
-            <p className="mt-3 max-h-32 overflow-y-auto break-all font-mono text-[12px] text-muted">
+            <p className="mt-3 max-h-32 overflow-y-auto break-all font-mono text-xs text-muted">
               {pendingLink}
             </p>
-            {linkError && <p className="mt-2 text-[13px] text-danger">{linkError}</p>}
+            {linkError && <p className="mt-2 text-sm text-danger">{linkError}</p>}
             <div className="mt-5 flex justify-end gap-2 text-sm">
               <GlassDialogClose asChild>
                 <button type="button" className="rounded-full bg-hover px-4 py-1.5">
@@ -188,19 +189,15 @@ export const MarkdownText = memo(function MarkdownText({
   );
 });
 
-/** 等待回复时的提示：流光文字 + 跳动的三个点 */
+/** 等待回复时的提示：与工作过程里“正在思考”同一个星光动画 + 呼吸文字 */
 export function ThinkingIndicator({ label = strings.chat.thinkingNow }: { label?: string }) {
   return (
     <div
       role="status"
       aria-live="polite"
-      className="msg-in flex items-center gap-2 self-start text-[13px]"
+      className="msg-in flex items-center gap-2 self-start text-sm text-muted"
     >
-      <span className="thinking-dots" aria-hidden>
-        <i />
-        <i />
-        <i />
-      </span>
+      <Icon name="thinking" size="sm" className="think-spark" />
       <span className="shimmer-text">{label}</span>
     </div>
   );

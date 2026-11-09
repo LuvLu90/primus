@@ -27,7 +27,7 @@ import {
 export const modeCommand = (mode: PermissionMode) => `/primus-mode ${mode}`;
 
 /**
- * 请求上下文分项统计的扩展命令（primus-context-stats，只读）。Core 在 prompt 路径的最前面执行已注册的扩展命令
+ * 请求上下文清单的扩展命令（primus-context-stats，只读）。Core 在 prompt 路径的最前面执行已注册的扩展命令
  * （AgentSession.prompt → _tryExecuteExtensionCommand，早于输入处理、排队与 _startRun），
  * 不写入会话历史、不调用模型；结果经 setWidget("primus:context-stats") 推送
  */
@@ -68,7 +68,7 @@ export interface ChatSession {
   /** 刷新上下文占用与本会话用量（get_session_stats）；会话未打开时什么也不做 */
   refreshStats: () => void;
   /**
-   * 请求上下文分项统计（`/primus-context-stats`）。先用 get_commands 确认扩展命令已注册（每个连接只查一次）：
+   * 请求上下文清单（`/primus-context-stats`）。先用 get_commands 确认扩展命令已注册（每个连接只查一次）：
    * 未注册时这段文字会被当作普通消息发给模型，因此不发送（卡片只显示已用与可用空间）。
    * 会话打开与重启后会自动预取一次，之后由扩展在每轮结束时主动重推
    */
@@ -336,7 +336,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
       optionsRef.current.onOpened?.({ sessionId: sessionId ?? null, workspace: path });
       // 会话已建立：打开后的设置失败不影响会话本身（提示错误；权限模式在下一次发送前会再同步）
       await applySession(client).catch(fail);
-      // 预取上下文分项：打开卡片时已有数据，不再等三次往返
+      // 预取上下文清单：打开卡片时已有数据，不再等三次往返
       requestContextStats();
     })().finally(() => {
       opening.current = null;
@@ -588,7 +588,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
       const ok = await c.client.resync();
       if (ok) await syncMode(c.client).catch(() => {});
       lock.current.restart = !ok;
-      // 新进程的扩展还没被请求过，不会主动推分项：重新预取一次
+      // 新进程的扩展还没被请求过，不会主动推清单：重新预取一次
       if (ok) requestContextStats();
       syncUnresponsive();
     } catch (e) {

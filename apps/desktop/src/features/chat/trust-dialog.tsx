@@ -89,9 +89,9 @@ export function TrustDialog({
       <GlassDialogContent>
         <GlassDialogTitle>{t.trustTitle}</GlassDialogTitle>
         <GlassDialogDescription>{t.trustDescription}</GlassDialogDescription>
-        <p className="mt-3 break-all font-mono text-[12px] text-muted">{workspace?.path}</p>
+        <p className="mt-3 break-all font-mono text-xs text-muted">{workspace?.path}</p>
 
-        <div className="scroll-thin mt-3 max-h-64 space-y-2 overflow-y-auto text-[13px]">
+        <div className="scroll-thin mt-3 max-h-64 space-y-2 overflow-y-auto text-sm">
           {!details && !error && <p className="text-muted">{t.trustLoading}</p>}
           {incomplete && <p className="text-warning">{t.trustIncomplete}</p>}
           {empty && !incomplete && <p className="text-muted">{t.trustNothing}</p>}
@@ -111,7 +111,7 @@ export function TrustDialog({
                   <span className="font-normal text-muted">{t.trustAgentsMdTruncated}</span>
                 )}
               </summary>
-              <pre className="mt-1.5 whitespace-pre-wrap break-words rounded-[10px] bg-hover p-2.5 font-mono text-[12px]">
+              <pre className="mt-1.5 whitespace-pre-wrap break-words rounded-[10px] bg-hover p-2.5 font-mono text-xs">
                 {details.agentsMd}
               </pre>
             </details>
@@ -119,7 +119,7 @@ export function TrustDialog({
         </div>
 
         {error && (
-          <p role="alert" className="mt-3 text-[12px] text-danger">
+          <p role="alert" className="mt-3 text-xs text-danger">
             {error}
           </p>
         )}

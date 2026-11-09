@@ -13,26 +13,20 @@ const base = {
 };
 
 const stats: ContextStatsData = {
-  estimator: "chars/4",
-  categories: [
-    { key: "systemPrompt", tokens: 3_000, items: [] },
-    {
-      key: "systemTools",
-      tokens: 12_000,
-      items: [
-        { name: "bash", tokens: 8_000 },
-        { name: "read", tokens: 4_000 },
-      ],
-    },
-    { key: "mcpTools", tokens: 5_000, items: [{ name: "mcp__docs__search", tokens: 5_000 }] },
-    { key: "skills", tokens: 1_000, items: [{ name: "pdf", tokens: 1_000 }] },
-    { key: "memoryFiles", tokens: 2_000, items: [{ name: "AGENTS.md", tokens: 2_000 }] },
+  groups: [
+    { key: "systemTools", items: ["bash", "read"] },
+    { key: "mcpTools", items: ["mcp__docs__search"] },
+    { key: "skills", items: ["pdf"] },
+    { key: "memoryFiles", items: [] },
   ],
   usedTools: [
     { name: "read", count: 4 },
     { name: "mcp__docs__search", count: 1 },
   ],
 };
+
+/** 卡片里不允许出现任何估算痕迹 */
+const ESTIMATE = /约|估算|字符数/;
 
 const sessionUsage = {
   tokens: { input: 100_000, output: 21_400, cacheRead: 300_000, cacheWrite: 100_000, total: 0 },
@@ -61,7 +55,14 @@ describe("上下文卡片", () => {
     expect(button.querySelector("svg")).toBeTruthy();
   });
 
-  it("统计未到达前：只有已用与可用空间，不标“约”", async () => {
+  it("Core 没给 percent 时按钮与卡片一样按 tokens / contextWindow 计算", () => {
+    render(
+      <ContextButton {...base} usage={{ tokens: 50_000, contextWindow: 200_000, percent: null }} />,
+    );
+    expect(screen.getByRole("button", { name: "上下文 25%" })).toBeTruthy();
+  });
+
+  it("清单未到达前：只有已用与可用空间（Core 的真实数值）", async () => {
     const onOpen = vi.fn();
     render(
       <ContextButton
@@ -82,11 +83,12 @@ describe("上下文卡片", () => {
     expect(within(legendRow(c.used)).getByText("41.2%")).toBeTruthy();
     expect(within(legendRow(c.free)).getByText("117.6k")).toBeTruthy();
     expect(within(legendRow(c.free)).getByText("58.8%")).toBeTruthy();
-    expect(card.textContent).not.toContain(c.approx);
+    expect(card.textContent).not.toMatch(ESTIMATE);
     expect(card.querySelectorAll("[data-segment]")).toHaveLength(1);
+    expect(screen.queryByRole("list", { name: c.groupsLabel })).toBeNull();
   });
 
-  it("有分项：按分项着色、标“约”、百分比一位小数；只列调用过的工具；分组可展开", async () => {
+  it("有清单：只有一段已用、没有分项 token 与估算；分组只列名称与条目数；只列调用过的工具", async () => {
     render(
       <ContextButton
         {...base}
@@ -97,29 +99,34 @@ describe("上下文卡片", () => {
     );
     const card = await openCard();
     expect(card.textContent).toContain("820k / 1M (82%)");
-    // 六个分项都非零：六段
-    expect(
-      [...card.querySelectorAll("[data-segment]")].map((s) => s.getAttribute("data-segment")),
-    ).toEqual(["messages", "systemTools", "mcpTools", "skills", "systemPrompt", "memoryFiles"]);
+    // 不画分项：只有一段已用（82% 起警示色）
+    const segments = card.querySelectorAll("[data-segment]");
+    expect([...segments].map((s) => s.getAttribute("data-segment"))).toEqual(["used"]);
+    expect(segments[0]?.className).toContain("bg-warning");
     fireEvent.click(screen.getByRole("button", { name: c.expand }));
-    const messages = legendRow(c.categories.messages);
-    expect(within(messages).getByText(`${c.approx} 797k`)).toBeTruthy();
-    expect(within(messages).getByText("79.7%")).toBeTruthy();
-    expect(within(legendRow(c.categories.systemPrompt)).getByText("0.3%")).toBeTruthy();
-    // 不再有“延迟加载”行
-    expect(card.textContent).not.toContain("延迟加载");
+    expect(within(legendRow(c.used)).getByText("820k")).toBeTruthy();
+    expect(within(legendRow(c.used)).getByText("82.0%")).toBeTruthy();
+    expect(within(legendRow(c.free)).getByText("180k")).toBeTruthy();
     expect(within(legendRow(c.free)).getByText("18.0%")).toBeTruthy();
-    // 分组：合计与条目数，展开后列出明细
+    expect(card.textContent).not.toMatch(ESTIMATE);
+    // 分组：条目数，展开后列出名称（没有 token 数）
     const groups = screen.getByRole("list", { name: c.groupsLabel });
     const tools = within(groups).getByRole("button", {
       name: `${c.categories.systemTools} ${c.itemCount.replace("{n}", "2")}`,
     });
     expect(tools.getAttribute("aria-expanded")).toBe("false");
-    expect(tools.textContent).toContain(`${c.approx} 12k`);
     fireEvent.click(tools);
     expect(tools.getAttribute("aria-expanded")).toBe("true");
-    expect(within(groups).getByText("bash")).toBeTruthy();
-    expect(within(groups).getByText(`${c.approx} 8k`)).toBeTruthy();
+    const toolList = within(groups).getByRole("list", { name: c.categories.systemTools });
+    expect([...toolList.querySelectorAll("li")].map((li) => li.textContent)).toEqual([
+      "bash",
+      "read",
+    ]);
+    // 空分组不可展开
+    const memory = within(groups).getByRole("button", {
+      name: `${c.categories.memoryFiles} ${c.itemCount.replace("{n}", "0")}`,
+    }) as HTMLButtonElement;
+    expect(memory.disabled).toBe(true);
     // 本会话调用过的工具：种类与总次数，展开后逐个列出次数
     const used = within(groups).getByRole("button", {
       name: `${c.usedTools} ${c.itemCount.replace("{n}", "2")}`,
@@ -146,7 +153,7 @@ describe("上下文卡片", () => {
     expect(screen.queryByText(c.usedTools)).toBeNull();
   });
 
-  it("缓存命中显示命中率（一位小数）；分母为 0 时为“—”", async () => {
+  it("本会话用量：输入、输出、费用、缓存读取、缓存写入与命中率（一位小数）；分母为 0 时为“—”", async () => {
     const { unmount } = render(
       <ContextButton
         {...base}
@@ -155,13 +162,16 @@ describe("上下文卡片", () => {
       />,
     );
     let card = await openCard();
-    const hit = (el: HTMLElement) =>
-      within(el).getByText(c.cacheRead).parentElement?.querySelector("dd")?.textContent;
+    const stat = (el: HTMLElement, label: string) =>
+      within(el).getByText(label).parentElement?.querySelector("dd")?.textContent;
+    const hit = (el: HTMLElement) => stat(el, c.cacheHit);
     // 300k / (100k + 300k + 100k)
     expect(hit(card)).toBe("60.0%");
-    expect(card.textContent).toContain("100k");
-    expect(card.textContent).toContain("21.4k");
-    expect(card.textContent).toContain("$1.84");
+    expect(stat(card, c.input)).toBe("100k");
+    expect(stat(card, c.output)).toBe("21.4k");
+    expect(stat(card, c.cacheRead)).toBe("300k");
+    expect(stat(card, c.cacheWrite)).toBe("100k");
+    expect(stat(card, c.cost)).toBe("$1.84");
     unmount();
     render(
       <ContextButton
@@ -177,7 +187,7 @@ describe("上下文卡片", () => {
     expect(hit(card)).toBe("—");
   });
 
-  it("压缩后占用未知：分项灰色、数值为“—”并提示；未打开会话时压缩与开关不可用", async () => {
+  it("压缩后占用未知：只提示、没有数值与进度段；未打开会话时压缩与开关不可用", async () => {
     render(
       <ContextButton
         {...base}
@@ -187,11 +197,13 @@ describe("上下文卡片", () => {
       />,
     );
     fireEvent.click(screen.getByRole("button", { name: "上下文 —" }));
-    fireEvent.click(await screen.findByRole("button", { name: c.expand }));
+    const card = await screen.findByRole("dialog", { name: c.title });
+    expect(card.textContent).toContain("— / 200k (—)");
+    expect(card.querySelectorAll("[data-segment]")).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: c.expand }));
     expect(screen.getByText(c.unknownAfterCompact)).toBeTruthy();
-    const messages = legendRow(c.categories.messages);
-    expect(within(messages).getAllByText("—")).toHaveLength(2);
-    expect(messages.querySelector("i")?.className).toContain("bg-track-strong");
+    expect(screen.queryByText(c.used)).toBeNull();
+    expect(screen.queryByText(c.free)).toBeNull();
     expect((screen.getByRole("button", { name: c.compactNow }) as HTMLButtonElement).disabled).toBe(
       true,
     );

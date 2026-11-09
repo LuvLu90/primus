@@ -1,17 +1,17 @@
 "use client";
 
-import { ScrollText, SquareTerminal } from "lucide-react";
 import type { ReactNode } from "react";
+import { Icon, type IconName } from "@/components/icons";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/glass-tabs";
 import { strings } from "@/lib/strings";
 import { GlassPanel } from "./glass-panel";
 
 const t = strings.drawerTabs;
 
-function Empty({ icon, children }: { icon: ReactNode; children: ReactNode }) {
+function Empty({ icon, children }: { icon: IconName; children: ReactNode }) {
   return (
     <div className="flex flex-1 items-center justify-center gap-2 px-6 text-center text-sm text-muted">
-      <span className="text-muted/70 [&_svg]:size-5">{icon}</span>
+      <Icon name={icon} size="lg" />
       <p>{children}</p>
     </div>
   );
@@ -31,10 +31,10 @@ export function BottomDrawer({ height }: { height: number }) {
             value="terminal"
             className="flex min-h-0 flex-1 data-[state=inactive]:hidden"
           >
-            <Empty icon={<SquareTerminal />}>{t.terminalEmpty}</Empty>
+            <Empty icon="terminal">{t.terminalEmpty}</Empty>
           </TabsContent>
           <TabsContent value="logs" className="flex min-h-0 flex-1 data-[state=inactive]:hidden">
-            <Empty icon={<ScrollText />}>{t.logsEmpty}</Empty>
+            <Empty icon="logs">{t.logsEmpty}</Empty>
           </TabsContent>
         </Tabs>
       </section>

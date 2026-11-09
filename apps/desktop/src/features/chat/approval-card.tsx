@@ -3,8 +3,8 @@
 // 扩展对话框（primus-guard 的操作确认等，RPC 的 extension_ui_request）：显示在输入框上方，回答后消失。
 // select 显示为一排按钮；confirm 为“允许 / 拒绝”；input、editor 为文本框。关闭按钮回 cancelled。
 import type { ExtensionUiDialogRequest, ExtensionUiResponse } from "@primus/protocol";
-import { ShieldQuestion, X } from "lucide-react";
 import { useState } from "react";
+import { Icon } from "@/components/icons";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 
@@ -24,16 +24,16 @@ export function ApprovalCard({
   const cancel = () =>
     onRespond({ type: "extension_ui_response", id: request.id, cancelled: true });
   const button =
-    "rounded-full px-3.5 py-1.5 text-[13px] font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/40";
+    "rounded-full px-3.5 py-1.5 text-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/40";
 
   return (
     <section
       role="alertdialog"
       aria-label={t.label}
-      className="mx-auto mb-2 flex w-full max-w-xl flex-col gap-2.5 rounded-[18px] bg-surface px-4 py-3 text-[13px] shadow-[0_8px_30px_-12px_rgb(0_0_0/0.35)] ring-1 ring-border"
+      className="mx-auto mb-2 flex w-full max-w-xl flex-col gap-2.5 rounded-[18px] bg-surface px-4 py-3 text-sm shadow-[0_8px_30px_-12px_rgb(0_0_0/0.35)] ring-1 ring-border"
     >
       <div className="flex items-start gap-2.5">
-        <ShieldQuestion aria-hidden size={16} className="mt-0.5 shrink-0 text-muted" />
+        <Icon name="shield-user" className="mt-0.5 text-muted" />
         <div className="min-w-0 flex-1">
           <p className="font-medium text-fg">{t.title}</p>
           {/* 长命令（多行脚本、heredoc）限高滚动，卡片不撑高遮住对话 */}
@@ -43,7 +43,7 @@ export function ApprovalCard({
             tabIndex={0}
             className="mt-0.5 max-h-[min(9rem,22vh)] overflow-y-auto overscroll-contain rounded-md pr-1 outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
           >
-            <p className="whitespace-pre-wrap break-words font-mono text-[12px] text-muted">
+            <p className="whitespace-pre-wrap break-words font-mono text-xs text-muted">
               {request.title}
             </p>
             {request.method === "confirm" && request.message && (
@@ -58,7 +58,7 @@ export function ApprovalCard({
           onClick={cancel}
           className="grid size-6 shrink-0 place-items-center rounded-full text-muted hover:bg-hover hover:text-fg"
         >
-          <X aria-hidden size={14} />
+          <Icon name="x" size="sm" />
         </button>
       </div>
       {request.method === "select" && (

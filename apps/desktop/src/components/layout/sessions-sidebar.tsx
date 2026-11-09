@@ -1,7 +1,7 @@
 "use client";
 
-import { BarChart3, Puzzle, Settings, SquarePen, UserRound } from "lucide-react";
 import { useRouter } from "next/navigation";
+import { Icon } from "@/components/icons";
 import { GlassButton } from "@/components/ui/glass-button";
 import {
   GlassPopover,
@@ -36,8 +36,8 @@ export function SessionsSidebar({ width }: { width: number }) {
             className={`w-full ${glassButtonClass}`}
             onClick={newTab}
           >
-            <SquarePen aria-hidden size={16} strokeWidth={2} />
-            <span className="text-[13px] font-medium">{t.newSession}</span>
+            <Icon name="compose" />
+            <span className="text-sm font-medium">{t.newSession}</span>
           </GlassButton>
 
           {/* 搜索 + 会话列表 */}
@@ -53,29 +53,29 @@ export function SessionsSidebar({ width }: { width: number }) {
                   aria-label={t.settings}
                   className={toolbarButtonClass}
                 >
-                  <Settings aria-hidden size={16} />
+                  <Icon name="settings" />
                 </GlassButton>
               </GlassPopoverTrigger>
               <GlassPopoverContent side="top" sideOffset={8} tint={0.75} minWidth={168}>
                 <GlassPopoverItem
-                  icon={<UserRound />}
+                  icon={<Icon name="user" />}
                   label={t.menuAccount}
                   sublabel={t.menuAccountHint}
                   disabled
                 />
                 <GlassPopoverItem
-                  icon={<BarChart3 />}
+                  icon={<Icon name="chart" />}
                   label={t.menuUsage}
                   onSelect={() => router.push("/settings/?group=usage")}
                 />
                 <GlassPopoverItem
-                  icon={<Puzzle />}
+                  icon={<Icon name="puzzle" />}
                   label={t.menuCapabilities}
                   onSelect={() => router.push("/capabilities/")}
                 />
                 <GlassPopoverSeparator />
                 <GlassPopoverItem
-                  icon={<Settings />}
+                  icon={<Icon name="settings" />}
                   label={t.menuSettings}
                   onSelect={() => router.push("/settings/")}
                 />

@@ -24,7 +24,7 @@ export function errorText(e: unknown, fallback: string): string {
 
 export function Badge({ children }: { children: string }) {
   return (
-    <span className="rounded-full bg-black/[0.05] px-2 py-0.5 text-[11px] text-muted dark:bg-white/[0.08]">
+    <span className="rounded-full bg-black/[0.05] px-2 py-0.5 text-2xs text-muted dark:bg-white/[0.08]">
       {children}
     </span>
   );

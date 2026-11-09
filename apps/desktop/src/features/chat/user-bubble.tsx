@@ -28,7 +28,7 @@ export const UserBubble = memo(function UserBubble({
     >
       <SentFiles files={files} />
       {message && (
-        <p className="whitespace-pre-wrap rounded-[18px] rounded-br-md bg-bubble px-3.5 py-2 leading-relaxed text-fg">
+        <p className="whitespace-pre-wrap rounded-[18px] rounded-br-md bg-bubble px-3.5 py-2 text-base text-fg">
           {message}
         </p>
       )}

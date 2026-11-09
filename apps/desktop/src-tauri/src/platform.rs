@@ -158,6 +158,47 @@ pub(crate) fn relaunch_script(handle: usize, exe: &Path, data_dir: Option<&Path>
     )
 }
 
+/// 能否找到 PowerShell（技术方案第 12.3 节）：与 Core 的 `powershell` 工具查找同样的位置——PATH 上的 `pwsh.exe`、
+/// `%ProgramFiles%\PowerShell\7\pwsh.exe`、PATH 上的 `powershell.exe`、`<系统目录>\WindowsPowerShell\v1.0\powershell.exe`，
+/// 任一存在即可（具体用哪个由 Core 决定）。只检查文件是否存在，不拉起进程，启动时调用不增加耗时。
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn powershell_available_in(
+    system_dir: &Path,
+    program_files: Option<&std::ffi::OsStr>,
+    path_var: Option<&std::ffi::OsStr>,
+) -> bool {
+    let mut candidates = vec![
+        system_dir
+            .join("WindowsPowerShell")
+            .join("v1.0")
+            .join("powershell.exe"),
+    ];
+    if let Some(dir) = program_files.filter(|d| !d.is_empty()) {
+        candidates.push(Path::new(dir).join("PowerShell").join("7").join("pwsh.exe"));
+    }
+    if let Some(path_var) = path_var {
+        for dir in std::env::split_paths(path_var).filter(|d| d.is_absolute()) {
+            candidates.push(dir.join("pwsh.exe"));
+            candidates.push(dir.join("powershell.exe"));
+        }
+    }
+    candidates.iter().any(|file| file.is_file())
+}
+
+/// 启动一个不需要结果的外部程序（打开文件、在文件夹中显示）：不继承标准输入输出，后台线程回收退出状态（避免僵尸进程）。
+fn spawn_detached(mut command: std::process::Command) -> io::Result<()> {
+    use std::process::Stdio;
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
 #[cfg(windows)]
 pub(crate) use windows_impl::*;
 
@@ -750,6 +791,15 @@ mod windows_impl {
         std::path::PathBuf::from(std::ffi::OsString::from_wide(&buf[..len]))
     }
 
+    /// 本机能否找到 PowerShell（见 [`super::powershell_available_in`]）。
+    pub(crate) fn powershell_available() -> bool {
+        super::powershell_available_in(
+            &system_dir(),
+            std::env::var_os("ProgramFiles").as_deref(),
+            std::env::var_os("PATH").as_deref(),
+        )
+    }
+
     /// 自动更新（ADR 0007）：经 UAC（`runas`）启动安装器；拿到安装器进程句柄后，以当前（非提权）身份拉起一个隐藏的
     /// PowerShell，等安装器结束后重新打开 `relaunch`，保证新版本以普通权限运行（不让提权的安装器直接启动 App）。
     /// 返回 `Ok(Some(relaunch_scheduled))` 表示安装器已运行（调用方应退出），用户取消 UAC 返回 `Ok(None)`。
@@ -967,6 +1017,68 @@ mod windows_impl {
         }
     }
 
+    /// 用系统默认程序打开本机文件或文件夹（调用方已用 `open_path::check_path` 校验，且不是可执行文件）。
+    /// 用默认动词（与资源管理器双击一致），工作目录为文件所在文件夹。
+    pub(crate) fn shell_open(path: &Path) -> io::Result<()> {
+        let target = wide(path);
+        if target[..target.len() - 1].contains(&0) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "路径格式不正确",
+            ));
+        }
+        let dir = path.parent().map(wide);
+        // SAFETY: 字符串以 NUL 结尾，在调用期间有效
+        let code = unsafe {
+            ShellExecuteW(
+                null_mut(),
+                null(),
+                target.as_ptr(),
+                null(),
+                dir.as_ref().map_or(null(), |d| d.as_ptr()),
+                SW_SHOWNORMAL,
+            )
+        } as isize;
+        // ShellExecuteW 返回值大于 32 表示成功；31 为 SE_ERR_NOASSOC（没有关联的程序）
+        match code {
+            c if c > 32 => Ok(()),
+            31 => Err(io::Error::other("没有可以打开这类文件的程序")),
+            2 | 3 => Err(io::Error::new(io::ErrorKind::NotFound, "找不到文件")),
+            5 => Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "没有权限打开这个文件",
+            )),
+            c => Err(io::Error::other(format!("ShellExecuteW 失败（{c}）"))),
+        }
+    }
+
+    /// 在资源管理器中显示并选中文件或文件夹：`explorer.exe /select,"<路径>"`。
+    /// 路径已校验为本机绝对路径（Windows 路径不能含双引号，这里再检查一次），用 raw_arg 原样拼接引号，
+    /// 不经过 cmd。explorer 成功时退出码也非 0，只确认能启动。
+    pub(crate) fn reveal_in_folder(path: &Path) -> io::Result<()> {
+        use std::os::windows::process::CommandExt;
+        // 盘符根目录（C:\）没有上级可选中：直接打开
+        if path.parent().is_none() {
+            return shell_open(path);
+        }
+        // 去掉末尾分隔符：`"C:\dir\"` 里的 `\"` 会被当成转义的引号
+        let text = path.to_string_lossy();
+        let text = text.trim_end_matches(['\\', '/']);
+        if text.contains('"') || text.contains('\0') {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "路径格式不正确",
+            ));
+        }
+        let explorer = system_dir()
+            .parent()
+            .map(|windows| windows.join("explorer.exe"))
+            .unwrap_or_else(|| std::path::PathBuf::from("C:\\Windows\\explorer.exe"));
+        let mut command = std::process::Command::new(explorer);
+        command.raw_arg(format!("/select,\"{text}\""));
+        super::spawn_detached(command)
+    }
+
     pub(crate) fn open_reinstall_page() {
         let verb = wide("open");
         let url = wide(REINSTALL_URL);
@@ -1040,6 +1152,11 @@ mod windows_impl {
 #[cfg(not(windows))]
 mod fallback_impl {
     use super::*;
+
+    /// 非 Windows：Core 的 `powershell` 工具只在 Windows 原生进程中可用，命令工具保持 `bash`。
+    pub(crate) fn powershell_available() -> bool {
+        false
+    }
 
     /// 文件系统身份（[`file_keys`]）：Unix 为 dev + ino，跟随符号链接；取不到时为 None。
     pub(crate) fn file_system_id(path: &Path) -> Option<String> {
@@ -1163,6 +1280,28 @@ mod fallback_impl {
         Err(io::Error::new(io::ErrorKind::Unsupported, "仅支持 Windows"))
     }
 
+    /// 用系统默认程序打开（macOS `open`，其他 `xdg-open`）；路径是已校验的绝对路径，以 `/` 开头，不会被当成选项。
+    pub(crate) fn shell_open(path: &Path) -> io::Result<()> {
+        let program = if cfg!(target_os = "macos") {
+            "/usr/bin/open"
+        } else {
+            "xdg-open"
+        };
+        let mut command = std::process::Command::new(program);
+        command.arg(path);
+        super::spawn_detached(command)
+    }
+
+    /// 在文件管理器中显示：macOS `open -R` 选中文件；其他平台打开所在文件夹。
+    pub(crate) fn reveal_in_folder(path: &Path) -> io::Result<()> {
+        if cfg!(target_os = "macos") {
+            let mut command = std::process::Command::new("/usr/bin/open");
+            command.arg("-R").arg(path);
+            return super::spawn_detached(command);
+        }
+        shell_open(path.parent().unwrap_or(path))
+    }
+
     pub(crate) fn open_reinstall_page() {
         eprintln!("请从 {REINSTALL_URL} 下载安装包重新安装。");
     }
@@ -1249,6 +1388,46 @@ pub fn set_window_bounds(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn powershell_detection_checks_core_locations() {
+        let root =
+            std::env::temp_dir().join(format!("primus-powershell-detect-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let system = root.join("System32");
+        let program_files = root.join("Program Files");
+        let bin = root.join("bin");
+        for dir in [&system, &program_files, &bin] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        let path_var = std::env::join_paths([&bin]).unwrap();
+        let detect = || {
+            powershell_available_in(
+                &system,
+                Some(program_files.as_os_str()),
+                Some(path_var.as_os_str()),
+            )
+        };
+        assert!(!detect());
+        // PATH 上的 pwsh.exe
+        std::fs::write(bin.join("pwsh.exe"), b"").unwrap();
+        assert!(detect());
+        std::fs::remove_file(bin.join("pwsh.exe")).unwrap();
+        // %ProgramFiles%\PowerShell\7\pwsh.exe
+        let pwsh7 = program_files.join("PowerShell").join("7");
+        std::fs::create_dir_all(&pwsh7).unwrap();
+        std::fs::write(pwsh7.join("pwsh.exe"), b"").unwrap();
+        assert!(detect());
+        std::fs::remove_file(pwsh7.join("pwsh.exe")).unwrap();
+        // 系统自带的 Windows PowerShell；同名目录不算
+        let legacy = system.join("WindowsPowerShell").join("v1.0");
+        std::fs::create_dir_all(legacy.join("powershell.exe")).unwrap();
+        assert!(!detect());
+        std::fs::remove_dir(legacy.join("powershell.exe")).unwrap();
+        std::fs::write(legacy.join("powershell.exe"), b"").unwrap();
+        assert!(detect());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn path_key_normalizes_per_platform() {

@@ -54,6 +54,27 @@ pub fn open_external(target: String) -> Result<(), String> {
     crate::platform::open_url(&target).map_err(|e| e.to_string())
 }
 
+/// 用系统默认程序打开回复里引用的本机文件（附录 B `open_path`）。路径须是已存在的本机绝对路径；
+/// 可执行与脚本类文件不直接运行，改为在文件夹中显示并返回 `revealed`（见 open_path.rs）。
+#[tauri::command]
+pub fn open_path(path: String) -> Result<crate::open_path::OpenOutcome, String> {
+    use crate::open_path::{OpenOutcome, check_path};
+    let checked = check_path(&path)?;
+    if checked.risky {
+        crate::platform::reveal_in_folder(&checked.path).map_err(|e| e.to_string())?;
+        return Ok(OpenOutcome::Revealed);
+    }
+    crate::platform::shell_open(&checked.path).map_err(|e| e.to_string())?;
+    Ok(OpenOutcome::Opened)
+}
+
+/// 在系统文件管理器中显示回复里引用的本机文件（附录 B `reveal_path`），校验同 `open_path`。
+#[tauri::command]
+pub fn reveal_path(path: String) -> Result<(), String> {
+    let checked = crate::open_path::check_path(&path)?;
+    crate::platform::reveal_in_folder(&checked.path).map_err(|e| e.to_string())
+}
+
 /// 原子设置主窗口外框（物理像素），侧栏开关时窗口边缘跟随侧栏逐帧伸缩用。
 #[tauri::command]
 pub fn window_set_bounds(
