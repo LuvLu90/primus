@@ -99,10 +99,17 @@ export function classifyError(errorMessage: string | undefined): ErrorInfo {
  * 界面显示与“复制详细信息”都只用处理后的文本
  */
 const SECRET_PATTERNS: [RegExp, string][] = [
+  // JSON 里带引号的值整段替换（值里可能有空格）
+  [
+    /("(?:x-api-key|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|token|secret|password|credentials?|authorization)"\s*:\s*")(?:[^"\\]|\\.)*(?=")/gi,
+    "$1***",
+  ],
+  // 请求头 Authorization: Basic/Bearer/… 后的凭据
+  [/\b(authorization["']?\s*[:=]\s*["']?(?:[A-Za-z]+\s+)?)[^\s"',;}*]{4,}/gi, "$1***"],
   [/\b(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi, "$1***"],
   [/\b(sk-(?:ant-|proj-)?)[A-Za-z0-9_-]{8,}/g, "$1***"],
   [
-    /((?:x-api-key|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|secret|password|credentials?)["']?\s*[:=]\s*["']?)[^\s"',;}]{4,}/gi,
+    /((?:x-api-key|api[_-]?key|apikey|access[_-]?token|auth[_-]?token|\btoken|secret|password|credentials?)["']?\s*[:=]\s*["']?)[^\s"',;}]{4,}/gi,
     "$1***",
   ],
 ];

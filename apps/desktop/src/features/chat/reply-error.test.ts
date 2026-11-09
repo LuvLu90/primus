@@ -129,5 +129,10 @@ describe("回复错误归类", () => {
     expect(out).toContain("sk-ant-***");
     expect(redactSecrets("credential: abcd-1234-efgh rejected")).toBe("credential: *** rejected");
     expect(redactSecrets("Connection error.")).toBe("Connection error.");
+    expect(redactSecrets('{"token":"abc def ghi"}')).toBe('{"token":"***"}');
+    expect(redactSecrets('{\n  "password": "with \\" quote"\n}')).toBe('{\n  "password": "***"\n}');
+    expect(redactSecrets("Authorization: Basic dXNlcjpwYXNz")).toBe("Authorization: Basic ***");
+    expect(redactSecrets("authorization=Bearer abcdefghijkl")).toBe("authorization=Bearer ***");
+    expect(redactSecrets("token=abcd1234 max_tokens: 4096")).toBe("token=*** max_tokens: 4096");
   });
 });
