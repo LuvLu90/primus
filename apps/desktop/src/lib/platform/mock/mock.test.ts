@@ -15,6 +15,106 @@ describe("mock 平台", () => {
     expect(Object.keys(platform).sort()).toEqual(Object.keys(COMMANDS).sort());
   });
 
+  it("模型渠道：预置 ioply；保存、删除更新模型配置并经 models_watch 推送；账号未登录", async () => {
+    const platform = createMockPlatform({ fetchDelayMs: 0 });
+    await expect(platform.authStatus()).resolves.toEqual({
+      loggedIn: false,
+      account: null,
+      loginAvailable: false,
+    });
+    const [ioply] = await platform.providersList();
+    expect(ioply).toMatchObject({ id: "ioply", hasKey: true, keyHint: "c74e" });
+    expect(JSON.stringify(ioply)).not.toContain("placeholder");
+    expect((await platform.modelsGet()).defaultModel).toBe("ioply/mock-large");
+
+    const pushed: string[][] = [];
+    await platform.modelsWatch((info) => pushed.push(info.models.map((m) => m.key)));
+    await expect(
+      platform.providerFetchModels({
+        api: "openai-responses",
+        baseUrl: "https://x",
+        apiKey: "bad",
+      }),
+    ).rejects.toThrow("HTTP 401");
+    const fetched = await platform.providerFetchModels({ id: "ioply" });
+    expect(fetched.map((m) => m.id)).toContain("mock-coder");
+    // 已保存的模型保留原参数
+    expect(fetched.find((m) => m.id === "mock-large")?.contextWindow).toBe(1_000_000);
+
+    const created = await platform.providerSave({
+      name: "公司 网关",
+      api: "anthropic-messages",
+      baseUrl: "https://gw.example.com/v1/",
+      apiKey: "sk-12345678",
+      enabled: true,
+      models: fetched.filter((m) => m.id === "mock-coder"),
+    });
+    const added = created.providers.find((p) => p.name === "公司 网关");
+    expect(added).toMatchObject({
+      id: "provider",
+      baseUrl: "https://gw.example.com/v1",
+      keyHint: "5678",
+    });
+    expect(created.models.models.map((m) => m.key)).toContain("provider/mock-coder");
+    expect(pushed.at(-1)).toContain("provider/mock-coder");
+    await expect(
+      platform.providerSave({
+        name: "x",
+        api: "openai-responses",
+        baseUrl: "https://x",
+        apiKey: "k",
+        enabled: true,
+        models: [{ ...fetched[0], extra: 1 } as unknown as (typeof fetched)[0]],
+      }),
+    ).rejects.toThrow("未知字段");
+    // 与薄壳一致的校验：密钥含控制字符、参数不是整数、地址带查询参数
+    const model = fetched[0];
+    if (!model) throw new Error("缺少模型");
+    const base = {
+      name: "y",
+      api: "openai-responses" as const,
+      baseUrl: "https://y",
+      apiKey: "k",
+      enabled: true,
+      models: [model],
+    };
+    await expect(platform.providerSave({ ...base, apiKey: "a\nb" })).rejects.toThrow("无效字符");
+    await expect(
+      platform.providerSave({ ...base, models: [{ ...model, contextWindow: 1.5 }] }),
+    ).rejects.toThrow("正整数");
+    await expect(
+      platform.providerSave({ ...base, baseUrl: "https://y/v1?tenant=a" }),
+    ).rejects.toThrow("查询参数");
+    await expect(
+      platform.providerSave({ ...base, baseUrl: "https://user:pw@y/v1" }),
+    ).rejects.toThrow("接口地址");
+    await expect(platform.providerSave({ ...base, baseUrl: "https://y:99999/v1" })).rejects.toThrow(
+      "接口地址",
+    );
+
+    // 默认模型所在渠道停用后回退到其他模型，重新启用也不恢复旧默认值（回退结果已写回）
+    const ioplyView = created.providers.find((p) => p.id === "ioply");
+    if (!ioplyView) throw new Error("缺少 ioply");
+    const ioplyInput = {
+      id: "ioply",
+      name: ioplyView.name,
+      api: ioplyView.api,
+      baseUrl: ioplyView.baseUrl,
+      models: ioplyView.models,
+    };
+    const disabled = await platform.providerSave({ ...ioplyInput, enabled: false });
+    expect(disabled.models.defaultModel).toBe("provider/mock-coder");
+    const enabled = await platform.providerSave({ ...ioplyInput, enabled: true });
+    expect(enabled.models.defaultModel).toBe("provider/mock-coder");
+
+    await platform.providerDelete("ioply");
+    const left = await platform.providerDelete("provider");
+    expect(left.providers).toEqual([]);
+    expect(left.models).toMatchObject({ models: [], defaultModel: null });
+    expect(left.models.error).toContain("还没有可用的模型");
+    expect(pushed.at(-1)).toEqual([]);
+  });
+
   it("自动更新：默认开、稳定版；有新版本时检查后得到待装版本并推送", async () => {
     const platform = createMockPlatform({ latestVersion: "9.9.9", now: () => 5 });
     const seen: string[] = [];
@@ -75,6 +175,76 @@ describe("mock 平台", () => {
     });
     expect(types(records).slice(1, 3)).toEqual(["agent_start", "turn_start"]);
     expect(types(records).slice(-2)).toEqual(["agent_end", "agent_settled"]);
+  });
+
+  it("#错误:<类别> 返回失败回复：错误文本仿照 Core 的写法，带渠道、模型与耗时", async () => {
+    const platform = createMockPlatform({ batchSize: 50 });
+    const records: CoreRecord[] = [];
+    const { sessionKey } = await platform.sessionOpen("ws", undefined, (b) =>
+      records.push(...b.records),
+    );
+    await platform.coreSend(sessionKey, { type: "prompt", message: "hi #错误:认证" });
+    await vi.runAllTimersAsync();
+    const end = records.findLast((r) => r.type === "message_end");
+    expect(end).toMatchObject({
+      message: {
+        role: "assistant",
+        stopReason: "error",
+        provider: "ioply",
+        model: "mock-large",
+        errorMessage: expect.stringMatching(/^ioply API error \(401\): /),
+        durationMs: expect.any(Number),
+      },
+    });
+    expect(types(records).slice(-2)).toEqual(["agent_end", "agent_settled"]);
+    // 网络类错误之后“检测连接”同样失败，正常发送后恢复
+    await platform.coreSend(sessionKey, { type: "prompt", message: "hi #错误:连接" });
+    await vi.runAllTimersAsync();
+    const probe = platform.providerFetchModels({ id: "ioply" });
+    const rejected = expect(probe).rejects.toThrow("无法连接到服务器");
+    await vi.runAllTimersAsync();
+    await rejected;
+  });
+
+  it("#错误:重试：auto_retry_start 后按延时继续；abort_retry 取消等待并补上 Retry cancelled", async () => {
+    const platform = createMockPlatform({ batchSize: 50 });
+    const records: CoreRecord[] = [];
+    const { sessionKey } = await platform.sessionOpen("ws", undefined, (b) =>
+      records.push(...b.records),
+    );
+    await platform.coreSend(sessionKey, { type: "prompt", message: "#错误:重试" });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(records.at(-1)).toMatchObject({ type: "auto_retry_start", attempt: 1, maxAttempts: 3 });
+    // 第一次重试的等待结束：第二次失败，开始第二次重试
+    await vi.advanceTimersByTimeAsync(3100);
+    expect(records.at(-1)).toMatchObject({ type: "auto_retry_start", attempt: 2 });
+    await platform.coreSend(sessionKey, { id: "r", type: "abort_retry" });
+    await vi.runAllTimersAsync();
+    expect(records.slice(-4)).toMatchObject([
+      { type: "auto_retry_end", success: false, attempt: 2, finalError: "Retry cancelled" },
+      { type: "agent_end" },
+      { type: "agent_settled" },
+      { type: "response", id: "r", command: "abort_retry", success: true },
+    ]);
+    expect(records.filter((r) => r.type === "auto_retry_start")).toHaveLength(2);
+  });
+
+  it("#错误:重试成功：重试一次后得到回答，auto_retry_end 为成功", async () => {
+    const platform = createMockPlatform({ batchSize: 50 });
+    const records: CoreRecord[] = [];
+    const { sessionKey } = await platform.sessionOpen("ws", undefined, (b) =>
+      records.push(...b.records),
+    );
+    await platform.coreSend(sessionKey, { type: "prompt", message: "#错误:重试成功" });
+    await vi.runAllTimersAsync();
+    expect(records.find((r) => r.type === "auto_retry_end")).toEqual({
+      type: "auto_retry_end",
+      success: true,
+      attempt: 1,
+    });
+    expect(records.findLast((r) => r.type === "message_end")).toMatchObject({
+      message: { stopReason: "stop" },
+    });
   });
 
   it("运行中再次 prompt 返回失败响应；abort 丢弃剩余事件并以 aborted 结束", async () => {
@@ -429,5 +599,51 @@ describe("假事件流脚本", () => {
     expect(updates[0]).toBe("thinking_start");
     expect(updates).toContain("toolcall_end");
     expect(updates.at(-1)).toBe("text_end");
+  });
+});
+
+describe("mock 平台：输入框附件、分支与语音", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("图片附件返回占位缩略图，非图片与损坏文件拒绝", async () => {
+    const p = createMockPlatform({ attachmentDelayMs: 10 });
+    const ok = p.attachmentImage("C:\\x\\设计稿.png", 2048);
+    await vi.advanceTimersByTimeAsync(10);
+    await expect(ok).resolves.toMatchObject({ mimeType: "image/png" });
+    expect((await ok).thumb.startsWith("data:image/svg+xml;base64,")).toBe(true);
+    const bad = p.attachmentImage("C:\\x\\README.md", 2048).catch((e: Error) => e.message);
+    const broken = p.attachmentImage("C:\\x\\broken.png", 2048).catch((e: Error) => e.message);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(await bad).toBe("不是支持的图片格式");
+    expect(await broken).toContain("图片无法解码");
+  });
+
+  it("示例工作区在 main 分支，其他文件夹不是仓库", async () => {
+    const p = createMockPlatform();
+    await expect(p.gitBranch("C:\\Users\\mock\\示例工作区")).resolves.toEqual({
+      name: "main",
+      detached: false,
+    });
+    await expect(p.gitBranch("C:\\Users\\mock\\新项目")).resolves.toBeNull();
+  });
+
+  it("模拟听写：推送音量与逐字临时结果，句末定稿；停止后推送 end", async () => {
+    const p = createMockPlatform({ speechStepMs: 5 });
+    await expect(p.speechAvailable()).resolves.toBe(true);
+    const events: { type: string; text?: string }[] = [];
+    await p.speechStart((e) => events.push(e));
+    await vi.advanceTimersByTimeAsync(5 * 2 * 20);
+    expect(events.some((e) => e.type === "level")).toBe(true);
+    const interims = events.filter((e) => e.type === "interim").map((e) => e.text ?? "");
+    expect(interims[0]).toBe("帮");
+    expect(interims[1]).toBe("帮我");
+    const final = events.find((e) => e.type === "final");
+    expect(final?.text).toBe("帮我看下这张截图里的布局问题，");
+    await p.speechStop();
+    expect(events.at(-1)).toEqual({ type: "end" });
+    const count = events.length;
+    await vi.advanceTimersByTimeAsync(100);
+    expect(events).toHaveLength(count);
   });
 });

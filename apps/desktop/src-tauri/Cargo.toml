@@ -20,6 +20,9 @@ tauri-plugin-single-instance = "=2.5.4"
 tauri-plugin-dialog = "=2.8.3"
 # 自动更新（第 3.6 节、ADR 0007）：只在 Rust 侧使用（不给 WebView 开插件权限）；只用到 Windows 的 MSI / NSIS 安装包，不要 zip
 tauri-plugin-updater = { version = "=2.14.1", default-features = false, features = ["rustls-tls", "system-proxy"] }
+# 模型渠道的模型列表获取（providers.rs）：与 updater 插件依赖树中的版本与特性一致（rustls、系统代理），不引入新的 HTTP 栈
+reqwest = { version = "=0.13.5", default-features = false, features = ["rustls-no-provider", "system-proxy"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 # 待装包二次校验（安装前从磁盘重读，按 updater 插件同一套 minisign 规则校验）：与插件依赖树中的版本一致
 minisign-verify = "=0.3.0"
 base64 = "=0.23.1"
@@ -33,6 +36,8 @@ rusqlite = { version = "=0.40.2", features = ["bundled"] }
 notify = "=8.2.0"
 # 工作区信任：`.primus/` 内容指纹（第 17.2 节），与 Tauri 依赖树中的版本一致
 sha2 = "=0.10.9"
+# 输入框图片附件（attachment_image）：在内存中解码、缩小、重新编码，不写文件（约束 C2）；只开常见格式
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 
 # Windows 平台层（第 4.3 节 ACL、第 3.7 节修复引导、第 2.2 节 Job Object）：只用 windows-sys 的原始 FFI，版本见技术方案第 2.4 节
 [target.'cfg(windows)'.dependencies]
@@ -42,6 +47,7 @@ windows-sys = { version = "=0.61.2", features = [
   "Win32_Security_Authorization",
   "Win32_Security_Cryptography",
   "Win32_Storage_FileSystem",
+  "Win32_System_Com",
   "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_JobObjects",
   "Win32_System_Registry",
@@ -50,6 +56,10 @@ windows-sys = { version = "=0.61.2", features = [
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ] }
+# 语音输入（speech_*，platform/speech.rs）：系统自带的 Windows.Media.SpeechRecognition（WinRT），与 Tauri 依赖树中的版本一致
+windows = { version = "=0.62.2", features = ["Foundation", "Globalization", "Media_SpeechRecognition"] }
+# 麦克风自动授权（platform/webview_permissions.rs）：WebView2 的 PermissionRequested 与 Profile 权限，与 Tauri 依赖树中的版本一致
+webview2-com = "=0.39.1"
 
 [profile.release]
 lto = true

@@ -4,8 +4,9 @@
 //!   （`{"v":1,"secrets":{"<id>":"<值>"}}`）。目录本身已是仅当前用户与 SYSTEM 可访问（第 4.3 节），
 //!   DPAPI 再保证文件被复制到别处、或被其他 Windows 用户读到时也无法解密。
 //! - 写入先写同目录临时文件再替换，避免中途崩溃留下半个文件。
-//! - `Primus.exe --secret <id>`：不打开窗口，确认自己在本 App 的 Core 作业内后把值写到 stdout 并退出，
-//!   供 `models.json` 的 `"apiKey": "!<Primus.exe> --secret <id>"` 使用；令牌不进命令行参数、环境变量与会话文件。
+//! - `Primus.exe --secret provider:<渠道 ID>`：不打开窗口，确认自己在本 App 的 Core 作业内后把该渠道的密钥写到 stdout 并退出，
+//!   供 `models.json` 的 `"apiKey": "!<Primus.exe> --secret provider:<id>"` 使用；密钥不进命令行参数、环境变量与会话文件。
+//!   只接受 `provider:<id>` 形式的名字，其他名字一律按不存在处理。
 //! - macOS / Linux 的 Keychain / Secret Service 见第 20 章，当前非 Windows 平台加解密直接报不支持，
 //!   绝不退回明文落盘。
 
@@ -17,9 +18,6 @@ use std::path::{Path, PathBuf};
 /// 命令行取密钥参数。
 pub(crate) const SECRET_ARG: &str = "--secret";
 
-/// 模型访问令牌在保险库中的 ID（`models.json` 的取令牌命令用它）。
-pub(crate) const MODEL_TOKEN_ID: &str = "model-token";
-
 /// 保险库文件名。
 const VAULT_FILE: &str = "secrets.bin";
 
@@ -30,12 +28,18 @@ const MAGIC: &[u8; 4] = b"PRV1";
 #[cfg_attr(not(windows), allow(dead_code))]
 const ENTROPY: &[u8] = b"Primus vault v1";
 
-/// ID 只允许小写字母、数字与 `-`，长度 1–64：它会出现在命令行里。
+/// ID 只允许小写字母、数字、`-` 与 `:`，长度 1–64：它会出现在命令行里（这些字符在 bash 与 cmd 中都按字面解释）。
 pub(crate) fn is_valid_id(id: &str) -> bool {
     (1..=64).contains(&id.len())
         && id
             .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b':')
+}
+
+/// `--secret` 模式接受的名字：只有 `provider:<渠道 ID>`。
+pub(crate) fn is_secret_name(name: &str) -> bool {
+    name.strip_prefix(crate::providers::SECRET_PREFIX)
+        .is_some_and(crate::providers::is_valid_id)
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
@@ -115,8 +119,7 @@ impl Vault {
         self.store(&contents)
     }
 
-    /// 删除一个密钥（登出时用）；不存在时什么也不做。
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// 删除一个密钥（删除渠道、迁移旧令牌时用）；不存在时什么也不做。
     pub(crate) fn remove(&self, id: &str) -> io::Result<()> {
         let mut contents = self.load()?;
         if contents.secrets.remove(id).is_some() {
@@ -130,8 +133,14 @@ impl Vault {
         match self.get(id) {
             Ok(Some(current)) if current == value => Ok(false),
             Ok(_) => self.set(id, value).map(|()| true),
-            // 无法解密（如从其他用户 / 机器复制来的文件）时整份重建：里面的值本来就用不了
+            // 无法解密（如从其他用户 / 机器复制来的文件）时整份重建：里面的值本来就用不了。
+            // 重建前把原文件另存一份（损坏、或新版本写入的文件降级后读不了时，原内容还能找回），备份失败则不重建
             Err(e) if e.kind() == io::ErrorKind::InvalidData => {
+                let backup = self.backup_unreadable()?;
+                eprintln!(
+                    "[vault] 保险库无法读取（{e}），已备份为 {} 后重建",
+                    backup.display()
+                );
                 let mut contents = Contents {
                     v: 1,
                     ..Contents::default()
@@ -141,6 +150,39 @@ impl Vault {
             }
             Err(e) => Err(e),
         }
+    }
+
+    /// 把读不了的保险库另存一份：每次用新的文件名（`.bak`、`.bak.1`…），不覆盖之前的备份
+    fn backup_unreadable(&self) -> io::Result<PathBuf> {
+        let mut source = fs::File::open(&self.file)?;
+        for n in 0..1000u32 {
+            let name = if n == 0 {
+                format!("{VAULT_FILE}.bak")
+            } else {
+                format!("{VAULT_FILE}.bak.{n}")
+            };
+            let path = self.file.with_file_name(name);
+            let mut target = match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(file) => file,
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e),
+            };
+            let copied = io::copy(&mut source, &mut target).and_then(|_| target.sync_all());
+            if let Err(e) = copied {
+                drop(target);
+                let _ = fs::remove_file(&path);
+                return Err(e);
+            }
+            return Ok(path);
+        }
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "保险库备份过多",
+        ))
     }
 }
 
@@ -210,7 +252,7 @@ pub(crate) fn run_secret_mode(id: &str) -> SecretExit {
 }
 
 fn secret_value(id: &str) -> Result<String, SecretExit> {
-    if !is_valid_id(id) {
+    if !is_secret_name(id) {
         return Err(SecretExit::NotFound);
     }
     let job = std::env::var(crate::job::JOB_NAME_ENV).map_err(|_| SecretExit::Denied)?;
@@ -332,6 +374,8 @@ mod tests {
         dir
     }
 
+    const MODEL_TOKEN_ID: &str = "provider:test";
+
     #[test]
     fn set_get_remove_round_trip_without_plaintext_on_disk() {
         let dir = temp_dir("rt");
@@ -376,19 +420,47 @@ mod tests {
         );
         assert!(vault.ensure(MODEL_TOKEN_ID, "c").unwrap(), "损坏时整份重建");
         assert_eq!(vault.get(MODEL_TOKEN_ID).unwrap().as_deref(), Some("c"));
+        assert_eq!(
+            fs::read(dir.join(format!("{VAULT_FILE}.bak"))).unwrap(),
+            b"garbage",
+            "重建前保留原文件"
+        );
+        fs::write(dir.join(VAULT_FILE), b"garbage2").unwrap();
+        assert!(vault.ensure(MODEL_TOKEN_ID, "d").unwrap());
+        assert_eq!(
+            fs::read(dir.join(format!("{VAULT_FILE}.bak"))).unwrap(),
+            b"garbage",
+            "再次重建不覆盖之前的备份"
+        );
+        assert_eq!(
+            fs::read(dir.join(format!("{VAULT_FILE}.bak.1"))).unwrap(),
+            b"garbage2"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn ids_and_args() {
-        assert!(is_valid_id("model-token"));
+        assert!(is_valid_id("model-token") && is_valid_id("provider:ioply"));
         for bad in ["", "Model", "a b", "a/b", "a\"", &"x".repeat(65)] {
             assert!(!is_valid_id(bad), "{bad:?}");
         }
+        assert!(is_secret_name("provider:ioply") && is_secret_name("provider:my-gw-2"));
+        for bad in [
+            "model-token",
+            "provider:",
+            "provider:Bad",
+            "provider:1a",
+            "provider:a:b",
+            "providers:a",
+            "other:a",
+        ] {
+            assert!(!is_secret_name(bad), "{bad:?}");
+        }
         assert!(Vault::new(Path::new("/tmp/none")).set("BAD", "v").is_err());
         assert_eq!(
-            parse_secret_arg(["--secret", "model-token"]).as_deref(),
-            Some("model-token")
+            parse_secret_arg(["--secret", "provider:ioply"]).as_deref(),
+            Some("provider:ioply")
         );
         assert_eq!(parse_secret_arg(["--secret"]), None);
         assert_eq!(parse_secret_arg(["--data-dir", "x", "--secret", "a"]), None);
@@ -416,7 +488,12 @@ mod tests {
     #[test]
     fn secret_mode_denies_callers_outside_core_job() {
         // 测试进程不在任何乾元作业里：无论环境如何都拒绝，且不输出任何值
-        assert_eq!(secret_value("model-token"), Err(SecretExit::Denied));
+        assert_eq!(secret_value("provider:ioply"), Err(SecretExit::Denied));
         assert_eq!(secret_value("BAD ID"), Err(SecretExit::NotFound));
+        assert_eq!(
+            secret_value("model-token"),
+            Err(SecretExit::NotFound),
+            "旧令牌名与其他名字一律拒绝"
+        );
     }
 }

@@ -21,6 +21,26 @@
   --color-danger: #d70015;
   --color-warning: #c93400;
   --color-success: #248a3d;
+  /* 选中指示（模型选择的单选圆点）：唯一的彩色强调，取系统橙 */
+  --color-select: #ff8a00;
+  /* 图表分项色（上下文卡片的分段条）：系统蓝、靛、紫、橙、绿、青 */
+  --color-chart-1: #0a84ff;
+  --color-chart-2: #5e5ce6;
+  --color-chart-3: #bf5af2;
+  --color-chart-4: #ff9f0a;
+  --color-chart-5: #30d158;
+  --color-chart-6: #32ade6;
+  /* 输入框附件图块、唇条与进度环轨道 */
+  --color-tile: rgb(0 0 0 / 0.045);
+  --color-tile-ring: rgb(0 0 0 / 0.06);
+  --color-lip: rgb(0 0 0 / 0.045);
+  --color-track: rgb(0 0 0 / 0.06);
+  --color-track-strong: rgb(0 0 0 / 0.1);
+  /* 叠在图片上的控件（附件图片的删除键与角标）：浅深色一致，保证在任意图片上都清楚 */
+  --color-frost: rgb(255 255 255 / 0.78);
+  --color-on-frost: #1d1d1f;
+  --color-scrim: rgb(0 0 0 / 0.55);
+  --color-on-scrim: #ffffff;
   /* Windows 11 标题栏关闭按钮（系统红），浅深色一致 */
   --color-caption-close: #e81123;
   --color-caption-close-pressed: #f1707a;
@@ -54,6 +74,18 @@
   --color-danger: #ff453a;
   --color-warning: #ff9f0a;
   --color-success: #30d158;
+  --color-select: #ff9f0a;
+  --color-chart-1: #0a84ff;
+  --color-chart-2: #5e5ce6;
+  --color-chart-3: #bf5af2;
+  --color-chart-4: #ff9f0a;
+  --color-chart-5: #30d158;
+  --color-chart-6: #64d2ff;
+  --color-tile: rgb(255 255 255 / 0.07);
+  --color-tile-ring: rgb(255 255 255 / 0.07);
+  --color-lip: rgb(255 255 255 / 0.06);
+  --color-track: rgb(255 255 255 / 0.1);
+  --color-track-strong: rgb(255 255 255 / 0.15);
   /* 浏览器预览用的纯色底（不用渐变） */
   --wallpaper: #0b0b0e;
   --window-tint: rgb(8 8 10 / 0.45);
@@ -646,5 +678,617 @@ html.window-effects.glass-clear body {
 @media (prefers-reduced-motion: reduce) {
   .step-in {
     animation: none;
+  }
+}
+
+/* ---------- 输入框：附件图块条、唇条、语音胶囊、上下文卡片、思考滑杆 ---------- */
+
+/*
+ * 附件图块条：外层 grid 行 0fr → 1fr，输入框随之平滑向上长高；收起反向。
+ * 图块进场：槽位宽度 0 → 56（邻居被推开）+ 图块从 .85 弹到 1 并淡入，按 --i 错开。
+ * 移除：图块先缩小淡出（160ms），再收起槽位宽度（140ms），邻居滑过来；槽位的 att-slot-out 结束后才从状态里删掉。
+ */
+.att-strip-wrap {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 160ms ease;
+}
+
+.att-strip-wrap[data-open] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.att-strip {
+  display: flex;
+  align-items: flex-start;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 6px 4px 10px;
+  scrollbar-width: none;
+}
+
+.att-strip::-webkit-scrollbar {
+  display: none;
+}
+
+@keyframes att-slot-in {
+  from {
+    width: 0;
+    margin-right: 0;
+  }
+}
+
+@keyframes att-tile-in {
+  from {
+    opacity: 0;
+    scale: 0.85;
+  }
+}
+
+@keyframes att-slot-out {
+  to {
+    width: 0;
+    margin-right: 0;
+  }
+}
+
+@keyframes att-tile-out {
+  to {
+    opacity: 0;
+    scale: 0.8;
+  }
+}
+
+@keyframes att-shake {
+  0%,
+  100% {
+    translate: 0 0;
+  }
+  20% {
+    translate: -4px 0;
+  }
+  40% {
+    translate: 4px 0;
+  }
+  60% {
+    translate: -3px 0;
+  }
+  80% {
+    translate: 2px 0;
+  }
+}
+
+@keyframes att-spin {
+  to {
+    rotate: 360deg;
+  }
+}
+
+.att-slot {
+  position: relative;
+  flex: none;
+  width: 56px;
+  height: 62px;
+  margin-right: 10px;
+  animation: att-slot-in 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: calc(var(--i, 0) * 50ms);
+}
+
+.att-tile {
+  position: absolute;
+  top: 3px;
+  left: 0;
+  width: 56px;
+  height: 56px;
+  animation: att-tile-in 300ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  animation-delay: calc(var(--i, 0) * 50ms);
+}
+
+.att-slot[data-removing] {
+  pointer-events: none;
+  animation: att-slot-out 140ms cubic-bezier(0.4, 0, 0.2, 1) 160ms forwards;
+}
+
+.att-slot[data-removing] .att-tile {
+  animation: att-tile-out 160ms cubic-bezier(0.4, 0, 1, 1) forwards;
+}
+
+.att-body {
+  position: absolute;
+  inset: 0;
+}
+
+.att-tile[data-status="error"] .att-body {
+  animation: att-shake 300ms ease-in-out;
+}
+
+/* 图块内容：排队/读取中缩到 .92 让出进度环，落地后弹回 1 */
+.att-inner {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  overflow: hidden;
+  border-radius: 14px;
+  background: var(--color-tile);
+  box-shadow: inset 0 0 0 1px var(--color-tile-ring);
+  transition: scale 260ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.att-tile:is([data-status="queued"], [data-status="reading"], [data-status="error"]) .att-inner {
+  scale: 0.92;
+  transition: scale 160ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.att-inner img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* 进度环：圆角矩形路径从顶部中点顺时针画（pathLength=100），dashoffset 跟随真实阶段 */
+.att-ring {
+  position: absolute;
+  top: -3px;
+  left: -3px;
+  width: 62px;
+  height: 62px;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+
+.att-ring path {
+  fill: none;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.att-ring .att-ring-track {
+  stroke: var(--color-track);
+}
+
+.att-ring .att-ring-bar {
+  stroke: var(--color-accent);
+  transition:
+    stroke-dashoffset 360ms cubic-bezier(0.22, 1, 0.36, 1),
+    stroke 200ms ease;
+}
+
+.att-tile[data-status="queued"] .att-ring {
+  opacity: 0.6;
+}
+
+.att-tile:is([data-status="reading"], [data-status="error"]) .att-ring {
+  opacity: 1;
+}
+
+.att-tile[data-status="error"] .att-ring-bar {
+  stroke: var(--color-danger);
+}
+
+/* 右上角：加载点与删除键在同一位置交接——加载点模糊消失，删除键去模糊出现（晚 60ms） */
+.att-badge {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  display: grid;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  border-radius: 9999px;
+  transition:
+    opacity 180ms ease,
+    filter 180ms ease,
+    scale 180ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.att-spinner {
+  background: var(--color-surface);
+  box-shadow:
+    0 1px 3px rgb(0 0 0 / 0.18),
+    inset 0 0 0 1px var(--color-border);
+}
+
+.att-spinner svg[data-spinning] {
+  animation: att-spin 0.9s linear infinite;
+}
+
+.att-remove {
+  z-index: 1;
+  transition-delay: 60ms;
+  outline: none;
+}
+
+/* 读取中显示加载点；悬停或键盘聚焦时同一位置换成删除键（读取中也能移除，移除即取消读取） */
+.att-tile:not([data-busy]) .att-spinner,
+.att-tile[data-busy]:is(:hover, :focus-within) .att-spinner,
+.att-tile[data-busy]:not(:hover, :focus-within) .att-remove {
+  opacity: 0;
+  filter: blur(4px);
+  pointer-events: none;
+}
+
+.att-tile[data-busy]:not(:hover, :focus-within) .att-remove {
+  scale: 0.8;
+  transition-delay: 0ms;
+}
+
+.att-remove:hover,
+.att-remove:focus-visible {
+  scale: 1.12;
+  transition-delay: 0ms;
+}
+
+.att-remove:focus-visible {
+  box-shadow:
+    0 0 0 2px var(--color-surface),
+    0 0 0 4px color-mix(in srgb, var(--color-accent) 55%, transparent);
+}
+
+/* 图片上的删除键：磨砂白；文件上的删除键：实色面 */
+.att-remove-frost {
+  background: var(--color-frost);
+  color: var(--color-on-frost);
+  box-shadow:
+    0 1px 3px rgb(0 0 0 / 0.25),
+    inset 0 0 0 0.5px rgb(0 0 0 / 0.08);
+  backdrop-filter: blur(8px);
+}
+
+.att-remove-solid {
+  background: var(--color-surface);
+  color: var(--color-muted);
+  box-shadow:
+    0 1px 3px rgb(0 0 0 / 0.18),
+    inset 0 0 0 1px var(--color-border);
+}
+
+.att-remove-solid:hover {
+  color: var(--color-fg);
+}
+
+.att-warn {
+  position: absolute;
+  bottom: 4px;
+  left: 4px;
+  padding: 1px 4px;
+  border-radius: 5px;
+  background: var(--color-scrim);
+  color: var(--color-on-scrim);
+  font-size: 8.5px;
+  line-height: 12px;
+  backdrop-filter: blur(6px);
+}
+
+/* 唇条：输入框上沿后面的灰色小舌，挂载时轻轻上滑淡入 */
+@keyframes lip-in {
+  from {
+    opacity: 0;
+    translate: 0 14px;
+  }
+}
+
+.composer-lip {
+  animation: lip-in 300ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes lip-item-in {
+  from {
+    opacity: 0;
+    translate: 0 3px;
+  }
+}
+
+.lip-item-in {
+  animation: lip-item-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/*
+ * 语音胶囊：麦克风按钮按下后宽度 30 → 168 弹性展开、底色渐变成浅红；展开后波形与计时再淡入。
+ * 收起时内容先淡出，宽度稍后收回，颜色同时褪回。
+ */
+.voice-pill {
+  position: relative;
+  display: flex;
+  height: 30px;
+  width: 30px;
+  flex: none;
+  align-items: center;
+  overflow: hidden;
+  border-radius: 15px;
+  transition:
+    width 300ms cubic-bezier(0.3, 1.25, 0.6, 1) 60ms,
+    background-color 220ms ease,
+    box-shadow 220ms ease;
+}
+
+.voice-pill[data-recording] {
+  width: 168px;
+  background-color: color-mix(in srgb, var(--color-danger) 10%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-danger) 25%, transparent);
+  transition:
+    width 340ms cubic-bezier(0.34, 1.4, 0.64, 1),
+    background-color 220ms ease,
+    box-shadow 220ms ease;
+}
+
+.voice-idle,
+.voice-live {
+  transition: opacity 160ms ease;
+}
+
+.voice-pill[data-recording] .voice-idle {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.voice-live {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 4px 0 10px;
+  color: var(--color-danger);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.voice-pill[data-recording] .voice-live {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.voice-wave,
+.voice-time {
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+
+.voice-pill[data-recording] :is(.voice-wave, .voice-time) {
+  opacity: 1;
+  transition-delay: 200ms;
+}
+
+.voice-wave i {
+  display: block;
+  width: 2.5px;
+  min-height: 3px;
+  border-radius: 2px;
+  background: currentColor;
+  opacity: 0.85;
+  transition: height 90ms linear;
+}
+
+@keyframes voice-dot {
+  0%,
+  100% {
+    opacity: 1;
+    scale: 1;
+  }
+  50% {
+    opacity: 0.45;
+    scale: 0.8;
+  }
+}
+
+.voice-dot {
+  animation: voice-dot 1.2s ease-in-out infinite;
+}
+
+/* 语音识别：灰色的临时文本定稿后过渡成正文色 */
+@keyframes voice-final {
+  from {
+    color: var(--color-muted);
+  }
+}
+
+.voice-final {
+  animation: voice-final 320ms ease-out;
+}
+
+/* 上下文卡片：标题行的箭头旋转；展开区 grid 行 0fr → 1fr，分项逐行错开淡入上移 */
+.ctx-chevron {
+  transition: rotate 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.ctx-chevron[data-open] {
+  rotate: 180deg;
+}
+
+.ctx-expand {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 320ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.ctx-expand[data-open] {
+  grid-template-rows: 1fr;
+}
+
+.ctx-row {
+  opacity: 0;
+  translate: 0 6px;
+  transition:
+    opacity 200ms ease,
+    translate 260ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.ctx-expand[data-open] .ctx-row {
+  opacity: 1;
+  translate: 0 0;
+  transition-delay: calc(var(--i, 0) * 45ms + 60ms);
+}
+
+/* 明细分组展开：条目逐个错开淡入上移 */
+.ctx-item {
+  opacity: 0;
+  translate: 0 4px;
+  transition:
+    opacity 180ms ease,
+    translate 240ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.ctx-group[data-open] .ctx-item {
+  opacity: 1;
+  translate: 0 0;
+  transition-delay: calc(min(var(--i, 0), 12) * 30ms + 40ms);
+}
+
+@keyframes ctx-seg-in {
+  from {
+    width: 0;
+  }
+}
+
+.ctx-seg {
+  transition: width 500ms cubic-bezier(0.22, 1, 0.36, 1);
+  animation: ctx-seg-in 500ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: calc(var(--i, 0) * 70ms + 80ms);
+}
+
+/* 思考滑杆：拇指松手后弹到最近的档位，填充区宽度随之过渡；当前档名换值时淡入 */
+.think-thumb,
+.think-fill {
+  transition-duration: 320ms;
+  transition-timing-function: cubic-bezier(0.34, 1.45, 0.64, 1);
+}
+
+.think-thumb {
+  transition-property: left, scale;
+}
+
+.think-fill {
+  transition-property: width;
+}
+
+.think-track[data-dragging] :is(.think-thumb, .think-fill) {
+  transition-duration: 0ms;
+}
+
+.think-track[data-dragging] .think-thumb {
+  scale: 1.06;
+  transition-property: scale;
+  transition-duration: 160ms;
+}
+
+@keyframes value-in {
+  from {
+    opacity: 0;
+    translate: 0 3px;
+  }
+}
+
+.value-in {
+  display: inline-block;
+  animation: value-in 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* 减少动态效果：只保留透明度变化，不做缩放、模糊、位移与宽度动画 */
+@keyframes att-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes att-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .att-strip-wrap {
+    transition: opacity 160ms ease;
+  }
+  .att-slot,
+  .att-tile {
+    animation: att-fade-in 160ms ease both;
+    animation-delay: 0ms;
+  }
+  .att-slot[data-removing] {
+    animation: att-fade-out 160ms ease forwards;
+  }
+  .att-slot[data-removing] .att-tile {
+    animation: none;
+  }
+  .att-tile[data-status="error"] .att-body {
+    animation: none;
+  }
+  .att-inner,
+  .att-tile:is([data-status="queued"], [data-status="reading"], [data-status="error"]) .att-inner {
+    scale: 1;
+    transition: none;
+  }
+  .att-ring .att-ring-bar {
+    transition: stroke 200ms ease;
+  }
+  .att-badge,
+  .att-remove:hover,
+  .att-remove:focus-visible,
+  .att-tile:not([data-busy]) .att-spinner,
+  .att-tile[data-busy]:is(:hover, :focus-within) .att-spinner,
+  .att-tile[data-busy]:not(:hover, :focus-within) .att-remove {
+    filter: none;
+    scale: 1;
+    transition: opacity 160ms ease;
+    transition-delay: 0ms;
+  }
+  .att-spinner svg[data-spinning] {
+    animation: none;
+  }
+  .composer-lip,
+  .lip-item-in {
+    animation: att-fade-in 200ms ease both;
+  }
+  .voice-pill,
+  .voice-pill[data-recording] {
+    transition:
+      background-color 200ms ease,
+      box-shadow 200ms ease;
+  }
+  .voice-pill[data-recording] :is(.voice-wave, .voice-time) {
+    transition-delay: 0ms;
+  }
+  .voice-wave i {
+    transition: none;
+  }
+  .voice-dot {
+    animation: none;
+  }
+  .ctx-chevron,
+  .ctx-expand {
+    transition: none;
+  }
+  .ctx-row,
+  .ctx-expand[data-open] .ctx-row,
+  .ctx-item,
+  .ctx-group[data-open] .ctx-item {
+    translate: 0 0;
+    transition: opacity 160ms ease;
+    transition-delay: 0ms;
+  }
+  .ctx-seg {
+    transition: none;
+    animation: att-fade-in 200ms ease both;
+  }
+  .think-thumb,
+  .think-fill,
+  .think-track[data-dragging] .think-thumb {
+    transition: none;
+    scale: 1;
+  }
+  .value-in {
+    animation: att-fade-in 160ms ease both;
   }
 }

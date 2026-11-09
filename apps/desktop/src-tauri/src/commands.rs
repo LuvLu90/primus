@@ -8,9 +8,12 @@ use tauri::State;
 use tauri::ipc::Channel;
 
 use crate::account::{AuthError, AuthStatus};
-use crate::core_config::{ModelConfigState, ModelsInfo};
+use crate::core_config::{
+    FetchInput, ModelConfigState, ModelsInfo, ProviderInput, ProviderView, ProvidersChanged,
+};
 use crate::fs_watch::{IndexChanged, IndexNotifier};
 use crate::paths::DataPaths;
+use crate::providers::ProviderModel;
 use crate::rpc_bridge::{BatchSink, BridgeError, CoreBatch};
 use crate::session_index::{SessionIndex, SessionPage, SessionSummary};
 use crate::sessions::{AppSessions, SessionError, Sessions};
@@ -18,8 +21,18 @@ use crate::supervisor::Supervisor;
 use crate::updater::{LaunchOutcome, UpdateChannel, UpdateError, UpdateStatus, Updater};
 use crate::workspaces::{TrustDetails, WorkspaceInfo, Workspaces};
 
-/// 外部链接只允许 http/https，长度有限且不含空白与控制字符（防止被当成命令行参数或本地路径执行）。
+/// 可以打开的系统设置页（语音输入被系统隐私设置拒绝时，引导用户去开麦克风 / 联机语音识别）。只认这几个完整值。
+const SETTINGS_PAGES: &[&str] = &[
+    "ms-settings:privacy-microphone",
+    "ms-settings:privacy-speech",
+];
+
+/// 外部链接只允许 http/https（以及 [`SETTINGS_PAGES`] 中的系统设置页），长度有限且不含空白与控制字符
+/// （防止被当成命令行参数或本地路径执行）。
 fn check_external_url(target: &str) -> Result<(), String> {
+    if SETTINGS_PAGES.contains(&target) {
+        return Ok(());
+    }
     let lower = target.to_ascii_lowercase();
     let scheme_ok = lower.starts_with("https://") || lower.starts_with("http://");
     let host_ok = target.split_once("://").is_some_and(|(_, rest)| {
@@ -415,19 +428,19 @@ fn delete_session<S: BatchSink + Clone>(
     Ok(())
 }
 
-/// 账号状态（第 9.7 节）。内置账号阶段恒为已登录。
+/// 账号状态（第 9.7 节）。账号服务接入前恒为未登录、不可登录。
 #[tauri::command]
 pub(crate) fn auth_status() -> AuthStatus {
     crate::account::status()
 }
 
-/// 系统浏览器登录（PKCE）。内置账号阶段返回 `notAvailable`。
+/// 系统浏览器登录（PKCE）。账号服务接入前返回 `notAvailable`。
 #[tauri::command]
 pub(crate) fn auth_login() -> Result<AuthStatus, AuthError> {
     crate::account::login()
 }
 
-/// 登出。内置账号阶段返回 `notAvailable`。
+/// 登出。账号服务接入前返回 `notAvailable`。
 #[tauri::command]
 pub(crate) fn auth_logout() -> Result<(), AuthError> {
     crate::account::logout()
@@ -439,10 +452,57 @@ pub(crate) fn models_get(models: State<'_, ModelConfigState>) -> ModelsInfo {
     models.info()
 }
 
-/// 重新获取并写入模型配置；内置阶段为按内置配置重写 `models.json` 与保险库中的令牌。
+/// 重新读取 `providers.json` 并重写 Core 的 `models.json` 与默认模型（不联网获取模型列表）。
 #[tauri::command(async)]
 pub(crate) fn models_refresh(models: State<'_, ModelConfigState>) -> ModelsInfo {
     models.refresh()
+}
+
+/// 订阅模型配置变化：每次渠道保存 / 删除、刷新、改默认模型或启动时后台获取到内置渠道的模型后推送完整的 `ModelsInfo`。
+/// 再次调用替换旧的订阅。
+#[tauri::command]
+pub(crate) fn models_watch(models: State<'_, ModelConfigState>, on_event: Channel<ModelsInfo>) {
+    models.set_listener(move |info| {
+        let _ = on_event.send(info);
+    });
+}
+
+/// 全部模型渠道（含 `hasKey` 与密钥末 4 位 `keyHint`，不含密钥）。
+#[tauri::command(async)]
+pub(crate) fn providers_list(
+    models: State<'_, ModelConfigState>,
+) -> Result<Vec<ProviderView>, String> {
+    models.providers_list()
+}
+
+/// 新建（`input.id` 缺省）或修改渠道；`input.apiKey` 缺省为保留已存的密钥。保存后重写 Core 配置。
+#[tauri::command(async)]
+pub(crate) fn provider_save(
+    models: State<'_, ModelConfigState>,
+    input: ProviderInput,
+) -> Result<ProvidersChanged, String> {
+    models.provider_save(input)
+}
+
+/// 删除渠道及其密钥，重写 Core 配置。
+#[tauri::command(async)]
+pub(crate) fn provider_delete(
+    models: State<'_, ModelConfigState>,
+    id: String,
+) -> Result<ProvidersChanged, String> {
+    models.provider_delete(&id)
+}
+
+/// 从渠道的模型列表接口获取模型（不保存）：已保存的渠道给 `id`（可带未保存的修改），草稿给 `api` + `baseUrl` + `apiKey`。
+/// 已保存的模型保留用户改过的参数，新模型用默认参数。
+#[tauri::command]
+pub(crate) async fn provider_fetch_models(
+    models: State<'_, ModelConfigState>,
+    input: FetchInput,
+) -> Result<Vec<ProviderModel>, String> {
+    let target = models.fetch_target(input)?;
+    let fetched = crate::providers::fetch_models(target.api, &target.base_url, &target.key).await?;
+    Ok(crate::providers::merge_models(&target.saved, &fetched))
 }
 
 /// 设置页改选默认模型（`provider/modelId`，只能选列表中的模型；新拉起的 Core 进程生效）。
@@ -547,6 +607,8 @@ mod tests {
     fn external_url_only_http_https() {
         assert!(check_external_url("https://example.com/a?b=1").is_ok());
         assert!(check_external_url("HTTP://example.com").is_ok());
+        assert!(check_external_url("ms-settings:privacy-microphone").is_ok());
+        assert!(check_external_url("ms-settings:privacy-speech").is_ok());
         for bad in [
             "file:///C:/Windows/System32/cmd.exe",
             "C:\\Windows\\notepad.exe",
@@ -555,6 +617,10 @@ mod tests {
             "https:///etc/passwd",
             "https://example.com/a b",
             "https://example.com/\n",
+            "ms-settings:",
+            "ms-settings:privacy-webcam",
+            "ms-settings:privacy-microphone ",
+            "MS-SETTINGS:privacy-microphone",
         ] {
             assert!(check_external_url(bad).is_err(), "{bad}");
         }
@@ -827,4 +893,56 @@ mod tests {
             None
         );
     }
+}
+
+/// 工作区所在 Git 仓库的当前分支（只读，直接读 `.git/HEAD`）；不是仓库时返回 `null`。
+#[tauri::command(async)]
+pub(crate) fn git_branch(workspace: String) -> Option<crate::git::GitBranch> {
+    let path = Path::new(&workspace);
+    if workspace.is_empty() || !path.is_absolute() {
+        return None;
+    }
+    crate::git::branch(path)
+}
+
+/// 输入框图片附件：读取本地图片，在内存中按最长边 `max_edge` 缩小并编码为 base64，附带缩略图（不写任何文件）。
+#[tauri::command(async)]
+pub(crate) fn attachment_image(
+    path: String,
+    max_edge: u32,
+) -> Result<crate::attachments::AttachmentImage, String> {
+    let path = Path::new(&path);
+    if !path.is_absolute() {
+        return Err("附件路径必须是绝对路径".into());
+    }
+    crate::attachments::read_image(path, max_edge)
+}
+
+/// 语音输入是否可用（Windows 有系统语音语言时为 true）。
+#[tauri::command]
+pub(crate) fn speech_available(speech: State<'_, crate::platform::speech::Speech>) -> bool {
+    speech.available()
+}
+
+/// 开始语音听写：识别事件（interim / final / error / end）经 Channel 推送；已有会话时先停止旧的。
+/// 启动失败也走事件（`error` 带可解决它的系统设置页，随后 `end`），命令本身只在 IPC 层失败。
+#[tauri::command(async)]
+pub(crate) fn speech_start(
+    speech: State<'_, crate::platform::speech::Speech>,
+    on_event: Channel<crate::platform::speech::SpeechEvent>,
+) -> Result<(), String> {
+    let sink: crate::platform::speech::SpeechSink = Arc::new(move |event| {
+        let _ = on_event.send(event);
+    });
+    if let Err(failure) = speech.start(sink.clone()) {
+        sink(failure.into());
+        sink(crate::platform::speech::SpeechEvent::End);
+    }
+    Ok(())
+}
+
+/// 停止语音听写（之后推送 `end`）。
+#[tauri::command]
+pub(crate) fn speech_stop(speech: State<'_, crate::platform::speech::Speech>) {
+    speech.stop();
 }

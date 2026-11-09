@@ -1,6 +1,7 @@
 "use client";
 
 // 输入框周边的弹出菜单：选择工作区、权限模式；以及附件（本地路径引用）小标签。
+import { appendFileTags } from "@primus/protocol";
 import {
   Check,
   FileText,
@@ -28,12 +29,12 @@ import { TrustDialog } from "./trust-dialog";
 
 const t = strings.chat;
 
-/** 菜单行：圆角高亮、图标 + 文字，高亮态用轻微的黑/白叠色 */
-const rowClass =
+/** 菜单行：圆角高亮、图标 + 文字，高亮态用轻微的黑/白叠色（输入栏各菜单与模型列表共用） */
+export const rowClass =
   "mx-1.5 flex cursor-default select-none items-center gap-2.5 rounded-[10px] px-2.5 py-[7px] text-[13px] text-fg outline-none " +
   "data-[highlighted]:bg-black/[0.06] data-[disabled]:opacity-45 dark:data-[highlighted]:bg-white/[0.1]";
 
-const separatorClass = "mx-3 my-1 h-px bg-black/[0.07] dark:bg-white/[0.09]";
+export const separatorClass = "mx-3 my-1 h-px bg-black/[0.07] dark:bg-white/[0.09]";
 
 /** 取路径最后一段作为显示名（兼容 \ 与 /） */
 export function baseName(path: string): string {
@@ -325,8 +326,13 @@ export function AttachmentChips({
   );
 }
 
-/** 发送时把附件作为路径引用附在消息末尾（本地应用：不复制、不上传，Core 按路径读取） */
+/**
+ * 发送时把附件作为 Core 原生的 `<file name="路径"></file>` 引用附在正文之后（本地应用：不复制、不上传）。
+ * 文本文件由第一方扩展 primus-attach 在 Core 的 input 事件里内联，其余由模型按路径用工具读取
+ */
 export function withAttachments(message: string, paths: string[]): string {
-  if (paths.length === 0) return message;
-  return `${message}\n\n${t.attachmentsPrompt}\n${paths.map((p) => `- ${p}`).join("\n")}`;
+  return appendFileTags(
+    message,
+    paths.map((path) => ({ path })),
+  );
 }

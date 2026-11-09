@@ -2,18 +2,21 @@
 //!
 //! 启动顺序：取令牌模式（`--secret`，无窗口）→ 提权修复模式（`--repair-data-dir`）→ 准备数据目录
 //! （第 4 章，不可写时弹修复引导）→ 单实例 → 安装待装的更新（有则拉起安装器并退出，第 3.6 节）→
-//! 写入模型配置与令牌（第 9.2、9.4 节）→ 主窗口 → 约 10 秒后自动检查更新。
+//! 写入内置渠道（仅首次）并按模型渠道生成 Core 配置（第 9.2、9.4 节）→ 主窗口 → 约 10 秒后自动检查更新。
 //! 各模块随开发计划逐步实现。
 
 mod account;
+mod attachments;
 mod builtin;
 mod commands;
 mod core_config;
 mod fs_watch;
 mod git;
 mod job;
+mod model_catalog;
 mod paths;
 mod platform;
+mod providers;
 mod rpc_bridge;
 mod session_index;
 mod sessions;
@@ -22,6 +25,7 @@ mod supervisor;
 mod tray;
 mod updater;
 mod vault;
+mod window_placement;
 mod workspaces;
 
 use std::sync::Arc;
@@ -47,8 +51,11 @@ pub fn run() {
 
     // 模型配置状态；写入（refresh）放到 setup 中，等单实例插件放行本进程之后再做，
     // 避免被转发后退出的第二个实例改写主实例正在使用的保险库与 models.json
-    let model_config =
-        core_config::ModelConfigState::new(data_paths.core_dir(), data_paths.vault_dir());
+    let model_config = core_config::ModelConfigState::new(
+        data_paths.core_dir(),
+        data_paths.vault_dir(),
+        &data_paths.app_dir(),
+    );
 
     // Core 进程监管：所有 Core 进程放进同一个 Job Object，主进程被强杀时由系统统一回收（第 2.2 节）
     let supervisor = paths::exe_dir()
@@ -120,10 +127,23 @@ pub fn run() {
                 if updater::install_on_startup(&updater) {
                     std::process::exit(0);
                 }
-                // 模型配置：校验内置配置（将来为账号服务下发），令牌写入保险库，生成 Core 的 models.json 与默认模型。
+                // 模型配置：首次启动写入内置渠道与其密钥（之后由用户管理），删除旧版内置令牌，
+                // 再按 providers.json 生成 Core 的 models.json 与默认模型。
                 // 插件（含单实例）在 setup 之前初始化，到这里已确认是主实例。
                 // 失败不阻止启动：设置页与输入框据 models_get 的 error 提示，并可用 models_refresh 重试
-                app.state::<core_config::ModelConfigState>().refresh();
+                let model_config = app.state::<core_config::ModelConfigState>();
+                let seeded = model_config.seed_and_migrate();
+                model_config.refresh();
+                if seeded {
+                    // 内置渠道的模型列表在后台获取一次，不阻塞启动；失败时留空，设置页提示用户获取
+                    let handle = app.handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        let state = handle.state::<core_config::ModelConfigState>();
+                        if let Err(e) = state.fetch_and_save(builtin::SEED_PROVIDER_ID).await {
+                            eprintln!("[core_config] 内置渠道模型列表获取失败：{e}");
+                        }
+                    });
+                }
                 // 会话索引（第 10.2 节）：同样在 setup 中打开，第二个实例不碰主实例的库。
                 // 库文件打不开时退回内存库，本次运行内列表照常可用
                 let session_index = Arc::new(
@@ -139,7 +159,7 @@ pub fn run() {
                 app.manage(index_notifier.clone());
                 // 会话目录监听与首次全量扫描在后台线程进行，不阻塞窗口创建（第 10.2 节）
                 fs_watch::start(session_index, index_notifier);
-                let config = app
+                let mut config = app
                     .config()
                     .app
                     .windows
@@ -147,9 +167,25 @@ pub fn run() {
                     .find(|w| w.label == "main")
                     .cloned()
                     .ok_or("tauri.conf.json 缺少 main 窗口配置")?;
-                tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?
+                // 先隐藏创建，按光标所在显示器摆好位置与大小再显示（window_placement）；
+                // 不用配置里的 center（只按主显示器、按逻辑像素居中，窗口大于工作区时会出屏）
+                let size = (config.width, config.height);
+                let min = (
+                    config.min_width.unwrap_or(0.0),
+                    config.min_height.unwrap_or(0.0),
+                );
+                let visible = config.visible;
+                config.center = false;
+                config.visible = false;
+                let window = tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?
                     .data_directory(webview_dir)
                     .build()?;
+                place_main_window(app.handle(), &window, size, min);
+                // App 自己的页面直接授予麦克风权限（语音输入的波形），不弹 WebView2 权限框
+                platform::auto_grant_microphone(&window);
+                if visible {
+                    window.show()?;
+                }
                 // 主窗口起来后约 10 秒自动检查更新，之后每 24 小时一次（自动更新关闭时跳过，失败只记日志）
                 updater::start_auto_check(app.handle().clone(), updater);
                 Ok(())
@@ -161,6 +197,7 @@ pub fn run() {
         .manage(workspaces::Workspaces::new(&workspaces_dir))
         .manage(model_config)
         .manage(updater)
+        .manage(platform::speech::Speech::default())
         .invoke_handler(tauri::generate_handler![
             commands::window_set_bounds,
             commands::open_external,
@@ -185,11 +222,21 @@ pub fn run() {
             commands::models_get,
             commands::models_refresh,
             commands::models_set_default,
+            commands::models_watch,
+            commands::providers_list,
+            commands::provider_save,
+            commands::provider_delete,
+            commands::provider_fetch_models,
             commands::update_status,
             commands::update_watch,
             commands::update_check,
             commands::update_settings_set,
             commands::update_install,
+            commands::git_branch,
+            commands::attachment_image,
+            commands::speech_available,
+            commands::speech_start,
+            commands::speech_stop,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build Primus")
@@ -199,4 +246,44 @@ pub fn run() {
                 app.state::<supervisor::Supervisor>().shutdown();
             }
         });
+}
+
+/// 主窗口首次摆放：光标所在显示器（取不到时为主显示器）的工作区内居中，默认尺寸放不下时缩小（window_placement）。
+fn place_main_window(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+    size: (f64, f64),
+    min: (f64, f64),
+) {
+    let monitor = app
+        .cursor_position()
+        .ok()
+        .and_then(|p| app.monitor_from_point(p.x, p.y).ok().flatten())
+        .or_else(|| app.primary_monitor().ok().flatten());
+    let Some(monitor) = monitor else {
+        let _ = window.center();
+        return;
+    };
+    let area = monitor.work_area();
+    let bounds = window_placement::centered_bounds(
+        window_placement::WorkArea {
+            x: area.position.x,
+            y: area.position.y,
+            width: area.size.width,
+            height: area.size.height,
+        },
+        monitor.scale_factor(),
+        size,
+        min,
+    );
+    // 设两次：第一次把窗口移到目标显示器，跨缩放比例时系统会按新 DPI 调整窗口大小；第二次定下最终的物理尺寸与位置
+    for _ in 0..2 {
+        if let Err(e) =
+            platform::set_window_bounds(window, bounds.x, bounds.y, bounds.width, bounds.height)
+        {
+            eprintln!("主窗口摆放失败，改用系统居中：{e}");
+            let _ = window.center();
+            return;
+        }
+    }
 }

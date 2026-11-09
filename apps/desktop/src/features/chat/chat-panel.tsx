@@ -1,12 +1,15 @@
 "use client";
 
-import type { AgentMessage, ContextUsage } from "@primus/protocol";
-import { ArrowUp, Folder, FolderOpen, Maximize2, Minimize2, Plus, Square, X } from "lucide-react";
+import { type AgentMessage, type ImageContent, splitFileTags } from "@primus/protocol";
+import { ArrowUp, Maximize2, Minimize2, Plus, Square } from "lucide-react";
+import { useRouter } from "next/navigation";
 import {
+  type ClipboardEvent,
+  type DragEvent,
   type FormEvent,
   Fragment,
   type KeyboardEvent,
-  memo,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -17,34 +20,35 @@ import { LogoMark } from "@/components/brand/logo";
 import { glassButtonClass, useGlassStyle } from "@/components/layout/glass-panel";
 import { useMediaQuery } from "@/components/theme/appearance-controller";
 import { GlassButton } from "@/components/ui/glass-button";
-import {
-  GlassPopover,
-  GlassPopoverContent,
-  GlassPopoverTrigger,
-} from "@/components/ui/glass-popover";
-import { GlassSurface } from "@/components/ui/glass-surface";
 import { type ChatTab, useSessionsStore } from "@/features/sessions/sessions-store";
-import { getPlatform, isTauriRuntime } from "@/lib/platform";
-import type { ModelsInfo, WorkspaceInfo } from "@/lib/platform/types";
+import { getFileDrop, getPlatform, isTauriRuntime } from "@/lib/platform";
+import type { SpeechSettingsPage, WorkspaceInfo } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
+import { useModelsInfo, useProviderNames } from "@/lib/use-models";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
 import { AgentTurn } from "./agent-turn";
 import { ApprovalCard } from "./approval-card";
+import { AttachmentStrip } from "./attachments/attachment-strip";
+import { useAttachments } from "./attachments/use-attachments";
+import { ComposerLip } from "./composer-lip";
 import {
-  AttachmentChips,
   failure,
   PermissionPicker,
   permissionMeta,
   useCanPickFiles,
   useCanUseWorkspaces,
-  WorkspacePicker,
   withAttachments,
 } from "./composer-menus";
+import { ContextButton } from "./context-card";
+import type { ErrorActions } from "./error-card";
 import { ThinkingIndicator } from "./message-content";
 import { type IndexItem, MessageIndex } from "./message-index";
-import { ModelPicker } from "./model-picker";
+import { ModelPicker, withCoreCaps } from "./model-picker";
 import { useChatSession } from "./use-chat-session";
+import { UserBubble } from "./user-bubble";
+import { SETTINGS_URLS, useVoiceInput } from "./voice/use-voice-input";
+import { VoiceButton } from "./voice/voice-button";
 
 // 中央对话区：实色"纸面"上的时间线 + 悬浮在其上的玻璃输入框（滚动内容从玻璃下方折射穿过）。
 // 回复按 Markdown 渲染，流式输出平滑揭示；代码高亮、虚拟列表在后续任务补上。
@@ -57,6 +61,12 @@ function textOf(content: unknown): string {
   return content
     .map((c: { type?: string; text?: string }) => (c.type === "text" ? (c.text ?? "") : ""))
     .join("");
+}
+
+/** 消息索引里的一行：正文；只有附件时列出文件名 */
+function indexText(text: string): string {
+  const { message, files } = splitFileTags(text);
+  return message || files.map((f) => f.path.split(/[\\/]/).pop() ?? f.path).join("、");
 }
 
 /** 一轮：一条用户消息 + 其后的助手消息与工具结果（会话开头若没有用户消息，user 为空） */
@@ -84,18 +94,6 @@ function groupTurns(messages: AgentMessage[]): Turn[] {
   return turns;
 }
 
-const UserBubble = memo(function UserBubble({ text, index }: { text: string; index: number }) {
-  return (
-    <article
-      aria-label={t.you}
-      data-msg-index={index}
-      className="msg-in max-w-[80%] scroll-mt-6 self-end rounded-[18px] rounded-br-md bg-bubble px-3.5 py-2 text-fg"
-    >
-      <p className="whitespace-pre-wrap leading-relaxed">{text}</p>
-    </article>
-  );
-});
-
 // 欢迎页：标志 + 标题 + 三个液态玻璃建议按钮
 function Welcome({ onPick }: { onPick: (text: string) => void }) {
   const glass = useGlassStyle();
@@ -119,133 +117,6 @@ function Welcome({ onPick }: { onPick: (text: string) => void }) {
         ))}
       </div>
     </div>
-  );
-}
-
-/**
- * 输入框上方附着的液态玻璃条：未选择工作区时提示选择文件夹（可不选直接对话）。
- * 选好工作区或开始对话后收起（高度与透明度过渡）。
- */
-function WorkspaceBar({
-  visible,
-  current,
-  onPicked,
-  onError,
-}: {
-  visible: boolean;
-  current: WorkspaceInfo | null;
-  onPicked: (ws: WorkspaceInfo) => void;
-  onError: (message: string | null) => void;
-}) {
-  const glass = useGlassStyle(0.2);
-  return (
-    <div
-      aria-hidden={!visible}
-      inert={!visible}
-      className={cn(
-        "grid transition-[grid-template-rows,opacity,transform] duration-300 ease-out",
-        visible ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] translate-y-3 opacity-0",
-      )}
-    >
-      <div className="min-h-0 overflow-hidden px-4">
-        <GlassSurface
-          blur={24}
-          radius={18}
-          {...glass}
-          // 不要立体高光与投影（投影被外层裁切后只在两侧露出一截）；边框用内描边，
-          // 外描边的上沿会被外层 overflow-hidden 裁掉
-          specular={false}
-          className="-mb-5 pb-5 ring-1 ring-inset ring-black/[0.08] dark:ring-white/[0.1]"
-        >
-          <div className="flex h-10 items-center px-4">
-            <WorkspacePicker current={current} onPicked={onPicked} onError={onError}>
-              <button
-                type="button"
-                className="flex items-center gap-2 text-[13px] text-muted outline-none transition-colors hover:text-fg focus-visible:text-fg data-[state=open]:text-fg"
-              >
-                <FolderOpen aria-hidden size={15} />
-                <span className="font-medium">{t.chooseFolder}</span>
-              </button>
-            </WorkspacePicker>
-          </div>
-        </GlassSurface>
-      </div>
-    </div>
-  );
-}
-
-/** 1.2k / 128k / 1M：上下文 token 的紧凑写法 */
-function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${Math.round(n / 100_000) / 10}M`.replace(".0M", "M");
-  if (n >= 1_000) return `${Math.round(n / 100) / 10}k`.replace(".0k", "k");
-  return String(n);
-}
-
-/** 上下文占用：只显示小圆环，点击展开详情（tokens / 上下文窗口）。压缩后、下一次回复前占用未知 */
-function ContextRing({ usage }: { usage?: ContextUsage }) {
-  const r = 7;
-  const c = 2 * Math.PI * r;
-  const known = usage?.percent != null && usage.tokens != null;
-  const percent = known ? Math.min(100, Math.max(0, usage?.percent ?? 0)) : 0;
-  const shown = known ? `${percent < 10 ? percent.toFixed(1) : Math.round(percent)}%` : "—";
-  const tone =
-    percent >= 90 ? "stroke-danger" : percent >= 75 ? "stroke-amber-500" : "stroke-accent";
-  return (
-    <GlassPopover>
-      <GlassPopoverTrigger asChild>
-        <button
-          type="button"
-          aria-label={`${t.context} ${shown}`}
-          className="grid size-8 place-items-center rounded-full outline-none transition-colors hover:bg-hover data-[state=open]:bg-hover"
-        >
-          <svg aria-hidden width="18" height="18" viewBox="0 0 18 18" className="-rotate-90">
-            <circle
-              cx="9"
-              cy="9"
-              r={r}
-              fill="none"
-              strokeWidth="2.25"
-              className="stroke-black/10 dark:stroke-white/15"
-            />
-            <circle
-              cx="9"
-              cy="9"
-              r={r}
-              fill="none"
-              strokeWidth="2.25"
-              strokeLinecap="round"
-              strokeDasharray={c}
-              strokeDashoffset={c * (1 - percent / 100)}
-              className={cn("transition-[stroke-dashoffset] duration-500 ease-out", tone)}
-            />
-          </svg>
-        </button>
-      </GlassPopoverTrigger>
-      <GlassPopoverContent side="top" align="end" sideOffset={8} tint={0.75} minWidth={200}>
-        <div className="flex flex-col gap-1.5 px-4 py-1.5 text-[13px]">
-          <div className="flex items-baseline justify-between gap-6">
-            <span className="font-medium">{t.context}</span>
-            <span className="tabular-nums text-muted">{shown}</span>
-          </div>
-          <div className="h-1.5 overflow-hidden rounded-full bg-black/10 dark:bg-white/15">
-            <div
-              className={cn(
-                "h-full rounded-full transition-[width] duration-500 ease-out",
-                percent >= 90 ? "bg-danger" : percent >= 75 ? "bg-amber-500" : "bg-accent",
-              )}
-              style={{ width: `${percent}%` }}
-            />
-          </div>
-          {usage && (
-            <p className="text-[12px] text-muted tabular-nums">
-              {known ? formatTokens(usage.tokens ?? 0) : "—"} / {formatTokens(usage.contextWindow)}{" "}
-              tokens
-            </p>
-          )}
-          <p className="text-[12px] text-muted">{known ? t.contextDetail : t.contextUnknown}</p>
-        </div>
-      </GlassPopoverContent>
-    </GlassPopover>
   );
 }
 
@@ -286,32 +157,23 @@ function useElementHeight<T extends HTMLElement>() {
 }
 
 /**
- * 模型配置是否可用于对话（首次引导与第 9.8 节）：没有任何已生效的模型配置时不能发送，
- * 输入框上方提示并提供“重试”（调用 `models_refresh`）。读取失败（如浏览器预览缺少该接口）时不拦截。
+ * 模型配置是否可用于对话（首次引导与第 9.8 节）：没有任何可用的模型时不能发送，
+ * 输入框上方提示并提供“去设置添加渠道”。随 `models_watch` 更新，在设置里添加渠道后立即恢复。
+ * 读取失败（如浏览器预览缺少该接口）时不拦截。
  */
 function useModelConfigGate() {
-  const [info, setInfo] = useState<ModelsInfo | null>(null);
-  const [retrying, setRetrying] = useState(false);
-  useEffect(() => {
-    let cancelled = false;
-    getPlatform()
-      .then((p) => p.modelsGet())
-      .then((i) => !cancelled && setInfo(i))
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const { info } = useModelsInfo();
+  const providerNames = useProviderNames(info);
   const unavailable = info !== null && info.error !== null && info.models.length === 0;
-  const retry = () => {
-    setRetrying(true);
-    getPlatform()
-      .then((p) => p.modelsRefresh())
-      .then(setInfo)
-      .catch(() => {})
-      .finally(() => setRetrying(false));
-  };
-  return { info, unavailable, reason: info?.error ?? null, retrying, retry };
+  return { info, providerNames, unavailable, reason: info?.error ?? null };
+}
+
+/** 语音输入被系统隐私设置拒绝时打开对应的 Windows 设置页 */
+function openVoiceSettings(page: SpeechSettingsPage | undefined) {
+  if (!page) return;
+  void getPlatform()
+    .then((p) => p.openExternal(SETTINGS_URLS[page]))
+    .catch(() => {});
 }
 
 /** 路径最后一段（工作区显示名） */
@@ -332,11 +194,18 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     coreStopped,
     send,
     abort,
+    abortRetry,
     restarting,
     restart,
     respondUi,
     selectModel,
+    refreshModels,
     pendingModel,
+    connected,
+    refreshStats,
+    requestContextStats,
+    compact,
+    setAutoCompaction,
   } = useChatSession({
     sessionPath: tab?.sessionPath,
     workspace: tab?.workspace,
@@ -344,9 +213,12 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     onOpened: tabId ? (opened) => markOpened(tabId, opened) : undefined,
   });
   const modelConfig = useModelConfigGate();
+  const router = useRouter();
+  const openModelSettings = () => router.push("/settings/?group=models");
   const [draft, setDraft] = useState("");
   const [preview, setPreview] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const mirrorRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [composerRef, composerHeight] = useElementHeight<HTMLDivElement>();
   const reducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
@@ -355,11 +227,72 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
   const setWorkspace = useAppStore((s) => s.setWorkspace);
   const permissionMode = useAppStore((s) => s.permissionMode);
   const setPermissionMode = useAppStore((s) => s.setPermissionMode);
-  const [attachments, setAttachments] = useState<string[]>([]);
   // 提交中（等待会话打开与 prompt 响应）：阻止重复提交，并锁定输入，避免成功后清掉期间新增的内容
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false);
   const PermissionIcon = permissionMeta[permissionMode].icon;
+  // 当前模型：Core 报告的 > 打开前选的 > 账号配置的默认模型
+  const currentModel = state.model
+    ? `${state.model.provider}/${state.model.id}`
+    : (pendingModel.model ?? modelConfig.info?.defaultModel ?? null);
+  // 模型列表来自设置的渠道；会话打开后能力（能否看图、是否支持思考、上下文长度）以 Core 的 get_available_models 为准
+  const settingsModels = modelConfig.info?.models;
+  const models = useMemo(
+    () => withCoreCaps(settingsModels ?? [], state.modelCaps),
+    [settingsModels, state.modelCaps],
+  );
+  const currentModelInfo = models.find((m) => m.key === currentModel);
+  // 渠道变化（models_watch）后 Core 会重新读取 models.json（primus-auth 合并 200ms 内的文件事件后才读）：
+  // 会话已打开时立即取一次能力，1 秒后再取一次，免得拿到 Core 重读之前的旧值
+  useEffect(() => {
+    if (!connected || !settingsModels) return;
+    refreshModels();
+    const timer = setTimeout(refreshModels, 1000);
+    return () => clearTimeout(timer);
+  }, [connected, settingsModels, refreshModels]);
+  // 附件：图片排队读取（当前模型能看图时），其余按路径引用；提交中不能移除
+  const attachments = useAttachments({
+    imagesSupported: currentModelInfo?.image ?? false,
+    locked: submitting,
+  });
+
+  // 语音输入：开始时记下光标前后的文字，定稿的文本插到光标处，识别中的临时文本以灰色显示在光标处
+  const voiceCtx = useRef<{ before: string; after: string } | null>(null);
+  const [voiceFinal, setVoiceFinal] = useState<{ text: string; key: number } | null>(null);
+  const voice = useVoiceInput({
+    onStart: () => {
+      const el = inputRef.current;
+      const start = el?.selectionStart ?? draft.length;
+      const end = el?.selectionEnd ?? draft.length;
+      voiceCtx.current = { before: draft.slice(0, start), after: draft.slice(end) };
+      setVoiceFinal(null);
+    },
+    onFinal: (text) => {
+      const ctx = voiceCtx.current;
+      if (!ctx) return;
+      ctx.before += text;
+      setDraft(ctx.before + ctx.after);
+      setVoiceFinal((v) => ({ text, key: (v?.key ?? 0) + 1 }));
+    },
+    onEnd: () => {
+      const ctx = voiceCtx.current;
+      voiceCtx.current = null;
+      setVoiceFinal(null);
+      if (!ctx) return;
+      // 光标放到插入的文字之后
+      const caret = ctx.before.length;
+      requestAnimationFrame(() => {
+        const el = inputRef.current;
+        if (!el) return;
+        el.focus();
+        el.setSelectionRange(caret, caret);
+      });
+    },
+  });
+  const voiceText = voiceCtx.current;
+  // 录音中输入框显示：光标前文字 + 临时文本 + 光标后文字（临时文本在上层镜像里染成灰色）
+  const shownDraft =
+    voice.recording && voiceText ? voiceText.before + voice.interim + voiceText.after : draft;
 
   // 输入框随内容伸缩：最少 2 行、最多 6 行；超出后可展开编辑（更高），仍超出则在框内滚动（不显示滚动条）
   const [expanded, setExpanded] = useState(false);
@@ -376,18 +309,79 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     const max = expanded ? Math.round(window.innerHeight * 0.5) : INPUT_LINE_PX * INPUT_MAX_LINES;
     setOverflowing(content > INPUT_LINE_PX * INPUT_MAX_LINES);
     setInputHeight(Math.min(Math.max(content, INPUT_LINE_PX * INPUT_MIN_LINES), max));
-  }, [draft, expanded]);
+  }, [shownDraft, expanded]);
 
   // 附件只取本地路径（不复制文件），去重后追加
   const [pickError, setPickError] = useState<string | null>(null);
+  const { addPaths, addBlobs } = attachments;
   const pickFiles = () =>
     getPlatform()
       .then((p) => p.dialogPickFiles())
       .then((paths) => {
         setPickError(null);
-        setAttachments((prev) => [...new Set([...prev, ...paths])]);
+        addPaths(paths);
       })
       .catch((e) => setPickError(failure(t.pickFilesFailed, e)));
+
+  // 粘贴图片：剪贴板里只有图片时接管粘贴（同时有文字时照常粘贴文字）
+  const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = [...e.clipboardData.files];
+    if (files.length === 0 || submitting) return;
+    if (e.clipboardData.getData("text/plain")) return;
+    if (addBlobs(files) > 0) e.preventDefault();
+  };
+
+  // 拖放文件：Tauri 窗口内由原生拖放给出本地路径（命中输入框时才接收），浏览器预览用 HTML5 drop 读图片内容
+  const composerBoxRef = useRef<HTMLDivElement>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const [nativeDrop, setNativeDrop] = useState(false);
+  const hitComposer = useCallback((pos?: { x: number; y: number }) => {
+    const el = composerBoxRef.current;
+    if (!pos || !el || el.offsetParent === null) return false;
+    const r = el.getBoundingClientRect();
+    return pos.x >= r.left && pos.x <= r.right && pos.y >= r.top && pos.y <= r.bottom;
+  }, []);
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void getFileDrop().then((source) => {
+      if (!source || disposed) return;
+      setNativeDrop(true);
+      void source
+        .listen((e) => {
+          if (e.type === "leave") return setDragOver(false);
+          const inside = hitComposer(e.position);
+          if (e.type === "drop") {
+            setDragOver(false);
+            if (inside && !submittingRef.current && e.paths.length > 0) addPaths(e.paths);
+          } else setDragOver(inside);
+        })
+        .then((fn) => {
+          if (disposed) fn();
+          else unlisten = fn;
+        });
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, [addPaths, hitComposer]);
+  const htmlDrag = {
+    onDragOver: (e: DragEvent) => {
+      if (nativeDrop || !e.dataTransfer.types.includes("Files")) return;
+      e.preventDefault();
+      setDragOver(true);
+    },
+    onDragLeave: (e: DragEvent) => {
+      if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragOver(false);
+    },
+    onDrop: (e: DragEvent) => {
+      if (nativeDrop) return;
+      e.preventDefault();
+      setDragOver(false);
+      if (!submittingRef.current) addBlobs([...e.dataTransfer.files]);
+    },
+  };
 
   // 只在客户端判断运行环境，避免水合不一致
   useEffect(() => setPreview(!isTauriRuntime()), []);
@@ -474,7 +468,9 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     e?.preventDefault();
     const text = draft.trim();
     if (
-      (!text && attachments.length === 0) ||
+      (!text && !attachments.hasContent) ||
+      attachments.pending ||
+      voice.recording ||
       state.running ||
       unresponsive ||
       modelConfig.unavailable ||
@@ -484,17 +480,19 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     submittingRef.current = true;
     setSubmitting(true);
     stickToBottom.current = true;
-    const message = withAttachments(text, attachments);
+    // 能看图的模型：读取好的图片随 prompt 发送；其余文件（及不看图时的图片）按路径引用
+    const { images, paths } = attachments.build();
+    const message = withAttachments(text, paths);
     setPendingUser({ text: message, index: state.messages.length });
     // 发送成功后才清空输入，失败时保留草稿和附件以便重试
-    void send(message)
+    void send(message, images)
       .then((sent) => {
         if (!sent) {
           setPendingUser(null);
           return;
         }
         setDraft("");
-        setAttachments([]);
+        attachments.clear();
         setExpanded(false);
       })
       .finally(() => {
@@ -502,6 +500,52 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
         setSubmitting(false);
       });
   };
+
+  // 错误卡片的“重试”：重新发送上一条用户消息（Core 没有“重新生成”命令；出错的回复不进入模型上下文，
+  // 见 ai/src/api/transform-messages.ts）。附件按空标签重发，文本文件由 primus-attach 重新读取；图片随 images 重发
+  const resendLast = () => {
+    if (busy || modelConfig.unavailable || submittingRef.current) return;
+    const lastUser = state.messages.findLast((m) => m.role === "user");
+    if (lastUser?.role !== "user") return;
+    const { message: body, files } = splitFileTags(textOf(lastUser.content));
+    const message = withAttachments(
+      body,
+      files.map((f) => f.path),
+    );
+    const images = Array.isArray(lastUser.content)
+      ? lastUser.content.filter((c): c is ImageContent => c.type === "image")
+      : [];
+    submittingRef.current = true;
+    setSubmitting(true);
+    stickToBottom.current = true;
+    setPendingUser({ text: message, index: state.messages.length });
+    void send(message, images.length > 0 ? images : undefined)
+      .then((sent) => {
+        if (!sent) setPendingUser(null);
+      })
+      .finally(() => {
+        submittingRef.current = false;
+        setSubmitting(false);
+      });
+  };
+  const resendRef = useRef(resendLast);
+  resendRef.current = resendLast;
+  const openSettingsRef = useRef(openModelSettings);
+  openSettingsRef.current = openModelSettings;
+  const canRetry = !busy && !modelConfig.unavailable;
+  // 稳定的引用：历史轮次的 memo 不因每次渲染新建的回调而重渲
+  const errorActions = useMemo<ErrorActions>(
+    () => ({
+      onRetry: canRetry ? () => resendRef.current() : undefined,
+      onOpenSettings: () => openSettingsRef.current(),
+    }),
+    [canRetry],
+  );
+  // 历史轮次只能去设置里检查渠道（重试只针对最后一轮）
+  const settingsOnly = useMemo<ErrorActions>(
+    () => ({ onOpenSettings: () => openSettingsRef.current() }),
+    [],
+  );
 
   // 停止：发出 abort 后到本轮结束（agent_settled，running 变为 false）之间按钮显示“正在停止”，不重复发送。
   // abort 成功时保持到 running 结束；只有失败（失败响应或超时）才提前恢复按钮以便重试。
@@ -531,16 +575,14 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
   };
 
   const shownError = error ?? state.lastError;
-  // 当前模型：Core 报告的 > 打开前选的 > 账号配置的默认模型
-  const currentModel = state.model
-    ? `${state.model.provider}/${state.model.id}`
-    : (pendingModel.model ?? modelConfig.info?.defaultModel ?? null);
   const pendingUi = state.uiRequests[0];
   const turns = useMemo(() => groupTurns(state.messages), [state.messages]);
   const indexItems = useMemo<IndexItem[]>(
     () =>
       turns.flatMap((turn) =>
-        turn.user ? [{ index: turn.user.index, text: textOf(turn.user.message.content) }] : [],
+        turn.user
+          ? [{ index: turn.user.index, text: indexText(textOf(turn.user.message.content)) }]
+          : [],
       ),
     [turns],
   );
@@ -602,6 +644,15 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                     startedAt={
                       (turn.user?.message as { timestamp?: number } | undefined)?.timestamp
                     }
+                    providerNames={modelConfig.providerNames}
+                    {...(lastTurn
+                      ? {
+                          retry: state.retry,
+                          retryResult: state.retryResult,
+                          onStopRetry: abortRetry,
+                          errorActions,
+                        }
+                      : { errorActions: settingsOnly })}
                   />
                 )}
               </Fragment>
@@ -654,12 +705,6 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
 
       <div ref={composerRef} className="pointer-events-none absolute inset-x-0 bottom-0 px-6 pb-4">
         <div className="pointer-events-auto mx-auto max-w-3xl">
-          <WorkspaceBar
-            visible={canUseWorkspaces && !shownWorkspace && !workspaceLocked}
-            current={shownWorkspace}
-            onPicked={setWorkspace}
-            onError={setPickError}
-          />
           {modelConfig.unavailable && (
             <div
               role="alert"
@@ -671,48 +716,112 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
               </div>
               <button
                 type="button"
-                onClick={modelConfig.retry}
-                disabled={modelConfig.retrying}
-                className="rounded-full bg-hover px-3 py-1 font-medium disabled:opacity-50"
+                onClick={openModelSettings}
+                className="shrink-0 rounded-full bg-hover px-3 py-1 font-medium"
               >
-                {t.retryModelConfig}
+                {t.openModelSettings}
               </button>
             </div>
           )}
           {pendingUi && (
             <ApprovalCard key={pendingUi.id} request={pendingUi} onRespond={respondUi} />
           )}
+          {/* 唇条：输入框上沿后面的灰色小舌，显示 Git 分支与工作区（选择工作区也在这里） */}
+          {canUseWorkspaces && (
+            <ComposerLip
+              workspace={shownWorkspace}
+              locked={workspaceLocked}
+              onPicked={setWorkspace}
+              onClear={() => {
+                setPickError(null);
+                setWorkspace(null);
+              }}
+              onError={setPickError}
+            />
+          )}
           {/* 中央已是玻璃，输入框保持实色白底（深色为实色面），保证输入区清晰 */}
-          <div className="relative rounded-[24px] bg-surface shadow-[0_12px_40px_-12px_rgb(0_0_0/0.35)] ring-1 ring-border transition-shadow focus-within:shadow-[0_14px_44px_-12px_rgb(0_0_0/0.4)]">
+          <div
+            ref={composerBoxRef}
+            data-drop={dragOver || undefined}
+            {...htmlDrag}
+            className="relative rounded-[24px] bg-surface shadow-[0_12px_40px_-12px_rgb(0_0_0/0.35)] ring-1 ring-border transition-[box-shadow] duration-200 focus-within:shadow-[0_14px_44px_-12px_rgb(0_0_0/0.4)] data-[drop]:ring-2 data-[drop]:ring-accent/45"
+          >
             <form onSubmit={submit} className="flex flex-col gap-2 px-3.5 pt-3.5 pb-3">
-              {pickError && (
+              {pickError ? (
                 <p role="alert" className="text-xs text-danger">
                   {pickError}
                 </p>
+              ) : (
+                voice.error && (
+                  <p role="alert" className="flex items-center gap-2 text-xs text-danger">
+                    <span className="min-w-0">{voice.error.message}</span>
+                    {voice.error.settings && (
+                      <button
+                        type="button"
+                        onClick={() => openVoiceSettings(voice.error?.settings)}
+                        className="shrink-0 rounded-full px-2 py-0.5 font-medium text-danger underline-offset-2 outline-none hover:underline focus-visible:ring-2 focus-visible:ring-danger/40"
+                      >
+                        {t.voice.openSettings}
+                      </button>
+                    )}
+                  </p>
+                )
               )}
-              <AttachmentChips
-                paths={attachments}
-                onRemove={(p) => {
-                  if (!submittingRef.current) setAttachments((prev) => prev.filter((x) => x !== p));
-                }}
+              <AttachmentStrip
+                items={attachments.items}
+                onRemove={attachments.remove}
+                onRemoved={attachments.finalizeRemove}
               />
               <div className="relative">
                 <textarea
                   ref={inputRef}
                   aria-label={t.inputLabel}
                   placeholder={t.inputPlaceholder}
-                  value={draft}
-                  readOnly={submitting}
+                  value={shownDraft}
+                  readOnly={submitting || voice.recording}
                   aria-busy={submitting}
                   onChange={(e) => setDraft(e.target.value)}
                   onKeyDown={onKeyDown}
+                  onPaste={onPaste}
+                  onScroll={(e) => {
+                    if (mirrorRef.current) mirrorRef.current.scrollTop = e.currentTarget.scrollTop;
+                  }}
                   rows={1}
                   style={{ height: inputHeight }}
                   className={cn(
                     "scroll-none block w-full resize-none bg-transparent px-1 text-[14px] leading-[22px] caret-accent outline-none placeholder:text-muted/55",
                     (overflowing || expanded) && "pr-8",
+                    voice.recording && voiceText && "text-transparent",
                   )}
                 />
+                {voice.recording && voiceText && (
+                  // 镜像层：与输入框同样排版，把识别中的临时文本染成灰色、刚定稿的一段从灰色过渡到正文色
+                  <div
+                    ref={mirrorRef}
+                    aria-hidden
+                    style={{ height: inputHeight }}
+                    className={cn(
+                      "scroll-none pointer-events-none absolute inset-x-0 top-0 overflow-hidden px-1 text-[14px] leading-[22px] break-words whitespace-pre-wrap text-fg",
+                      (overflowing || expanded) && "pr-8",
+                    )}
+                  >
+                    {voiceFinal && voiceText.before.endsWith(voiceFinal.text) ? (
+                      <>
+                        {voiceText.before.slice(
+                          0,
+                          voiceText.before.length - voiceFinal.text.length,
+                        )}
+                        <span key={voiceFinal.key} className="voice-final">
+                          {voiceFinal.text}
+                        </span>
+                      </>
+                    ) : (
+                      voiceText.before
+                    )}
+                    <span className="text-muted transition-colors">{voice.interim}</span>
+                    {voiceText.after}
+                  </div>
+                )}
                 {(overflowing || expanded) && (
                   <button
                     type="button"
@@ -732,7 +841,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                   </button>
                 )}
               </div>
-              <div className="flex items-center gap-3 text-xs text-muted">
+              <div className="flex items-center gap-2.5 text-xs text-muted">
                 {/* 附件：系统文件对话框选文件，只引用本地路径；薄壳未接入对话框时隐藏 */}
                 {canPickFiles && (
                   <GlassButton
@@ -771,60 +880,12 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                     </span>
                   </GlassButton>
                 </PermissionPicker>
-                {canUseWorkspaces &&
-                  shownWorkspace &&
-                  (workspaceLocked ? (
-                    // 会话已绑定到开始时的工作区，之后不能切换，避免界面与 Core 实际工作区不一致
-                    <span
-                      title={`${t.currentWorkspace}：${shownWorkspace.path}\n${t.workspaceLocked}`}
-                      className="flex h-[30px] items-center gap-1.5 px-2 text-muted"
-                    >
-                      <Folder aria-hidden size={14} />
-                      <span className="max-w-40 truncate text-[12px]">{shownWorkspace.name}</span>
-                    </span>
-                  ) : (
-                    // 悬停（或键盘聚焦）时文件夹图标换成关闭按钮（在名称左侧），取消已选的工作区。
-                    // 关闭按钮是触发器的兄弟元素、叠在图标位置上（按钮里不能嵌套按钮），点它不会打开菜单
-                    <span className="group/ws relative flex">
-                      <WorkspacePicker
-                        current={shownWorkspace}
-                        onPicked={setWorkspace}
-                        onError={setPickError}
-                      >
-                        <GlassButton
-                          variant="capsule"
-                          size={30}
-                          {...glass}
-                          title={`${t.currentWorkspace}：${shownWorkspace.path}`}
-                          className={glassButtonClass}
-                        >
-                          <Folder
-                            aria-hidden
-                            size={14}
-                            className="transition-opacity group-focus-within/ws:opacity-0 group-hover/ws:opacity-0"
-                          />
-                          <span className="max-w-40 truncate text-[12px] font-normal">
-                            {shownWorkspace.name}
-                          </span>
-                        </GlassButton>
-                      </WorkspacePicker>
-                      <button
-                        type="button"
-                        aria-label={`${t.clearWorkspace} ${shownWorkspace.name}`}
-                        title={t.clearWorkspace}
-                        onClick={() => {
-                          setPickError(null);
-                          setWorkspace(null);
-                        }}
-                        className="absolute left-[12px] top-1/2 z-10 grid size-[18px] -translate-y-1/2 place-items-center rounded-full text-muted opacity-0 outline-none transition-opacity hover:bg-black/[0.07] hover:text-fg focus-visible:opacity-100 group-focus-within/ws:opacity-100 group-hover/ws:opacity-100 dark:hover:bg-white/[0.1]"
-                      >
-                        <X aria-hidden size={13} strokeWidth={2} />
-                      </button>
-                    </span>
-                  ))}
                 <span className="flex-1" />
                 <ModelPicker
-                  models={modelConfig.info?.models ?? []}
+                  models={models}
+                  onOpenChange={(open) => open && refreshModels()}
+                  providerNames={modelConfig.providerNames}
+                  onOpenSettings={openModelSettings}
                   current={currentModel}
                   thinkingLevel={state.thinkingLevel ?? pendingModel.thinkingLevel}
                   thinkingLevels={state.model ? state.thinkingLevels : undefined}
@@ -832,7 +893,34 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                   onSelectModel={(model) => void selectModel({ model })}
                   onSelectThinking={(thinkingLevel) => void selectModel({ thinkingLevel })}
                 />
-                <ContextRing usage={state.contextUsage} />
+                {/* 上下文：紧挨模型按钮的小圆环（百分比只在无障碍名称里），点开是上下文卡片 */}
+                <ContextButton
+                  usage={state.contextUsage}
+                  sessionUsage={state.sessionUsage}
+                  autoCompaction={state.autoCompaction}
+                  compacting={state.compacting}
+                  stats={state.contextStats}
+                  connected={connected}
+                  busy={state.running || submitting}
+                  onOpen={() => {
+                    // 已缓存的数据直接显示（每条回复、压缩、切换模型后已刷新；分项由扩展每轮结束重推）；
+                    // 只补取还没有的
+                    if (!state.contextUsage) refreshStats();
+                    if (!state.contextStats) requestContextStats();
+                  }}
+                  onCompact={() => void compact()}
+                  onAutoCompactionChange={(enabled) => void setAutoCompaction(enabled)}
+                />
+                {voice.available && (
+                  <VoiceButton
+                    recording={voice.recording}
+                    levels={voice.levels}
+                    elapsed={voice.elapsed}
+                    disabled={submitting}
+                    onStart={voice.start}
+                    onStop={voice.stop}
+                  />
+                )}
                 {state.running ? (
                   <button
                     type="button"
@@ -849,11 +937,14 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                   <button
                     type="submit"
                     aria-label={t.send}
+                    title={attachments.pending ? t.attachments.readingBlocksSend : undefined}
                     disabled={
                       submitting ||
                       unresponsive ||
                       modelConfig.unavailable ||
-                      (!draft.trim() && attachments.length === 0)
+                      attachments.pending ||
+                      voice.recording ||
+                      (!draft.trim() && !attachments.hasContent)
                     }
                     className="grid size-8 place-items-center rounded-full bg-fg text-surface transition-[opacity,transform] active:scale-95 disabled:opacity-20 disabled:active:scale-100"
                   >

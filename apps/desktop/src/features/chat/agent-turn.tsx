@@ -3,9 +3,7 @@
 import type { AgentMessage } from "@primus/protocol";
 import {
   Brain,
-  Check,
   ChevronRight,
-  Copy,
   FilePen,
   FileText,
   type LucideIcon,
@@ -25,7 +23,9 @@ import {
 } from "react";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
-import type { TimelineContent, ToolRun } from "@/stores/session-store";
+import type { SessionState, TimelineContent, ToolRun } from "@/stores/session-store";
+import { CopyButton, revealOnTurnHover } from "./copy-button";
+import { type ErrorActions, ErrorCard, RetryNotice } from "./error-card";
 import { MarkdownText } from "./message-content";
 
 // 一轮回复（一条用户消息之后的全部助手消息与工具结果）按“工作过程 + 总结”展示：
@@ -416,35 +416,6 @@ function StepView({
   );
 }
 
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  useEffect(() => {
-    if (!copied) return;
-    const id = setTimeout(() => setCopied(false), 1500);
-    return () => clearTimeout(id);
-  }, [copied]);
-  return (
-    <button
-      type="button"
-      aria-label={copied ? strings.chat.copied : strings.chat.copy}
-      title={copied ? strings.chat.copied : strings.chat.copy}
-      onClick={() => {
-        void navigator.clipboard?.writeText(text).then(
-          () => setCopied(true),
-          () => {},
-        );
-      }}
-      className="grid size-7 place-items-center rounded-lg text-muted outline-none transition-colors hover:bg-hover hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40"
-    >
-      {copied ? (
-        <Check aria-hidden size={14} className="step-in" />
-      ) : (
-        <Copy aria-hidden size={14} />
-      )}
-    </button>
-  );
-}
-
 export interface AgentTurnProps {
   /** 这一轮的助手消息与工具结果 */
   messages: AgentMessage[];
@@ -455,6 +426,16 @@ export interface AgentTurnProps {
   streaming: boolean;
   /** 用户消息的时间（计时起点） */
   startedAt?: number;
+  /** Core 正在自动重试（只传给最后一轮） */
+  retry?: SessionState["retry"];
+  /** 最近一次自动重试的结果（只传给最后一轮） */
+  retryResult?: SessionState["retryResult"];
+  /** 停止自动重试（abort_retry） */
+  onStopRetry?: () => Promise<boolean>;
+  /** 错误卡片的操作（只传给最后一轮） */
+  errorActions?: ErrorActions;
+  /** 渠道 ID → 显示名 */
+  providerNames?: Record<string, string>;
 }
 
 function sameTurn(a: AgentTurnProps, b: AgentTurnProps): boolean {
@@ -462,7 +443,12 @@ function sameTurn(a: AgentTurnProps, b: AgentTurnProps): boolean {
     a.running !== b.running ||
     a.streaming !== b.streaming ||
     a.startedAt !== b.startedAt ||
-    a.messages.length !== b.messages.length
+    a.messages.length !== b.messages.length ||
+    a.retry !== b.retry ||
+    a.retryResult !== b.retryResult ||
+    a.onStopRetry !== b.onStopRetry ||
+    a.errorActions !== b.errorActions ||
+    a.providerNames !== b.providerNames
   )
     return false;
   for (let i = 0; i < a.messages.length; i++) if (a.messages[i] !== b.messages[i]) return false;
@@ -476,6 +462,11 @@ export const AgentTurn = memo(function AgentTurn({
   running,
   streaming,
   startedAt,
+  retry,
+  retryResult,
+  onStopRetry,
+  errorActions,
+  providerNames,
 }: AgentTurnProps) {
   const { steps, answer, last, end, results } = layoutTurn(messages, streaming);
   // 展开状态：用户点过就听用户的；否则运行中展开、结束后自动收起
@@ -560,14 +551,18 @@ export const AgentTurn = memo(function AgentTurn({
       {last?.stopReason === "length" && (
         <p className="text-danger text-xs">{strings.chat.replyTruncated}</p>
       )}
-      {last?.stopReason === "error" && (
-        <p className="text-danger text-xs">
-          {strings.chat.replyFailed}
-          {last.errorMessage ? `：${last.errorMessage}` : ""}
-        </p>
+      {/* 自动重试中：显示进度与“停止重试”，不显示这次失败的错误卡片 */}
+      {retry && <RetryNotice retry={retry} onStop={onStopRetry} />}
+      {!retry && last?.stopReason === "error" && (
+        <ErrorCard
+          message={last}
+          providerName={providerNames?.[last.provider]}
+          retryResult={retryResult}
+          actions={errorActions}
+        />
       )}
       {!running && answerText && (
-        <div className="-mt-1 -ml-1.5 flex opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover/turn:opacity-100">
+        <div className={cn("-mt-1 -ml-1.5 flex", revealOnTurnHover)}>
           <CopyButton text={answerText} />
         </div>
       )}

@@ -12,6 +12,7 @@
 | `src/content.ts` | 内容块、`Usage`、8 种消息角色（`AgentMessage`） | message-types.md |
 | `src/session.ts` | 11 种会话条目（`SessionEntry`）与 `SessionTreeNode` | session-format.md |
 | `src/model.ts` | 模型对象（`api` 只允许两协议，C1） | rpc-commands.md「Model object」 |
+| `src/file-tag.ts` | 附件的 `<file name="路径">` 引用（Core 命令行 `@file` 的原生格式）：写入 `appendFileTags`、解析 `splitFileTags`、内联上限；前端与 `primus-attach` 共用 | coding-agent/src/cli/file-processor.ts（`file-tag.test.ts` 核对写法与上限） |
 | `src/index.ts` | `CoreRecord`、`StdinRecord`、薄壳批次 `CoreBatch`、`PrimusData` | 技术方案第 7.3 节、第 6.6 节 |
 
 ## 对照方式

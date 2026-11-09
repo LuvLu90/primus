@@ -14,7 +14,6 @@
     "smoke:core:dist": "node scripts/smoke-core-rpc.mjs --dist",
     "contract:core": "node scripts/contract-core-rpc.mjs",
     "contract:core:dist": "node scripts/contract-core-rpc.mjs --dist",
-    "smoke:builtin": "node scripts/builtin-models.mjs",
     "build:extensions": "pnpm --filter @primus/extensions build",
     "build:sbom": "node scripts/generate-sbom.mjs",
     "build:msi": "node scripts/build-msi.mjs",
@@ -28,6 +27,8 @@
     "check:forbidden-sdk": "node scripts/check-forbidden-sdk.mjs",
     "check:naming": "node scripts/check-naming.mjs",
     "check:versions": "node scripts/check-versions.mjs",
+    "check:model-capabilities": "node scripts/generate-model-capabilities.mjs --check",
+    "generate:model-capabilities": "node scripts/generate-model-capabilities.mjs",
     "review:local": "node scripts/cr-prereview.mjs",
     "hooks:install": "node scripts/cr-prereview.mjs --install"
   },

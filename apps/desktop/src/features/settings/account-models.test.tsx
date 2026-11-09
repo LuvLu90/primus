@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   type AuthStatus,
@@ -13,11 +13,7 @@ import { AccountSettings, formatTokens, ModelSettings } from "./account-models";
 const ta = strings.settings.account;
 const tm = strings.settings.models;
 
-const auth: AuthStatus = {
-  loggedIn: true,
-  account: { id: "builtin", name: "内置测试账号", kind: "builtin" },
-  loginAvailable: false,
-};
+const auth: AuthStatus = { loggedIn: false, account: null, loginAvailable: false };
 
 const models: ModelsInfo = {
   version: 1,
@@ -66,14 +62,32 @@ describe("设置·账号与模型", () => {
     expect(formatTokens(512)).toBe("512");
   });
 
-  it("账号页显示内置账号已登录，登录按钮禁用", async () => {
+  it("账号服务未开放：显示未登录与说明，登录按钮禁用", async () => {
     usePlatform({ authStatus: async () => auth });
     render(<AccountSettings />);
-    expect(await screen.findByText("内置测试账号")).toBeTruthy();
-    expect(screen.getByText(ta.signedIn)).toBeTruthy();
-    expect(screen.getByText(ta.builtinBadge)).toBeTruthy();
-    expect((screen.getByRole("button", { name: ta.logout }) as HTMLButtonElement).disabled).toBe(
+    expect(await screen.findByText(ta.notSignedIn)).toBeTruthy();
+    expect(screen.getByText(ta.notSignedInHint)).toBeTruthy();
+    expect(screen.queryByText(ta.signedIn)).toBeNull();
+    expect(screen.queryByText(/内置/)).toBeNull();
+    expect((screen.getByRole("button", { name: ta.login }) as HTMLButtonElement).disabled).toBe(
       true,
+    );
+  });
+
+  it("模型页随 models_watch 推送更新", async () => {
+    let push: ((info: ModelsInfo) => void) | undefined;
+    usePlatform({
+      modelsGet: async () => models,
+      modelsWatch: async (onChange) => {
+        push = onChange;
+      },
+    });
+    render(<ModelSettings />);
+    await screen.findByRole("radio", { name: "大模型" });
+    await waitFor(() => expect(push).toBeDefined());
+    act(() => push?.({ ...models, defaultModel: "b/fast" }));
+    expect(screen.getByRole("radio", { name: "快速模型" }).getAttribute("aria-checked")).toBe(
+      "true",
     );
   });
 

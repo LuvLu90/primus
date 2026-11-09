@@ -52,9 +52,13 @@
     "notify": "8.2.0",
     "windows": "0.62.2",
     "windows-sys": "0.61.2",
+    "webview2-com": "0.39.1",
     "gix": "0.90.0",
     "minisign-verify": "0.3.0",
     "base64": "0.23.1",
-    "semver": "1.0.28"
+    "semver": "1.0.28",
+    "image": "0.25.10",
+    "reqwest": "0.13.5",
+    "rustls": "0.23.46"
   }
 }

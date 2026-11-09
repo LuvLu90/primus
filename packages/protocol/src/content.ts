@@ -157,7 +157,10 @@ export interface AssistantMessage {
   errorMessage?: string;
   rawStopReason?: string;
   endTurn?: boolean;
+  /** 请求开始的时间（毫秒） */
   timestamp: number;
+  /** 从 `timestamp` 到响应结束的毫秒数（ai/src/types.ts；旧消息与延后取回的结果缺省） */
+  durationMs?: number;
 }
 
 export interface NestedToolCallRecord {

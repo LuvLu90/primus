@@ -2,13 +2,16 @@ import type {
   AgentMessage,
   AssistantContent,
   AssistantMessageEvent,
+  ContextStatsData,
   ContextUsage,
   CoreRecord,
   ExtensionUiDialogRequest,
+  Model,
   RpcResponse,
+  SessionStats,
   ToolResult,
 } from "@primus/protocol";
-import { isDialogRequest } from "@primus/protocol";
+import { CONTEXT_STATS_WIDGET, isDialogRequest } from "@primus/protocol";
 import { produce } from "immer";
 import { createStore } from "zustand/vanilla";
 
@@ -24,6 +27,24 @@ export interface StreamingToolCall {
 }
 
 export type TimelineContent = AssistantContent | StreamingToolCall;
+
+/** Core 实际请求时用的模型能力（Model 对象里界面用到的几项） */
+export interface CoreModelCaps {
+  image: boolean;
+  reasoning: boolean;
+  contextWindow: number;
+  maxTokens: number;
+}
+
+/** 从 Core 的 Model 对象取能力 */
+export function capsOf(model: Model): CoreModelCaps {
+  return {
+    image: Array.isArray(model.input) && model.input.includes("image"),
+    reasoning: model.reasoning === true,
+    contextWindow: model.contextWindow,
+    maxTokens: model.maxTokens,
+  };
+}
 
 export interface ToolRun {
   toolCallId: string;
@@ -61,8 +82,34 @@ export interface SessionState {
   thinkingLevel?: string;
   /** 当前模型支持的思考强度（get_available_thinking_levels） */
   thinkingLevels?: string[];
+  /**
+   * Core 认得的模型能力，键为 `provider/modelId`：get_available_models 整体替换，get_state / set_model 的模型对象补充。
+   * 能否看图、是否支持思考、上下文长度以它为准（与 Core 实际请求用的是同一份），没有时才用设置里的值
+   */
+  modelCaps?: Record<string, CoreModelCaps>;
   /** 上下文占用（get_session_stats）；每条回复结束后刷新 */
   contextUsage?: ContextUsage;
+  /** 本会话累计用量（get_session_stats 的 tokens 与 cost） */
+  sessionUsage?: Pick<SessionStats, "tokens" | "cost">;
+  /** 上下文分项估算（primus-context-stats 经 setWidget("primus:context-stats") 推送；会话打开后请求一次，之后扩展每轮结束主动重推） */
+  contextStats?: ContextStatsData;
+  /** 自动压缩开关（get_state 的 autoCompactionEnabled；切换时乐观更新，set_auto_compaction 失败回滚）。Core 的全局持久设置 */
+  autoCompaction?: boolean;
+  /** 正在压缩（compaction_start 到 compaction_end） */
+  compacting: boolean;
+  /**
+   * Core 正在自动重试失败的请求（auto_retry_start 到 auto_retry_end）。`at` 为收到事件的本地时间，
+   * 界面据此倒计时 `delayMs`；可以用 abort_retry 停止
+   */
+  retry?: {
+    attempt: number;
+    maxAttempts: number;
+    delayMs: number;
+    errorMessage: string;
+    at: number;
+  };
+  /** 最近一次自动重试的结果（auto_retry_end）；下一轮开始时清除。最终失败时错误卡片注明重试了几次 */
+  retryResult?: { attempt: number; success: boolean; finalError?: string };
 }
 
 export const initialSessionState: SessionState = {
@@ -74,6 +121,7 @@ export const initialSessionState: SessionState = {
   running: false,
   toolRuns: {},
   uiRequests: [],
+  compacting: false,
 };
 
 /** 末尾（忽略空白）是不是 `}`：完整的 JSON 对象必然以它结尾 */
@@ -177,13 +225,67 @@ function endStream(draft: SessionState): void {
   draft.streamBroken = false;
 }
 
+/**
+ * 解析扩展经 setWidget 推来的 `primus:<主题>` 数据：`{ v: 1, type, data }`。
+ * 版本未知、主题不符或不是合法 JSON 时忽略并记日志（AGENTS.md 第 6 节）；返回 undefined
+ */
+export function parsePrimusData(
+  key: string,
+  lines: readonly string[] | undefined,
+): { type: string; data: unknown } | undefined {
+  const raw = lines?.[0];
+  if (raw === undefined) return undefined;
+  try {
+    const value = JSON.parse(raw) as { v?: unknown; type?: unknown; data?: unknown } | null;
+    if (value === null || typeof value !== "object") throw new Error("不是对象");
+    if (value.v !== 1) {
+      console.warn(`忽略 ${key}：未知的数据版本 v=${String(value.v)}`);
+      return undefined;
+    }
+    if (typeof value.type !== "string" || `primus:${value.type}` !== key) {
+      console.warn(`忽略 ${key}：数据主题不符（${String(value.type)}）`);
+      return undefined;
+    }
+    return { type: value.type, data: value.data };
+  } catch (e) {
+    console.warn(`忽略 ${key}：无法解析`, e);
+    return undefined;
+  }
+}
+
+/** 即发即弃的 setWidget：只处理前端认识的 `primus:*` 主题，其余忽略 */
+function applyWidget(draft: SessionState, key: string, lines: string[] | undefined): void {
+  if (key !== CONTEXT_STATS_WIDGET) return;
+  // 缺省 widgetLines 表示清除
+  if (lines === undefined) {
+    draft.contextStats = undefined;
+    return;
+  }
+  const parsed = parsePrimusData(key, lines);
+  const data = parsed?.data as ContextStatsData | undefined;
+  if (data && Array.isArray(data.categories))
+    // usedTools 缺省（旧版扩展）按“没有调用过的工具”处理
+    draft.contextStats = Array.isArray(data.usedTools) ? data : { ...data, usedTools: [] };
+  else if (parsed) console.warn(`忽略 ${key}：数据缺少 categories`);
+}
+
+/** 记下一个模型对象的能力（get_state / set_model） */
+function setCaps(draft: SessionState, model: Model): void {
+  draft.modelCaps = { ...draft.modelCaps, [`${model.provider}/${model.id}`]: capsOf(model) };
+}
+
 function applyRecord(draft: SessionState, record: CoreRecord): void {
   switch (record.type) {
     case "response": {
       const r: RpcResponse = record;
       if (!r.success) {
-        // 上下文统计是后台刷新，失败不打扰用户（下一条回复结束后再取）
-        if (r.command === "get_session_stats") return;
+        // 上下文统计、模型能力与扩展命令查询是后台请求，失败不打扰用户（下一次再取）
+        if (
+          r.command === "get_session_stats" ||
+          r.command === "get_available_models" ||
+          r.command === "get_commands"
+        )
+          return;
         draft.lastError = r.error || `${r.command} 失败`;
         return;
       }
@@ -199,30 +301,54 @@ function applyRecord(draft: SessionState, record: CoreRecord): void {
       if (r.command === "get_state" && r.data) {
         draft.running = r.data.isStreaming || r.data.isCompacting;
         const { model, thinkingLevel } = r.data;
-        if (model) draft.model = { provider: model.provider, id: model.id };
+        if (model) {
+          draft.model = { provider: model.provider, id: model.id };
+          setCaps(draft, model);
+        }
         if (thinkingLevel) draft.thinkingLevel = thinkingLevel;
+        draft.autoCompaction = r.data.autoCompactionEnabled;
+        draft.compacting = r.data.isCompacting;
+        // 会话已空闲：缺号时可能错过了 auto_retry_end，清掉过期的重试提示（否则会一直显示并盖住最终错误卡片）
+        if (!draft.running) draft.retry = undefined;
       }
       if (r.command === "set_model" && r.data) {
         draft.model = { provider: r.data.provider, id: r.data.id };
+        setCaps(draft, r.data);
         // 旧模型的档位不再适用：等 get_available_thinking_levels 给出新模型的
         draft.thinkingLevels = undefined;
       }
-      if (r.command === "get_session_stats" && r.data) draft.contextUsage = r.data.contextUsage;
+      if (r.command === "get_session_stats" && r.data) {
+        draft.contextUsage = r.data.contextUsage;
+        draft.sessionUsage = { tokens: r.data.tokens, cost: r.data.cost };
+      }
       if (r.command === "get_available_thinking_levels" && Array.isArray(r.data?.levels))
         draft.thinkingLevels = r.data.levels;
+      if (r.command === "get_available_models" && Array.isArray(r.data?.models)) {
+        draft.modelCaps = Object.fromEntries(
+          r.data.models.map((m) => [`${m.provider}/${m.id}`, capsOf(m)] as const),
+        );
+      }
       return;
     }
     case "extension_ui_request":
-      // 对话框方法阻塞扩展、等前端回答；即发即弃的方法（setWidget 等）这里不处理
+      // 对话框方法阻塞扩展、等前端回答；即发即弃的方法里只处理 primus:* 数据（setWidget），其余这里不处理
+      if (record.method === "setWidget") {
+        applyWidget(draft, record.widgetKey, record.widgetLines);
+        return;
+      }
       if (isDialogRequest(record) && !draft.uiRequests.some((x) => x.id === record.id))
         draft.uiRequests.push(record);
       return;
     case "agent_start":
       draft.running = true;
       draft.lastError = undefined;
+      // 新一轮：上一轮的重试结果不再适用（重试中途 Core 继续运行时保留）
+      if (!draft.retry) draft.retryResult = undefined;
       return;
     case "agent_settled":
       draft.running = false;
+      // 自动重试一定在一轮结束前结束（auto_retry_end）；缺号时可能错过了它
+      draft.retry = undefined;
       endStream(draft);
       // 一轮结束（含被停止）后，扩展不会再等这些对话框的回答
       draft.uiRequests = [];
@@ -276,8 +402,32 @@ function applyRecord(draft: SessionState, record: CoreRecord): void {
       }
       return;
     }
+    case "auto_retry_start":
+      draft.retry = {
+        attempt: record.attempt,
+        maxAttempts: record.maxAttempts,
+        delayMs: record.delayMs,
+        errorMessage: record.errorMessage,
+        at: Date.now(),
+      };
+      draft.retryResult = undefined;
+      return;
+    case "auto_retry_end":
+      draft.retry = undefined;
+      draft.retryResult = {
+        attempt: record.attempt,
+        success: record.success,
+        ...(record.finalError !== undefined ? { finalError: record.finalError } : {}),
+      };
+      return;
+    case "compaction_start":
+      draft.compacting = true;
+      return;
+    case "compaction_end":
+      draft.compacting = false;
+      return;
     default:
-      // 其余事件（queue_update、compaction_* 等）由后续功能处理
+      // 其余事件（queue_update 等）由后续功能处理
       return;
   }
 }

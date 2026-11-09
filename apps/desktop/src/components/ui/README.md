@@ -10,7 +10,8 @@
 |------|------|------------|
 | `glass.tsx` | registry `glass` | ① `noUncheckedIndexedAccess` 下补 7 处非空断言（`slotsRef.current[i]!`、`colSlope[col]!`、`key[0]!`）；② `useGlassDark` 订阅前先同步一次 `dark` 类（修复首帧到订阅之间切换主题被漏掉） |
 | `glass-webgl.ts` | registry `glass` | 1 处非空断言（`key[0]!`） |
-| `glass-motion.ts`、`glass-surface.tsx`、`glass-button.tsx` | registry 同名组件 | 无 |
+| `glass-motion.ts`、`glass-button.tsx` | registry 同名组件 | 无 |
+| `glass-surface.tsx` | registry `glass-surface` | ① `backdrop` 开关（看不见背后画面时关掉 backdrop-filter）；② 尺寸连续变化（展开动画、内容到达）时不逐帧重画折射贴图：沿用旧贴图拉伸，尺寸稳定 160ms 后再生成（`MAP_SETTLE_MS`），首次与缓存命中立即使用 |
 | `glass-switch.tsx`、`glass-slider.tsx` | registry 同名组件 | 强调色 `PRIMARY`（及开关焦点描边）由 `#0a84ff` 改为 `#3a3a3c`，与全局黑白灰配色一致 |
 | `glass-tabs.tsx`、`glass-tooltip.tsx`、`glass-dialog.tsx`、`glass-popover.tsx` | registry 同名组件 | 无障碍原语由 `@base-ui/react` 改为本项目统一使用的 Radix UI（Tabs / Tooltip / Dialog / DropdownMenu），进出场动画改用 `globals.css` 的 `glass-pop` / `glass-fade`；`GlassTooltip` 自带 Provider |
 

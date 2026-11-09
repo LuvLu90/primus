@@ -1,6 +1,12 @@
 "use client";
 
-import type { CoreBatch, ExtensionUiResponse, ThinkingLevel } from "@primus/protocol";
+import {
+  CONTEXT_STATS_COMMAND,
+  type CoreBatch,
+  type ExtensionUiResponse,
+  type ImageContent,
+  type ThinkingLevel,
+} from "@primus/protocol";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useStore } from "zustand";
 import { CORE_NOT_RUNNING, getPlatform, type Platform, PlatformError } from "@/lib/platform";
@@ -19,6 +25,13 @@ import {
 
 /** 设置权限模式的扩展命令（primus-guard）；作为 prompt 发送，Core 直接执行，不调用模型 */
 export const modeCommand = (mode: PermissionMode) => `/primus-mode ${mode}`;
+
+/**
+ * 请求上下文分项统计的扩展命令（primus-context-stats，只读）。Core 在 prompt 路径的最前面执行已注册的扩展命令
+ * （AgentSession.prompt → _tryExecuteExtensionCommand，早于输入处理、排队与 _startRun），
+ * 不写入会话历史、不调用模型；结果经 setWidget("primus:context-stats") 推送
+ */
+export const contextStatsCommand = `/${CONTEXT_STATS_COMMAND}`;
 
 // 一个会话的生命周期：新会话首次发送时打开；历史会话挂载后立即打开并用 get_messages + get_state 加载历史
 // （浏览器预览下由 mock 平台提供假 Core 事件流）。
@@ -48,10 +61,26 @@ export interface ChatSession {
   unresponsive: boolean;
   /** 内核未运行（已自行退出、因进程上限被淘汰或重启失败）：同样提示并提供重启，重启成功前禁止发送 */
   coreStopped: boolean;
-  /** 发送成功返回 true；失败时设置 error 并返回 false */
-  send: (message: string) => Promise<boolean>;
+  /** 发送成功返回 true；失败时设置 error 并返回 false。`images` 随 prompt 一起发给支持看图的模型 */
+  send: (message: string, images?: ImageContent[]) => Promise<boolean>;
+  /** 会话已打开（压缩、自动压缩、用量统计只在打开后可用） */
+  connected: boolean;
+  /** 刷新上下文占用与本会话用量（get_session_stats）；会话未打开时什么也不做 */
+  refreshStats: () => void;
+  /**
+   * 请求上下文分项统计（`/primus-context-stats`）。先用 get_commands 确认扩展命令已注册（每个连接只查一次）：
+   * 未注册时这段文字会被当作普通消息发给模型，因此不发送（卡片只显示已用与可用空间）。
+   * 会话打开与重启后会自动预取一次，之后由扩展在每轮结束时主动重推
+   */
+  requestContextStats: () => void;
+  /** 立即压缩（compact）；成功返回 true，失败设置 error 并返回 false */
+  compact: () => Promise<boolean>;
+  /** 开关自动压缩（set_auto_compaction，Core 的全局持久设置）；乐观更新，失败回滚；成功返回 true */
+  setAutoCompaction: (enabled: boolean) => Promise<boolean>;
   /** abort 成功（Core 已回成功响应）返回 true；失败时设置 error 并返回 false */
   abort: () => Promise<boolean>;
+  /** 停止 Core 的自动重试（abort_retry）；成功返回 true，失败设置 error 并返回 false */
+  abortRetry: () => Promise<boolean>;
   /** 正在重启内核：期间重启入口不可用，避免连点重复重启 */
   restarting: boolean;
   /** 重启内核并重建会话状态；进行中再次调用会被忽略 */
@@ -65,6 +94,8 @@ export interface ChatSession {
   selectModel: (choice: { model?: string; thinkingLevel?: ThinkingLevel }) => Promise<boolean>;
   /** 会话打开前记下的选择（界面据此显示） */
   pendingModel: { model?: string; thinkingLevel?: ThinkingLevel };
+  /** 重新读取 Core 的 get_available_models（模型能力以 Core 为准） */
+  refreshModels: () => void;
 }
 
 export interface ChatSessionOptions {
@@ -119,6 +150,9 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
   );
 
   const conn = useRef<{ platform: Platform; client: RpcClient }>(null);
+  const [connected, setConnected] = useState(false);
+  // 当前内核是否注册了 primus-context-stats（每个连接、每次重启查一次 get_commands）
+  const statsCommandReady = useRef<Promise<boolean>>(null);
   // Core 里当前生效的权限模式（新进程默认“每次询问”，打开或重启后重新同步）
   const syncedMode = useRef<PermissionMode | null>(null);
   const [pendingModel, setPendingModel] = useState<{
@@ -127,6 +161,35 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
   }>({});
   const pendingModelRef = useRef(pendingModel);
   pendingModelRef.current = pendingModel;
+
+  // 只在每个连接（含重启后的新进程）上查一次命令是否注册，结果缓存；之后扩展在每轮结束时主动重推，
+  // 打开卡片不再现场串行 get_commands → prompt → setWidget
+  const requestContextStats = useCallback(() => {
+    const c = conn.current;
+    if (!c) return;
+    const { client } = c;
+    if (!statsCommandReady.current) {
+      const query: Promise<boolean> = client
+        .request("get_commands")
+        .then((res) => {
+          // 失败响应与超时一样交给下面的清缓存路径，下次再查
+          if (!res.success) throw new Error(res.error);
+          return res.data.commands.some(
+            (cmd) => cmd.source === "extension" && cmd.name === CONTEXT_STATS_COMMAND,
+          );
+        })
+        .catch(() => {
+          // 查询失败（失败响应、超时等）：下次打开卡片再查；只清掉自己（期间重连或重启已换成新的查询时不动）
+          if (statsCommandReady.current === query) statsCommandReady.current = null;
+          return false;
+        });
+      statsCommandReady.current = query;
+    }
+    void statsCommandReady.current.then((ready) => {
+      if (!ready || conn.current?.client !== client) return;
+      client.request("prompt", { message: contextStatsCommand }).catch(() => {});
+    });
+  }, []);
 
   /** 把界面上的权限模式同步给 Core（primus-guard）；已一致时什么也不做 */
   const syncMode = useCallback(async (client: RpcClient) => {
@@ -171,6 +234,8 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
         client.request("get_state"),
         client.request("get_available_thinking_levels"),
         client.request("get_session_stats").catch(() => {}),
+        // 模型能力以 Core 为准（能否看图、上下文长度、是否支持思考）
+        client.request("get_available_models").catch(() => {}),
       ]);
       if (failures.length > 0)
         throw new Error(`${strings.chat.model.switchFailed}：${failures.join("；")}`);
@@ -264,26 +329,32 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
       });
       for (const batch of early) client.receive(batch);
       conn.current = { platform, client };
+      statsCommandReady.current = null;
+      setConnected(true);
       syncedMode.current = null;
       optionsRef.current.onOpening?.(false);
       optionsRef.current.onOpened?.({ sessionId: sessionId ?? null, workspace: path });
       // 会话已建立：打开后的设置失败不影响会话本身（提示错误；权限模式在下一次发送前会再同步）
       await applySession(client).catch(fail);
+      // 预取上下文分项：打开卡片时已有数据，不再等三次往返
+      requestContextStats();
     })().finally(() => {
       opening.current = null;
       // 失败时也结束“打开中”（成功时已在 onOpened 之前结束，重复调用无影响）
       if (!disposed.current) optionsRef.current.onOpening?.(false);
     });
     return opening.current;
-  }, [enqueue, setError, clearError, syncUnresponsive, applySession, fail]);
+  }, [enqueue, setError, clearError, syncUnresponsive, applySession, fail, requestContextStats]);
 
-  // 每条消息输出结束（含一轮结束）后刷新上下文占用；切换模型后也刷新（上下文窗口随模型变化）
+  // 每条消息输出结束（含一轮结束）后刷新上下文占用；切换模型后也刷新（上下文窗口随模型变化）；
+  // 压缩结束（含自动压缩）后也刷新。打开上下文卡片时直接用这里的结果，不再每次都取
   const streamingNow = state.streamingMessage;
+  const compactingNow = state.compacting;
   const modelKey = state.model ? `${state.model.provider}/${state.model.id}` : "";
   useEffect(() => {
-    if (streamingNow || !modelKey) return;
+    if (streamingNow || compactingNow || !modelKey) return;
     conn.current?.client.request("get_session_stats").catch(() => {});
-  }, [streamingNow, modelKey]);
+  }, [streamingNow, compactingNow, modelKey]);
 
   // 权限模式变化：会话已打开时立即同步（扩展命令运行中也会立即执行）
   const permissionMode = useAppStore((s) => s.permissionMode);
@@ -306,6 +377,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
         opening.current = null;
         const c = conn.current;
         conn.current = null;
+        setConnected(false);
         if (c) {
           c.client.close();
           void c.platform.sessionClose(c.client.sessionKey).catch(() => {});
@@ -336,7 +408,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
   }, [historyPath, loadHistory, fail]);
 
   const send = useCallback(
-    async (message: string): Promise<boolean> => {
+    async (message: string, images?: ImageContent[]): Promise<boolean> => {
       // 重建失败的提示保留到重建成功为止
       setErrorState((e) => (e?.kind === "resync" ? e : undefined));
       try {
@@ -351,7 +423,10 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
         const pendingChoice = pendingModelRef.current;
         if (pendingChoice.model || pendingChoice.thinkingLevel) await applySession(c.client);
         await syncMode(c.client);
-        const res = await c.client.request("prompt", { message });
+        const res = await c.client.request(
+          "prompt",
+          images && images.length > 0 ? { message, images } : { message },
+        );
         return res.success;
       } catch (e) {
         // 超时时 Core 可能已受理（它不按 id 去重）：保留草稿，但由界面在内核恢复或重启前禁止重发
@@ -375,6 +450,11 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     },
     [store, fail],
   );
+
+  /** 重新读取 Core 认得的模型与能力（模型渠道变化、打开模型列表时）；会话未打开时什么也不做 */
+  const refreshModels = useCallback(() => {
+    conn.current?.client.request("get_available_models").catch(() => {});
+  }, []);
 
   const selectModel = useCallback(
     async (choice: { model?: string; thinkingLevel?: ThinkingLevel }): Promise<boolean> => {
@@ -426,6 +506,66 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     }
   }, [fail]);
 
+  const abortRetry = useCallback(async (): Promise<boolean> => {
+    const c = conn.current;
+    if (!c) return false;
+    try {
+      const res = await c.client.request("abort_retry");
+      return res.success;
+    } catch (e) {
+      fail(e);
+      return false;
+    }
+  }, [fail]);
+
+  const refreshStats = useCallback(() => {
+    conn.current?.client.request("get_session_stats").catch(() => {});
+  }, []);
+
+  const compact = useCallback(async (): Promise<boolean> => {
+    const c = conn.current;
+    if (!c) return false;
+    try {
+      const res = await c.client.request("compact");
+      if (!res.success) throw new Error(`${strings.chat.contextCard.compactFailed}：${res.error}`);
+      // 压缩后上下文占用未知（tokens 为 null），用量统计照常刷新
+      await c.client.request("get_session_stats").catch(() => {});
+      return true;
+    } catch (e) {
+      fail(e);
+      return false;
+    }
+  }, [fail]);
+
+  // 自动压缩：先乐观更新 store（开关立即停在新位置），set_auto_compaction 失败再回滚到切换前的值。
+  // 不再用 get_state 读回：成功响应即表示 Core 已写入设置（compaction.enabled，全局持久）
+  const autoCompactionSeq = useRef(0);
+  const setAutoCompaction = useCallback(
+    async (enabled: boolean): Promise<boolean> => {
+      const c = conn.current;
+      if (!c) return false;
+      const previous = store.getState().autoCompaction;
+      const seq = ++autoCompactionSeq.current;
+      store.setState((s) => ({ ...s, autoCompaction: enabled }), true);
+      try {
+        const res = await c.client.request("set_auto_compaction", { enabled });
+        if (!res.success)
+          throw new Error(`${strings.chat.contextCard.autoCompactFailed}：${res.error}`);
+        // 期间到达的旧 get_state 可能把值改回去：以最后一次成功的切换为准
+        if (seq === autoCompactionSeq.current)
+          store.setState((s) => ({ ...s, autoCompaction: enabled }), true);
+        return true;
+      } catch (e) {
+        // 只回滚最后一次切换（连续切换时较早那次的失败不覆盖之后的选择）
+        if (seq === autoCompactionSeq.current)
+          store.setState((s) => ({ ...s, autoCompaction: previous }), true);
+        fail(e);
+        return false;
+      }
+    },
+    [store, fail],
+  );
+
   // 同步的重入保护（state 要到下一次渲染才生效）；restarting 只用于界面禁用按钮
   const restartingRef = useRef(false);
   const [restarting, setRestarting] = useState(false);
@@ -439,6 +579,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
       await c.platform.coreRestart(c.client.sessionKey);
       // 旧进程上等待的命令不会再有响应；新进程按会话文件恢复后重建状态
       c.client.reset();
+      statsCommandReady.current = null;
       lock.current.timeout = false;
       lock.current.stopped = false;
       // 新进程的权限模式回到默认：重新同步
@@ -447,6 +588,8 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
       const ok = await c.client.resync();
       if (ok) await syncMode(c.client).catch(() => {});
       lock.current.restart = !ok;
+      // 新进程的扩展还没被请求过，不会主动推分项：重新预取一次
+      if (ok) requestContextStats();
       syncUnresponsive();
     } catch (e) {
       // 重启失败时旧进程已结束、会话没有内核：保留重启入口，可再次重启
@@ -459,7 +602,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
       restartingRef.current = false;
       setRestarting(false);
     }
-  }, [setError, fail, syncUnresponsive, syncMode]);
+  }, [setError, fail, syncUnresponsive, syncMode, requestContextStats]);
 
   return {
     state,
@@ -468,10 +611,17 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     coreStopped,
     send,
     abort,
+    abortRetry,
     restarting,
     restart,
     respondUi,
     selectModel,
+    refreshModels,
     pendingModel,
+    connected,
+    refreshStats,
+    requestContextStats,
+    compact,
+    setAutoCompaction,
   };
 }

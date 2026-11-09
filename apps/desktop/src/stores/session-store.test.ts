@@ -1,5 +1,5 @@
 import type { AgentMessage, CoreRecord } from "@primus/protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { promptScenario, usage } from "@/lib/platform/mock/scenario";
 import {
   applyChunks,
@@ -317,5 +317,173 @@ describe("会话 store：流式消息重建（第 7.4 节）", () => {
     expect(s.thinkingLevel).toBe("high");
     // 换模型后旧模型的档位作废，等新的 get_available_thinking_levels
     expect(s.thinkingLevels).toBeUndefined();
+  });
+
+  it("记录 Core 认得的模型能力：get_available_models 整体替换，get_state / set_model 补充；失败不提示", () => {
+    const core = (id: string, input: string[], reasoning: boolean, contextWindow: number) => ({
+      provider: "gw",
+      id,
+      name: id,
+      input,
+      reasoning,
+      contextWindow,
+      maxTokens: 32_000,
+    });
+    const response = (command: string, data: unknown, success = true) =>
+      ({ type: "response", id: command, command, success, data }) as CoreRecord;
+    const s1 = applyChunks(initialSessionState, [
+      chunk([
+        response("get_available_models", {
+          models: [
+            core("moonshotai/kimi-k3.1-pro", ["text", "image"], true, 1_048_576),
+            core("old", ["text"], false, 128_000),
+          ],
+        }),
+      ]),
+    ]);
+    expect(s1.modelCaps).toEqual({
+      "gw/moonshotai/kimi-k3.1-pro": {
+        image: true,
+        reasoning: true,
+        contextWindow: 1_048_576,
+        maxTokens: 32_000,
+      },
+      "gw/old": { image: false, reasoning: false, contextWindow: 128_000, maxTokens: 32_000 },
+    });
+    const s2 = applyChunks(s1, [
+      chunk([
+        response("set_model", core("new", ["text", "image"], true, 200_000)),
+        response("get_available_models", undefined, false),
+      ]),
+    ]);
+    expect(s2.modelCaps?.["gw/new"]).toMatchObject({ image: true, contextWindow: 200_000 });
+    expect(s2.modelCaps?.["gw/old"]).toBeDefined();
+    expect(s2.lastError).toBeUndefined();
+    const s3 = applyChunks(s2, [
+      chunk([response("get_available_models", { models: [core("only", ["text"], true, 1)] })]),
+    ]);
+    expect(Object.keys(s3.modelCaps ?? {})).toEqual(["gw/only"]);
+  });
+
+  it("primus:context-stats 按会话保存；未知版本忽略并记日志；空内容清除", () => {
+    const widget = (lines: string[] | undefined, id = "w") =>
+      ({
+        type: "extension_ui_request",
+        id,
+        method: "setWidget",
+        widgetKey: "primus:context-stats",
+        widgetLines: lines,
+      }) as CoreRecord;
+    const data = {
+      estimator: "chars/4",
+      categories: [{ key: "systemPrompt", tokens: 1200, items: [] }],
+      usedTools: [{ name: "read", count: 2 }],
+    };
+    const s1 = applyChunks(initialSessionState, [
+      chunk([widget([JSON.stringify({ v: 1, type: "context-stats", data })])]),
+    ]);
+    expect(s1.contextStats).toEqual(data);
+    expect(s1.uiRequests).toEqual([]);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const s2 = applyChunks(s1, [
+      chunk([widget([JSON.stringify({ v: 2, type: "context-stats", data: {} })])]),
+    ]);
+    expect(s2.contextStats).toEqual(data);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+    expect(applyChunks(s1, [chunk([widget(undefined)])]).contextStats).toBeUndefined();
+    // 旧版扩展没有 usedTools：按空列表处理
+    const legacy = { estimator: "chars/4", categories: data.categories, deferredTools: ["lazy"] };
+    const s3 = applyChunks(initialSessionState, [
+      chunk([widget([JSON.stringify({ v: 1, type: "context-stats", data: legacy })])]),
+    ]);
+    expect(s3.contextStats?.usedTools).toEqual([]);
+  });
+});
+
+describe("会话 store：自动重试", () => {
+  it("auto_retry_start 记下重试进度，auto_retry_end 清除并记下结果；新一轮开始时清除结果", () => {
+    vi.useFakeTimers({ now: 1_000 });
+    try {
+      const s1 = applyChunks(initialSessionState, [
+        chunk([
+          { type: "agent_start" },
+          {
+            type: "auto_retry_start",
+            attempt: 1,
+            maxAttempts: 3,
+            delayMs: 2000,
+            errorMessage: "Connection error.",
+          },
+        ]),
+      ]);
+      expect(s1.retry).toEqual({
+        attempt: 1,
+        maxAttempts: 3,
+        delayMs: 2000,
+        errorMessage: "Connection error.",
+        at: 1_000,
+      });
+      // 重试途中 Core 继续运行（再次 agent_start）不清除进度
+      const s2 = applyChunks(s1, [chunk([{ type: "agent_start" }])]);
+      expect(s2.retry?.attempt).toBe(1);
+      const s3 = applyChunks(s2, [
+        chunk([
+          { type: "auto_retry_end", success: false, attempt: 3, finalError: "Connection error." },
+        ]),
+      ]);
+      expect(s3.retry).toBeUndefined();
+      expect(s3.retryResult).toEqual({
+        attempt: 3,
+        success: false,
+        finalError: "Connection error.",
+      });
+      const s4 = applyChunks(s3, [chunk([{ type: "agent_settled", aborted: false }])]);
+      expect(s4.retryResult?.attempt).toBe(3);
+      expect(applyChunks(s4, [chunk([{ type: "agent_start" }])]).retryResult).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("缺号重建时 get_state 显示会话已空闲：清除过期的重试进度；后台 get_commands 失败不提示", () => {
+    const s = applyChunks(initialSessionState, [
+      chunk([
+        { type: "agent_start" },
+        { type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 2000, errorMessage: "x" },
+        {
+          type: "response",
+          id: "s-1",
+          command: "get_state",
+          success: true,
+          data: {
+            thinkingLevel: "off",
+            isStreaming: false,
+            isCompacting: false,
+            steeringMode: "one-at-a-time",
+            followUpMode: "one-at-a-time",
+            sessionId: "x",
+            autoCompactionEnabled: true,
+            messageCount: 1,
+            pendingMessageCount: 0,
+          },
+        },
+        { type: "response", id: "s-2", command: "get_commands", success: false, error: "boom" },
+      ]),
+    ]);
+    expect(s.retry).toBeUndefined();
+    expect(s.running).toBe(false);
+    expect(s.lastError).toBeUndefined();
+  });
+
+  it("错过 auto_retry_end 时，一轮结束（agent_settled）也清除重试进度", () => {
+    const s = applyChunks(initialSessionState, [
+      chunk([
+        { type: "agent_start" },
+        { type: "auto_retry_start", attempt: 2, maxAttempts: 3, delayMs: 4000, errorMessage: "x" },
+        { type: "agent_settled", aborted: true },
+      ]),
+    ]);
+    expect(s.retry).toBeUndefined();
   });
 });

@@ -86,11 +86,81 @@ describe("Tauri 平台实现", () => {
     expect(onChange).toHaveBeenCalledWith({ phase: "idle" });
   });
 
+  it("模型渠道命令：只传契约字段，缺省的可选字段不传；模型配置经 Channel 推送", async () => {
+    const p = createTauriPlatform();
+    const model = {
+      id: "m",
+      name: "M",
+      reasoning: false,
+      input: ["text" as const],
+      contextWindow: 1,
+      maxTokens: 1,
+      extra: "不应发送",
+    };
+    await p.providerSave({
+      name: "n",
+      api: "openai-responses",
+      baseUrl: "https://x",
+      enabled: true,
+      models: [model],
+    });
+    const [name, args] = invoke.mock.calls.at(-1) as [string, { input: Record<string, unknown> }];
+    expect(name).toBe("provider_save");
+    expect(args.input).toStrictEqual({
+      name: "n",
+      api: "openai-responses",
+      baseUrl: "https://x",
+      enabled: true,
+      models: [
+        { id: "m", name: "M", reasoning: false, input: ["text"], contextWindow: 1, maxTokens: 1 },
+      ],
+    });
+    await p.providerFetchModels({ id: "ioply", baseUrl: "https://y" });
+    expect(invoke).toHaveBeenLastCalledWith("provider_fetch_models", {
+      input: { id: "ioply", baseUrl: "https://y" },
+    });
+    await p.providerDelete("ioply");
+    expect(invoke).toHaveBeenLastCalledWith("provider_delete", { id: "ioply" });
+    await p.providersList();
+    expect(invoke).toHaveBeenLastCalledWith("providers_list", undefined);
+    const onChange = vi.fn();
+    await p.modelsWatch(onChange);
+    const [watchName, watchArgs] = invoke.mock.calls.at(-1) as [
+      string,
+      { onEvent: InstanceType<typeof FakeChannel<unknown>> },
+    ];
+    expect(watchName).toBe("models_watch");
+    watchArgs.onEvent.onmessage({ models: [] });
+    expect(onChange).toHaveBeenCalledWith({ models: [] });
+  });
+
   it("app_info 标记运行环境为 tauri", async () => {
     invoke.mockResolvedValueOnce({ appVersion: "0.1.0" });
     await expect(createTauriPlatform().appInfo()).resolves.toMatchObject({
       appVersion: "0.1.0",
       runtime: "tauri",
     });
+  });
+
+  it("语音、附件图片与分支命令按附录 B 传参，语音事件经 Channel 推送", async () => {
+    const p = createTauriPlatform();
+    await p.attachmentImage("C:\\a.png", 2048);
+    expect(invoke).toHaveBeenLastCalledWith("attachment_image", {
+      path: "C:\\a.png",
+      maxEdge: 2048,
+    });
+    await p.gitBranch("C:\\repo");
+    expect(invoke).toHaveBeenLastCalledWith("git_branch", { workspace: "C:\\repo" });
+    const onEvent = vi.fn();
+    await p.speechStart(onEvent);
+    const [name, args] = invoke.mock.calls.at(-1) as [
+      string,
+      { onEvent: InstanceType<typeof FakeChannel<unknown>> },
+    ];
+    expect(name).toBe("speech_start");
+    args.onEvent.onmessage({ type: "final", text: "你好" });
+    expect(onEvent).toHaveBeenCalledWith({ type: "final", text: "你好" });
+    await p.speechStop();
+    expect(invoke).toHaveBeenLastCalledWith("speech_stop", undefined);
   });
 });
