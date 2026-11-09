@@ -91,6 +91,21 @@ describe("模型选择", () => {
     expect(onSelectModel).toHaveBeenCalledWith("p/b");
   });
 
+  it("会话已有消息：模型锁定（其他模型不可选），思考程度仍可调", async () => {
+    const { onSelectModel, onSelectThinking } = open({ modelLocked: true });
+    const other = await screen.findByRole("menuitemradio", { name: "Sonnet 5" });
+    expect(other.getAttribute("data-disabled")).not.toBeNull();
+    expect(
+      screen.getByRole("menuitemradio", { name: "Fable 5" }).getAttribute("data-disabled"),
+    ).toBeNull();
+    fireEvent.click(other);
+    expect(onSelectModel).not.toHaveBeenCalled();
+    const slider = screen.getByRole("slider");
+    fireEvent.keyDown(slider, { key: "ArrowRight" });
+    fireEvent.keyUp(slider, { key: "ArrowRight" });
+    expect(onSelectThinking).toHaveBeenCalledWith("high");
+  });
+
   it("思考程度滑杆：两端“更快 / 更聪明”，方向键与 Home/End 逐档移动，抬键才提交", async () => {
     const { onSelectThinking } = open();
     const slider = await screen.findByRole("slider", { name: t.thinkingDegree });

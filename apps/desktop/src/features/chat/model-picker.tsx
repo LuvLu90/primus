@@ -126,6 +126,7 @@ export function ModelPicker({
   thinkingLevel,
   thinkingLevels,
   disabled,
+  modelLocked,
   onSelectModel,
   onSelectThinking,
   onOpenSettings,
@@ -140,6 +141,8 @@ export function ModelPicker({
   /** 当前模型支持的思考强度；未知时按是否推理模型给出默认档位 */
   thinkingLevels: string[] | undefined;
   disabled?: boolean;
+  /** 会话已有消息：模型锁定（只能看、不能换），思考强度仍可调 */
+  modelLocked?: boolean;
   onSelectModel: (key: string) => void;
   onSelectThinking: (level: ThinkingLevel) => void;
   /** 打开设置中的模型渠道（没有可用模型时的入口） */
@@ -169,7 +172,7 @@ export function ModelPicker({
           type="button"
           aria-label={`${t.label}：${model?.name ?? name}${level ? `，${t.thinkingDegree}${level}` : ""}`}
           title={model?.name ?? name}
-          className={composerGhostClass({ className: "max-w-64" })}
+          className={composerGhostClass({ className: "min-w-0 max-w-64 shrink!" })}
         >
           <span className="truncate">{name}</span>
           {level && <span className="shrink-0">· {level}</span>}
@@ -197,7 +200,14 @@ export function ModelPicker({
               </Menu.Item>
             </div>
           ) : (
-            <ModelList groups={groups} current={current} onSelect={onSelectModel} />
+            <ModelList
+              groups={groups}
+              current={current}
+              locked={modelLocked}
+              onSelect={(key) => {
+                if (!modelLocked) onSelectModel(key);
+              }}
+            />
           )}
           {showThinking && (
             <div className="shrink-0">
@@ -222,10 +232,13 @@ export function ModelPicker({
 function ModelList({
   groups,
   current,
+  locked,
   onSelect,
 }: {
   groups: ReturnType<typeof groupByProvider>;
   current: string | null;
+  /** 锁定时除当前模型外都不可选 */
+  locked?: boolean;
   onSelect: (key: string) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -263,6 +276,7 @@ function ModelList({
                 value={m.key}
                 textValue={m.name}
                 title={m.id === m.name ? undefined : m.id}
+                disabled={locked && m.key !== current}
                 className={rowClass}
               >
                 <span className="min-w-0 flex-1 truncate">{m.name}</span>

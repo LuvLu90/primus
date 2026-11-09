@@ -458,6 +458,11 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
 
   const selectModel = useCallback(
     async (choice: { model?: string; thinkingLevel?: ThinkingLevel }): Promise<boolean> => {
+      // 会话已有消息后模型锁定：只接受思考强度
+      if (choice.model && store.getState().messages.length > 0) {
+        if (!choice.thinkingLevel) return false;
+        choice = { thinkingLevel: choice.thinkingLevel };
+      }
       const c = conn.current;
       if (!c) {
         setPendingModel((p) => ({ ...p, ...choice }));
