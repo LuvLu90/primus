@@ -14,7 +14,7 @@
 | `glass-button.tsx` | registry `glass-button` | 按钮文字字号 `text-[15px]` 改为字号令牌 `text-md`（同为 15px） |
 | `glass-surface.tsx` | registry `glass-surface` | ① `backdrop` 开关（看不见背后画面时关掉 backdrop-filter）；② 尺寸连续变化（展开动画、内容到达）时不逐帧重画折射贴图：沿用旧贴图拉伸，尺寸稳定 160ms 后再生成（`MAP_SETTLE_MS`），首次与缓存命中立即使用 |
 | `glass-switch.tsx`、`glass-slider.tsx` | registry 同名组件 | 强调色 `PRIMARY`（及开关焦点描边）由 `#0a84ff` 改为 `#3a3a3c`，与全局黑白灰配色一致 |
-| `glass-tabs.tsx`、`glass-tooltip.tsx`、`glass-dialog.tsx`、`glass-popover.tsx` | registry 同名组件 | 无障碍原语由 `@base-ui/react` 改为本项目统一使用的 Radix UI（Tabs / Tooltip / Dialog / DropdownMenu），进出场动画改用 `globals.css` 的 `glass-pop` / `glass-fade`；`GlassTooltip` 自带 Provider；字号改用 `globals.css` 的字号令牌：提示 `text-xs`（12px），对话框标题 `text-lg`（16px，原 17px）、说明 `text-sm`（13px，原 14px），菜单项 `text-sm`（13px，原 14px）/ 副标题 `text-xs`；`glass-tabs` 的 `text-sm` 随令牌由 14px 变为 13px |
+| `glass-tabs.tsx`、`glass-tooltip.tsx`、`glass-dialog.tsx`、`glass-popover.tsx` | registry 同名组件 | 无障碍原语由 `@base-ui/react` 改为本项目统一使用的 Radix UI（Tabs / Tooltip / Dialog / DropdownMenu），进出场动画改用 `globals.css` 的 `glass-pop` / `glass-fade`；`GlassTooltip` 自带 Provider；字号改用 `globals.css` 的字号令牌：提示 `text-xs`（12px），对话框标题 `text-lg`（16px，原 17px）、说明 `text-sm`（13px，原 14px），菜单项 `text-sm`（13px，原 14px）/ 副标题 `text-xs`；`glass-tabs` 的 `text-sm` 随令牌由 14px 变为 13px；`GlassPopoverItem` 图标栏收为 16px 方格、图标与文字间距 10px、高亮圆角 10px（与左栏行一致） |
 
 未引入：`glass-input`（输入框是多行的，直接用 `GlassSurface` 组合）、`glass-dock`（依赖 html2canvas-pro）。`@/lib/utils` 的 `cn` 只做拼接，不引入 clsx / tailwind-merge。
 

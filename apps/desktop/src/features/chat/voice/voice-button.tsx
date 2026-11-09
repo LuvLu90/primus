@@ -43,7 +43,7 @@ export function VoiceButton({
           onClick={onStart}
           className={glassButtonClass}
         >
-          <Icon name="mic" />
+          <Icon name="mic" size="sm" />
         </GlassButton>
       </span>
       <span className="voice-live" aria-hidden={!recording || undefined}>

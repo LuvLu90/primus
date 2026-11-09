@@ -1,5 +1,5 @@
 import type { CoreBatch } from "@primus/protocol";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useRouter } from "next/navigation";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -755,21 +755,23 @@ describe("对话区（mock 事件流）", () => {
         level: "high",
       }),
     );
-    // 会话打开后切换模型：立即发 set_model，按钮随之更新（等这一轮回答结束、按钮解锁）
+    // 会话已有消息：模型锁定（不发 set_model），思考强度仍可切换
     await waitFor(() => expect(screen.getByText(/你刚才说：「你好」/)).toBeTruthy());
     const second = await screen.findByRole("button", { name: /模型：Mock 大模型，思考程度高/ });
-    await waitFor(() => expect(second.hasAttribute("disabled")).toBe(false));
+    expect(second.hasAttribute("disabled")).toBe(false);
     fireEvent.keyDown(second, { key: "Enter" });
-    fireEvent.click(await screen.findByRole("menuitemradio", { name: "Mock 快速模型" }));
+    const fast = await screen.findByRole("menuitemradio", { name: "Mock 快速模型" });
+    expect(fast.getAttribute("data-disabled")).not.toBeNull();
+    fireEvent.click(fast);
+    const slider2 = await screen.findByRole("slider", { name: t.model.thinkingDegree });
+    fireEvent.keyDown(slider2, { key: "ArrowLeft" });
+    fireEvent.keyUp(slider2, { key: "ArrowLeft" });
     await waitFor(() =>
-      expect(records.find((r) => r.type === "set_model")).toMatchObject({
-        provider: "ioply",
-        modelId: "mock-fast",
+      expect(records.filter((r) => r.type === "set_thinking_level").at(-1)).toMatchObject({
+        level: "medium",
       }),
     );
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: /模型：Mock 快速模型/ })).toBeTruthy(),
-    );
+    expect(records.some((r) => r.type === "set_model")).toBe(false);
   });
 
   it("扩展的操作确认显示在输入框上方，选择后回复 Core 并消失", async () => {
@@ -968,6 +970,7 @@ describe("对话区（mock 事件流）", () => {
     const card = await screen.findByRole("region", {
       name: `${t.replyFailed}：${t.replyError.categories.auth.title}`,
     });
+    fireEvent.click(within(card).getByRole("button", { name: t.replyError.details }));
     expect(card.textContent).toContain("401");
     const retry = await screen.findByRole("button", { name: t.replyError.retry });
     fireEvent.click(retry);
@@ -1024,10 +1027,11 @@ describe("对话区（mock 事件流）", () => {
         .closest(".overflow-y-auto") as HTMLElement;
       // 输入框 150px + 间距 20px
       expect(scroller.style.paddingBottom).toBe("170px");
-      // 底部渐隐遮罩：输入框上沿之上 20px 内淡出，输入框后面不透出正文
-      expect(scroller.className).toContain("composer-fade");
-      expect(scroller.style.getPropertyValue("--composer-h")).toBe("150px");
-      expect(scroller.style.getPropertyValue("--composer-fade")).toBe("20px");
+      // 底部渐隐盖层（不给滚动容器加遮罩）：输入框上沿之上 20px 内淡出，输入框后面不透出正文
+      expect(scroller.className).not.toContain("composer-fade");
+      const fade = document.querySelector(".composer-fade") as HTMLElement;
+      expect(fade.style.getPropertyValue("--composer-h")).toBe("150px");
+      expect(fade.style.getPropertyValue("--composer-fade")).toBe("20px");
     } finally {
       spy.mockRestore();
     }

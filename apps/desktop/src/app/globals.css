@@ -12,6 +12,8 @@
 @theme {
   --color-surface: #ffffff;
   --color-fg: #1d1d1f;
+  /* 阅读墨色：助手回复正文，比界面文字更黑，长文更锐利 */
+  --color-ink: #0d0d0e;
   --color-muted: #6e6e73;
   --color-border: rgb(0 0 0 / 0.08);
   --color-hover: rgb(0 0 0 / 0.05);
@@ -86,7 +88,7 @@
   --text-sm: 13px;
   --text-sm--line-height: 20px;
   --text-base: 14px;
-  --text-base--line-height: 1.65;
+  --text-base--line-height: 1.6;
   --text-md: 15px;
   --text-md--line-height: 22px;
   --text-lg: 16px;
@@ -161,14 +163,15 @@
   --wallpaper: #e6e6ee;
   /* Tauri 窗口内：半透明着色叠在系统亚克力磨砂效果上 */
   --window-tint: rgb(222 222 232 / 0.42);
-  /* 时间线所在的"纸面"：几乎不透明的白色，只透出一点壁纸色 */
-  --paper: rgb(255 255 255 / 0.94);
+  /* 时间线所在的"纸面"：不透明。半透明底会让 Chromium 退回灰度抗锯齿，正文发虚发浅；不透明时用 ClearType */
+  --paper: #ffffff;
   color-scheme: light;
 }
 
 .dark {
   --color-surface: #1c1c1e;
   --color-fg: #f5f5f7;
+  --color-ink: #f5f5f7;
   --color-muted: #98989d;
   --color-border: rgb(255 255 255 / 0.1);
   --color-hover: rgb(255 255 255 / 0.08);
@@ -196,7 +199,7 @@
   /* 浏览器预览用的纯色底（不用渐变） */
   --wallpaper: #0b0b0e;
   --window-tint: rgb(8 8 10 / 0.45);
-  --paper: rgb(22 22 24 / 0.92);
+  --paper: #161618;
   color-scheme: dark;
 }
 
@@ -762,10 +765,10 @@ html.window-effects.glass-clear body {
   font-family: var(--font-mono);
   font-size: 0.875em;
   font-weight: 400;
-  padding: 0.1em 0.35em;
+  padding: 0.15em 0.4em;
   margin: 0 0.1em;
-  border-radius: 5px;
-  background: color-mix(in srgb, currentColor 7%, transparent);
+  border-radius: 0.4em;
+  background: color-mix(in srgb, currentColor 9%, transparent);
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
   overflow-wrap: anywhere;
@@ -976,7 +979,8 @@ html.window-effects.glass-clear body {
 }
 
 .step-in {
-  animation: step-in 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+  /* 只回填起始帧：结束后不保留动画效果，文字不会一直留在合成层里（合成层文字没有 ClearType） */
+  animation: step-in 0.32s cubic-bezier(0.22, 1, 0.36, 1) backwards;
 }
 
 /* 命令输出底部渐隐，提示还有更多 */
@@ -1296,23 +1300,13 @@ html.window-effects.glass-clear body {
 }
 
 /*
- * 时间线底部渐隐：滚动容器自身加遮罩，正文在悬浮输入框上沿之上 --composer-fade 的高度内淡出，
- * 唇条与输入框后面完全透明（只露出底下的纸面），不会透出文字，也没有硬分隔线。
- * 遮罩露出的是真实的纸面层，浅色 / 深色自动一致；只影响绘制，不拦截指针、不改变滚动位置。
- * --composer-h（输入框整体高度）与 --composer-fade 由 chat-panel 写在 style 上
+ * 时间线底部渐隐：输入框整体（--composer-h）加上沿之上 --composer-fade 高度的纸面色盖层，正文在输入框上沿之上淡出，
+ * 唇条与输入框后面只露出纸面。纸面不透明，盖层与底色一致；不拦截指针、不改变滚动位置。
+ * --composer-h 与 --composer-fade 由 chat-panel 写在 style 上
  */
 .composer-fade {
-  --composer-fade-end: calc(100% - var(--composer-h, 128px));
-  -webkit-mask-image: linear-gradient(
-    to bottom,
-    black calc(var(--composer-fade-end) - var(--composer-fade, 20px)),
-    transparent var(--composer-fade-end)
-  );
-  mask-image: linear-gradient(
-    to bottom,
-    black calc(var(--composer-fade-end) - var(--composer-fade, 20px)),
-    transparent var(--composer-fade-end)
-  );
+  height: calc(var(--composer-h, 128px) + var(--composer-fade, 20px));
+  background: linear-gradient(to bottom, transparent, var(--paper) var(--composer-fade, 20px));
 }
 
 /* 唇条：输入框上沿后面的灰色小舌，挂载时轻轻上滑淡入 */

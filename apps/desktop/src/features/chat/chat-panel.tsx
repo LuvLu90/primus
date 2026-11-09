@@ -21,6 +21,8 @@ import { Icon } from "@/components/icons";
 import { glassButtonClass, useGlassStyle } from "@/components/layout/glass-panel";
 import { useMediaQuery } from "@/components/theme/appearance-controller";
 import { GlassButton } from "@/components/ui/glass-button";
+import { showPreview } from "@/features/files/preview-store";
+import { lastWrittenFile } from "@/features/files/written-file";
 import { type ChatTab, useSessionsStore } from "@/features/sessions/sessions-store";
 import { getFileDrop, getPlatform, isTauriRuntime } from "@/lib/platform";
 import type { SpeechSettingsPage, WorkspaceInfo } from "@/lib/platform/types";
@@ -44,6 +46,7 @@ import {
 } from "./composer-menus";
 import { ContextButton } from "./context-card";
 import type { ErrorActions } from "./error-card";
+import { resolveFileRefPath } from "./file-ref";
 import { FileRefBase } from "./file-ref-actions";
 import { ThinkingIndicator } from "./message-content";
 import { type IndexItem, MessageIndex } from "./message-index";
@@ -570,6 +573,19 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     setStopping(false);
   }, [state.running]);
 
+  // 一轮结束（运行中 → 空闲）且是当前标签：把 Agent 这一轮最后写出的文件在右栏打开预览
+  const activeTabId = useSessionsStore((s) => s.activeTabId);
+  const wasRunning = useRef(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 只在运行状态变化时判断
+  useEffect(() => {
+    const finished = wasRunning.current && !state.running;
+    wasRunning.current = state.running;
+    if (!finished || (tabId !== undefined && tabId !== activeTabId)) return;
+    const written = lastWrittenFile(state.messages);
+    const path = written && resolveFileRefPath(written, shownWorkspace?.path ?? null);
+    if (path) showPreview(path);
+  }, [state.running]);
+
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.nativeEvent.isComposing) return;
     if (e.key === "Enter" && !e.shiftKey) submit(e);
@@ -598,19 +614,11 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
           aria-hidden
           className="pointer-events-none absolute inset-x-0 top-0 z-10 h-12 bg-linear-to-b from-[var(--paper)] from-40% to-transparent"
         />
-        {/* 底部渐隐（.composer-fade）：时间线在输入框上沿之上淡出、输入框后面完全不显示，
-            唇条与输入框底下只露出纸面；遮罩只作用于绘制，不拦截指针、不影响滚动与“停在底部” */}
         <div
           ref={scrollRef}
           onScroll={onScroll}
-          className="composer-fade scroll-none flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pt-12 text-base"
-          style={
-            {
-              paddingBottom: (composerHeight ?? COMPOSER_FALLBACK_PX) + COMPOSER_GAP_PX,
-              "--composer-h": `${composerHeight ?? COMPOSER_FALLBACK_PX}px`,
-              "--composer-fade": `${COMPOSER_GAP_PX}px`,
-            } as CSSProperties
-          }
+          className="scroll-none flex min-h-0 flex-1 flex-col overflow-y-auto bg-[var(--paper)] px-6 pt-12 text-base"
+          style={{ paddingBottom: (composerHeight ?? COMPOSER_FALLBACK_PX) + COMPOSER_GAP_PX }}
         >
           <div
             ref={timelineRef}
@@ -716,6 +724,18 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
           </div>
         </div>
 
+        {/* 底部渐隐（.composer-fade）：纸面色盖层，时间线在输入框上沿之上淡出、输入框后面不显示文字。
+            用盖层而不是给滚动容器加遮罩：遮罩会把整条时间线放进合成层，正文失去 ClearType 而发虚 */}
+        <div
+          aria-hidden
+          className="composer-fade pointer-events-none absolute inset-x-0 bottom-0"
+          style={
+            {
+              "--composer-h": `${composerHeight ?? COMPOSER_FALLBACK_PX}px`,
+              "--composer-fade": `${COMPOSER_GAP_PX}px`,
+            } as CSSProperties
+          }
+        />
         <div
           ref={composerRef}
           className="pointer-events-none absolute inset-x-0 bottom-0 px-6 pb-4"
@@ -858,7 +878,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                     </button>
                   )}
                 </div>
-                <div className="flex items-center gap-2.5 text-xs text-muted">
+                <div className="@container/bar flex min-w-0 items-center gap-2.5 text-xs text-muted">
                   {/* 附件：系统文件对话框选文件，只引用本地路径；薄壳未接入对话框时隐藏 */}
                   {canPickFiles && (
                     <button
@@ -898,28 +918,30 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                     current={currentModel}
                     thinkingLevel={state.thinkingLevel ?? pendingModel.thinkingLevel}
                     thinkingLevels={state.model ? state.thinkingLevels : undefined}
-                    disabled={state.running || submitting}
+                    modelLocked={conversationStarted}
                     onSelectModel={(model) => void selectModel({ model })}
                     onSelectThinking={(thinkingLevel) => void selectModel({ thinkingLevel })}
                   />
-                  {/* 上下文：紧挨模型按钮的小圆环（百分比只在无障碍名称里），点开是上下文卡片 */}
-                  <ContextButton
-                    usage={state.contextUsage}
-                    sessionUsage={state.sessionUsage}
-                    autoCompaction={state.autoCompaction}
-                    compacting={state.compacting}
-                    stats={state.contextStats}
-                    connected={connected}
-                    busy={state.running || submitting}
-                    onOpen={() => {
-                      // 已缓存的数据直接显示（每条回复、压缩、切换模型后已刷新；清单由扩展每轮结束重推）；
-                      // 只补取还没有的
-                      if (!state.contextUsage) refreshStats();
-                      if (!state.contextStats) requestContextStats();
-                    }}
-                    onCompact={() => void compact()}
-                    onAutoCompactionChange={(enabled) => void setAutoCompaction(enabled)}
-                  />
+                  {/* 上下文：紧挨模型按钮的小圆环（百分比只在无障碍名称里），点开是上下文卡片；底栏窄时隐藏 */}
+                  <span className="hidden @min-[30rem]/bar:contents">
+                    <ContextButton
+                      usage={state.contextUsage}
+                      sessionUsage={state.sessionUsage}
+                      autoCompaction={state.autoCompaction}
+                      compacting={state.compacting}
+                      stats={state.contextStats}
+                      connected={connected}
+                      busy={state.running || submitting}
+                      onOpen={() => {
+                        // 已缓存的数据直接显示（每条回复、压缩、切换模型后已刷新；清单由扩展每轮结束重推）；
+                        // 只补取还没有的
+                        if (!state.contextUsage) refreshStats();
+                        if (!state.contextStats) requestContextStats();
+                      }}
+                      onCompact={() => void compact()}
+                      onAutoCompactionChange={(enabled) => void setAutoCompaction(enabled)}
+                    />
+                  </span>
                   {voice.available && (
                     <VoiceButton
                       recording={voice.recording}
@@ -938,7 +960,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                       aria-busy={stopping}
                       disabled={stopping}
                       onClick={stop}
-                      className="grid size-8 place-items-center rounded-full bg-fg text-surface transition-opacity disabled:opacity-40"
+                      className="grid aspect-square size-8 shrink-0 place-items-center rounded-full bg-fg text-surface transition-opacity disabled:opacity-40"
                     >
                       <Icon name="stop" size="xs" />
                     </button>
@@ -955,7 +977,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                         voice.recording ||
                         (!draft.trim() && !attachments.hasContent)
                       }
-                      className="grid size-8 place-items-center rounded-full bg-fg text-surface transition-[opacity,transform] active:scale-95 disabled:opacity-20 disabled:active:scale-100"
+                      className="grid aspect-square size-8 shrink-0 place-items-center rounded-full bg-fg text-surface transition-[opacity,transform] active:scale-95 disabled:opacity-20 disabled:active:scale-100"
                     >
                       <Icon name="arrow-up" />
                     </button>

@@ -551,7 +551,7 @@ export const AgentTurn = memo(function AgentTurn({
           key={a.key}
           text={a.text}
           streaming={a.live}
-          className="step-in font-serif text-base"
+          className="step-in font-serif text-base text-ink"
         />
       ))}
       {last?.stopReason === "aborted" && (
