@@ -26,7 +26,7 @@ const failed = (errorMessage: string, extra: Partial<AssistantMessage> = {}): As
 afterEach(() => setPlatformForTesting(undefined));
 
 describe("错误卡片", () => {
-  it("连接错误：标题、建议、元信息与操作", () => {
+  it("连接错误：一行标题与操作，建议在悬停提示里，元信息收在详细信息中", () => {
     const onRetry = vi.fn();
     const onOpenSettings = vi.fn();
     render(
@@ -42,8 +42,17 @@ describe("错误卡片", () => {
         name: `${strings.chat.replyFailed}：${t.categories.connection.title}`,
       }),
     ).toBeTruthy();
-    expect(screen.getByText(t.categories.connection.hint)).toBeTruthy();
+    expect(screen.queryByText(t.categories.connection.hint)).toBeNull();
+    expect(
+      screen
+        .getByRole("heading", {
+          name: `${strings.chat.replyFailed}：${t.categories.connection.title}`,
+        })
+        .getAttribute("title"),
+    ).toBe(t.categories.connection.hint);
     expect(screen.getByText(t.retried.replace("{n}", "3"))).toBeTruthy();
+    expect(screen.queryByText("ioply 网关")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: t.details }));
     expect(screen.getByText("ioply 网关")).toBeTruthy();
     expect(screen.getByText("mock-large")).toBeTruthy();
     expect(screen.getByText("10.4s")).toBeTruthy();
@@ -66,6 +75,7 @@ describe("错误卡片", () => {
     expect(
       screen.getByText(`${strings.chat.replyFailed}：${t.categories.auth.title}`),
     ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: t.details }));
     expect(screen.getByText("401")).toBeTruthy();
     expect(screen.getByRole("button", { name: t.probe })).toBeTruthy();
     unmount();

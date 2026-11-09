@@ -262,7 +262,7 @@ function ContextCard({
             onCheckedChange={onAutoCompactionChange}
             className="origin-left scale-[0.8] -mr-2"
           />
-          <span title={c.autoCompactHint}>
+          <span>
             {c.autoCompact}
             <span className="ml-1 text-2xs opacity-70">{c.autoCompactScope}</span>
           </span>

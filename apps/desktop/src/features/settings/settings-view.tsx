@@ -54,7 +54,7 @@ function GeneralSettings() {
             </TabsList>
           </Tabs>
         </Row>
-        <Row label={t.glass} hint={t.glassHint}>
+        <Row label={t.glass}>
           <div className="flex items-center gap-3 text-xs text-muted">
             <span>{t.glassClear}</span>
             <Slider
@@ -72,15 +72,15 @@ function GeneralSettings() {
         </Row>
       </Section>
       <Section title={t.startup}>
-        <Row label={t.reopenWorkspace} hint={t.pendingSettingsHint}>
+        <Row label={t.reopenWorkspace}>
           <Switch ariaLabel={t.reopenWorkspace} checked={pending.reopen} disabled />
         </Row>
-        <Row label={t.minimizeToTray} hint={t.pendingSettingsHint}>
+        <Row label={t.minimizeToTray}>
           <Switch ariaLabel={t.minimizeToTray} checked={pending.tray} disabled />
         </Row>
       </Section>
       <Section title={t.notifications}>
-        <Row label={t.notifyEnabled} hint={t.pendingSettingsHint}>
+        <Row label={t.notifyEnabled}>
           <Switch ariaLabel={t.notifyEnabled} checked={pending.notify} disabled />
         </Row>
       </Section>
