@@ -17,6 +17,7 @@ mod model_catalog;
 mod open_path;
 mod paths;
 mod platform;
+mod preview;
 mod providers;
 mod rpc_bridge;
 mod session_index;
@@ -206,6 +207,7 @@ pub fn run() {
             commands::open_external,
             commands::open_path,
             commands::reveal_path,
+            commands::preview_file,
             commands::workspace_open,
             commands::workspace_list,
             commands::workspace_inspect,

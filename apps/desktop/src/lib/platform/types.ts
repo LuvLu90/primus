@@ -337,6 +337,8 @@ export interface Platform {
   openPath(path: string): Promise<OpenPathOutcome>;
   /** 在系统文件管理器中显示并选中文件或文件夹；校验同 `openPath` */
   revealPath(path: string): Promise<void>;
+  /** 右栏预览本机文件：校验同 `openPath`，只读，最多 1 MiB；二进制文件不返回内容（图片走 `attachmentImage`） */
+  previewFile(path: string): Promise<FilePreview>;
   storageUsage(): Promise<Record<string, number>>;
   storageClean(category: string): Promise<void>;
   diagnosticsExport(options?: Record<string, unknown>): Promise<string>;
@@ -355,6 +357,11 @@ export interface Platform {
   updateInstall(force?: boolean): Promise<void>;
   logWrite(level: LogLevel, message: string): Promise<void>;
 }
+
+/** `previewFile` 的结果 */
+export type FilePreview =
+  | { kind: "text"; text: string; truncated: boolean; size: number }
+  | { kind: "binary"; size: number };
 
 /** `openPath` 的结果：已打开，或因是可执行 / 脚本文件改为在文件夹中显示 */
 export type OpenPathOutcome = "opened" | "revealed";
@@ -437,6 +444,7 @@ export const COMMANDS = {
   openExternal: "open_external",
   openPath: "open_path",
   revealPath: "reveal_path",
+  previewFile: "preview_file",
   storageUsage: "storage_usage",
   storageClean: "storage_clean",
   diagnosticsExport: "diagnostics_export",

@@ -75,6 +75,13 @@ pub fn reveal_path(path: String) -> Result<(), String> {
     crate::platform::reveal_in_folder(&checked.path).map_err(|e| e.to_string())
 }
 
+/// 右栏预览回复里引用或 Agent 写出的本机文件（附录 B `preview_file`）：校验同 `open_path`，只读，最多 1 MiB。
+#[tauri::command(async)]
+pub(crate) fn preview_file(path: String) -> Result<crate::preview::Preview, String> {
+    let checked = crate::open_path::check_path(&path)?;
+    crate::preview::read_preview(&checked.path)
+}
+
 /// 原子设置主窗口外框（物理像素），侧栏开关时窗口边缘跟随侧栏逐帧伸缩用。
 #[tauri::command]
 pub fn window_set_bounds(
