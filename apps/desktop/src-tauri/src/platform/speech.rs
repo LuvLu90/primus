@@ -153,11 +153,18 @@ mod windows_speech {
 
         /// 开始连续听写；已有会话时先停止旧的。识别器启动失败时直接返回错误。
         pub(crate) fn start(&self, sink: SpeechSink) -> Result<(), SpeechFailure> {
-            self.stop();
             let (stop_tx, stop_rx) = mpsc::channel::<()>();
+            // 停止旧会话与登记新会话的停止信号在同一把锁内完成：启动期间收到的 speech_stop 一定能找到新会话
+            // （专用线程在报告启动成功后才等待停止信号，期间收到的信号不会丢）
+            {
+                let mut slot = self.stop.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(old) = slot.replace(stop_tx.clone()) {
+                    let _ = old.send(());
+                }
+            }
             let (ready_tx, ready_rx) = mpsc::channel::<Result<(), SpeechFailure>>();
             let completed_tx = stop_tx.clone();
-            std::thread::Builder::new()
+            let spawned = std::thread::Builder::new()
                 .name("primus-speech".into())
                 .spawn(move || {
                     // SAFETY: 本线程专用于语音会话，进入 MTA 后在线程结束前对应地 CoUninitialize。
@@ -182,10 +189,12 @@ mod windows_speech {
                         // SAFETY: 与上面成功的 CoInitializeEx 配对。
                         unsafe { CoUninitialize() };
                     }
-                })
-                .map_err(|e| SpeechFailure::new(format!("语音识别启动失败：{e}")))?;
-            // 先登记停止信号：启动期间收到的 speech_stop 不丢失（专用线程在报告启动成功后才等待它）
-            *self.stop.lock().unwrap_or_else(|e| e.into_inner()) = Some(stop_tx);
+                });
+            if let Err(spawn_err) = spawned {
+                self.stop.lock().unwrap_or_else(|e| e.into_inner()).take();
+                return Err(SpeechFailure::new(format!("语音识别启动失败：{spawn_err}")));
+            }
+            drop(stop_tx);
             let result = ready_rx
                 .recv()
                 .unwrap_or_else(|_| Err(SpeechFailure::new("语音识别启动失败")));

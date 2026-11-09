@@ -98,6 +98,9 @@ describe("模型选择", () => {
     expect(screen.getByText(t.smarter)).toBeTruthy();
     expect(slider.getAttribute("aria-valuenow")).toBe("2");
     expect(slider.getAttribute("aria-valuetext")).toBe("中");
+    // 修饰键松开不提交（没选档位）
+    fireEvent.keyUp(slider, { key: "Shift" });
+    expect(onSelectThinking).not.toHaveBeenCalled();
     fireEvent.keyDown(slider, { key: "ArrowLeft" });
     fireEvent.keyDown(slider, { key: "ArrowLeft" });
     expect(slider.getAttribute("aria-valuetext")).toBe("关闭");

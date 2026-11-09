@@ -133,8 +133,12 @@ impl Vault {
         match self.get(id) {
             Ok(Some(current)) if current == value => Ok(false),
             Ok(_) => self.set(id, value).map(|()| true),
-            // 无法解密（如从其他用户 / 机器复制来的文件）时整份重建：里面的值本来就用不了
+            // 无法解密（如从其他用户 / 机器复制来的文件）时整份重建：里面的值本来就用不了。
+            // 重建前把原文件另存一份（损坏、或新版本写入的文件降级后读不了时，原内容还能找回），备份失败则不重建
             Err(e) if e.kind() == io::ErrorKind::InvalidData => {
+                let backup = self.file.with_file_name(format!("{VAULT_FILE}.bak"));
+                fs::copy(&self.file, &backup)?;
+                eprintln!("[vault] 保险库无法读取（{e}），已备份为 {VAULT_FILE}.bak 后重建");
                 let mut contents = Contents {
                     v: 1,
                     ..Contents::default()
@@ -381,6 +385,11 @@ mod tests {
         );
         assert!(vault.ensure(MODEL_TOKEN_ID, "c").unwrap(), "损坏时整份重建");
         assert_eq!(vault.get(MODEL_TOKEN_ID).unwrap().as_deref(), Some("c"));
+        assert_eq!(
+            fs::read(dir.join(format!("{VAULT_FILE}.bak"))).unwrap(),
+            b"garbage",
+            "重建前保留原文件"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

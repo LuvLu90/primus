@@ -34,6 +34,12 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(15);
 /// anthropic-messages 的版本头。
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
+/// 获取模型列表时最多跟随的重定向次数（只跟随同源重定向）。
+const MAX_REDIRECTS: usize = 5;
+
+/// 分页获取模型列表时最多取的页数。
+const MAX_PAGES: usize = 20;
+
 /// 获取到的新模型的默认参数。
 const DEFAULT_CONTEXT_WINDOW: u64 = 128_000;
 const DEFAULT_MAX_TOKENS: u64 = 32_000;
@@ -182,14 +188,26 @@ pub(crate) fn is_valid_model_id(id: &str) -> bool {
         && id.split('/').all(|segment| !segment.is_empty())
 }
 
-/// `baseUrl` 必须是 HTTP(S) 地址（内置渠道为内网 HTTP）。
+/// `baseUrl` 必须是 HTTP(S) 地址（内置渠道为内网 HTTP）：有主机，不含空白、用户名密码、查询参数与片段
+/// （获取模型列表等请求在地址后面拼路径，带 `?` / `#` 时路径会拼进查询参数或片段里）。
 pub(crate) fn check_base_url(url: &str) -> Result<(), String> {
+    let invalid = || "接口地址必须是 http:// 或 https:// 开头的地址".to_owned();
     let rest = url
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))
         .unwrap_or_default();
     if rest.is_empty() || rest.starts_with('/') || url.chars().any(char::is_whitespace) {
-        return Err("接口地址必须是 http:// 或 https:// 开头的地址".to_owned());
+        return Err(invalid());
+    }
+    let parsed = reqwest::Url::parse(url).map_err(|_| invalid())?;
+    if parsed.host_str().is_none_or(str::is_empty)
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+    {
+        return Err(invalid());
+    }
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        return Err("接口地址不能包含查询参数（?）或片段（#）".to_owned());
     }
     Ok(())
 }
@@ -531,14 +549,34 @@ pub(crate) fn auth_headers(api: Api, key: &str) -> Vec<(&'static str, String)> {
 ///   或 `capabilities.reasoning` / `capabilities.thinking` / `reasoning` 为真
 ///
 /// 能力开关也接受 `{"supported": true}` 的写法。
+#[cfg(test)]
 pub(crate) fn parse_models_response(body: &[u8]) -> Result<Vec<FetchedModel>, String> {
+    let mut models = Vec::new();
+    parse_models_page(body, &mut models)?;
+    Ok(models)
+}
+
+/// 解析一页模型列表并追加到 `models`（跳过无效与已有的 ID）。返回下一页的游标：
+/// Anthropic 的 `has_more` 为真时取 `last_id`（作为下一次请求的 `after_id`），否则为 `None`。
+pub(crate) fn parse_models_page(
+    body: &[u8],
+    models: &mut Vec<FetchedModel>,
+) -> Result<Option<String>, String> {
     #[derive(Deserialize)]
     struct Body {
         data: Vec<serde_json::Value>,
+        #[serde(default)]
+        has_more: bool,
+        #[serde(default)]
+        last_id: Option<String>,
     }
     let body: Body =
         serde_json::from_slice(body).map_err(|_| "返回内容不是有效的模型列表".to_owned())?;
-    let mut models: Vec<FetchedModel> = Vec::new();
+    let next = body
+        .has_more
+        .then_some(body.last_id)
+        .flatten()
+        .filter(|id| !id.is_empty());
     for item in body.data {
         let Some(id) = item
             .get("id")
@@ -564,7 +602,7 @@ pub(crate) fn parse_models_response(body: &[u8]) -> Result<Vec<FetchedModel>, St
         detect_capabilities(&item, &mut model);
         models.push(model);
     }
-    Ok(models)
+    Ok(next)
 }
 
 /// HTTP 状态码对应的提示（不含密钥与响应正文）。
@@ -602,28 +640,55 @@ pub(crate) async fn fetch_models(
     if rustls::crypto::CryptoProvider::get_default().is_none() {
         let _ = rustls::crypto::ring::default_provider().install_default();
     }
+    let first_url =
+        reqwest::Url::parse(&models_url(api, base_url)).map_err(|_| "接口地址无效".to_owned())?;
+    let origin = first_url.origin();
     let client = reqwest::Client::builder()
         .user_agent(concat!("Primus/", env!("CARGO_PKG_VERSION")))
         .timeout(FETCH_TIMEOUT)
+        // 只跟随同源重定向：reqwest 跨源时只去掉 Authorization，`x-api-key` 仍会带过去
+        .redirect(reqwest::redirect::Policy::custom(move |attempt| {
+            if attempt.previous().len() >= MAX_REDIRECTS || attempt.url().origin() != origin {
+                attempt.stop()
+            } else {
+                attempt.follow()
+            }
+        }))
         .build()
         .map_err(|_| "无法创建网络客户端".to_owned())?;
-    let mut request = client.get(models_url(api, base_url));
-    for (name, value) in auth_headers(api, key) {
-        request = request.header(name, value);
+    let mut models = Vec::new();
+    let mut after: Option<String> = None;
+    // Anthropic 的模型列表分页（`has_more` + `last_id`）：逐页取完，最多 MAX_PAGES 页
+    for _ in 0..MAX_PAGES {
+        let mut url = first_url.clone();
+        if let Some(after) = &after {
+            url.query_pairs_mut().append_pair("after_id", after);
+        }
+        let mut request = client.get(url);
+        for (name, value) in auth_headers(api, key) {
+            request = request.header(name, value);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|e| request_error_message(&e))?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(status_message(status.as_u16()));
+        }
+        let body = response
+            .bytes()
+            .await
+            .map_err(|e| request_error_message(&e))?;
+        let next = parse_models_page(&body, &mut models)?;
+        match next {
+            Some(next) if api == Api::AnthropicMessages && after.as_ref() != Some(&next) => {
+                after = Some(next);
+            }
+            _ => break,
+        }
     }
-    let response = request
-        .send()
-        .await
-        .map_err(|e| request_error_message(&e))?;
-    let status = response.status();
-    if !status.is_success() {
-        return Err(status_message(status.as_u16()));
-    }
-    let body = response
-        .bytes()
-        .await
-        .map_err(|e| request_error_message(&e))?;
-    parse_models_response(&body)
+    Ok(models)
 }
 
 #[cfg(test)]
@@ -681,6 +746,22 @@ mod tests {
             ("ftp", Box::new(|p| p.base_url = "ftp://x".into())),
             ("空主机", Box::new(|p| p.base_url = "https://".into())),
             ("空白", Box::new(|p| p.base_url = "https://a b".into())),
+            (
+                "查询参数",
+                Box::new(|p| p.base_url = "https://gw.example/v1?tenant=a".into()),
+            ),
+            (
+                "片段",
+                Box::new(|p| p.base_url = "https://gw.example/v1#x".into()),
+            ),
+            (
+                "用户名",
+                Box::new(|p| p.base_url = "https://u:p@gw.example/v1".into()),
+            ),
+            (
+                "端口无效",
+                Box::new(|p| p.base_url = "https://gw.example:99999/v1".into()),
+            ),
             ("模型 id", Box::new(|p| p.models[0].id = "a//b".into())),
             ("模型 id 开头 /", Box::new(|p| p.models[0].id = "/b".into())),
             ("模型 id 结尾 /", Box::new(|p| p.models[0].id = "a/".into())),
@@ -925,6 +1006,25 @@ mod tests {
                 display_name: Some("Claude Old".into()),
                 ..FetchedModel::default()
             }
+        );
+    }
+
+    #[test]
+    fn models_page_cursor() {
+        let mut models = Vec::new();
+        let first = br#"{"data":[{"id":"a"},{"id":"b"}],"has_more":true,"last_id":"b"}"#;
+        assert_eq!(
+            parse_models_page(first, &mut models).unwrap().as_deref(),
+            Some("b")
+        );
+        let last = br#"{"data":[{"id":"b"},{"id":"c"}],"has_more":false,"last_id":"c"}"#;
+        assert_eq!(parse_models_page(last, &mut models).unwrap(), None);
+        let ids: Vec<_> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["a", "b", "c"], "跨页合并并去重");
+        // OpenAI 兼容接口没有分页字段
+        assert_eq!(
+            parse_models_page(br#"{"data":[]}"#, &mut models).unwrap(),
+            None
         );
     }
 

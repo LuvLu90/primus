@@ -58,6 +58,12 @@ export function decodeText(buf: Uint8Array): string | undefined {
   }
 }
 
+/** 行数：与 Core 的 read 工具一致，末尾换行之后的空段不算一行 */
+export function lineCount(text: string): number {
+  const lines = text.split("\n").length;
+  return text.endsWith("\n") ? lines - 1 : lines;
+}
+
 /** 读取一个附件：能内联时返回内容，否则返回 undefined（保持空标签） */
 export async function readInline(path: string): Promise<string | undefined> {
   try {
@@ -67,8 +73,10 @@ export async function readInline(path: string): Promise<string | undefined> {
     try {
       const buf = new Uint8Array(info.size);
       const { bytesRead } = await handle.read(buf, 0, info.size, 0);
-      const text = decodeText(buf.subarray(0, bytesRead));
-      if (text === undefined || text.split("\n").length > FILE_INLINE_MAX_LINES) return undefined;
+      // 短读取（网络文件系统等）：只读到前缀时不内联，保持空标签让模型按路径读取
+      if (bytesRead < info.size) return undefined;
+      const text = decodeText(buf);
+      if (text === undefined || lineCount(text) > FILE_INLINE_MAX_LINES) return undefined;
       return text;
     } finally {
       await handle.close();

@@ -11,9 +11,10 @@
 //
 // models.json 在 Core 运行期间会被薄壳重写（首次启动在后台获取内置渠道的模型列表、设置里增删改渠道或换密钥），
 // 所以不只在加载时取一次：监听 models.json 的变化，并在每次对话开始前（before_agent_start）再核对一次。
-// 文件变了就让 Core 重新读取 models.json（modelRegistry.refresh），并只为新出现、命令变了或上次没取到的渠道
-// 重新取令牌；文件内容没变但被重写（薄壳保存新密钥时会重写一次）则所有渠道重新取；没变化时不拉起任何进程。
-// 渠道被删除时撤销本扩展为它设置的令牌。
+// 文件变了（含内容没变只是被重写：薄壳保存新密钥时会重写一次）就为所有渠道重新取令牌——换密钥与改配置的两次写入
+// 可能被防抖合并成一次；内容变了还让 Core 重新读取 models.json（modelRegistry.refresh），Core 报告读取出错时
+// 下次核对再刷新。文件没变时只补取上次没取到令牌的渠道（首次直接取失败可能是暂时的）。
+// 渠道被删除、或重新取令牌失败时撤销本扩展为它设置的令牌（Core 改按 models.json 的命令取）。
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, statSync, watch } from "node:fs";
@@ -112,6 +113,7 @@ interface ProviderApi {
 
 interface Registry {
   refresh: () => Promise<unknown>;
+  getError?: () => string | undefined;
 }
 
 function hasRegisterProvider(pi: unknown): pi is ProviderApi {
@@ -210,6 +212,17 @@ export function createAuth(deps: AuthDeps = defaultDeps) {
     let stopWatch: (() => void) | null = null;
     let queue: Promise<void> = Promise.resolve();
 
+    /** 撤销本扩展为渠道设置的令牌；成功（或 Core 不支持撤销）返回 true */
+    const unregister = (name: string): boolean => {
+      if (typeof pi.unregisterProvider !== "function") return true;
+      try {
+        pi.unregisterProvider(name);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
     const register = (name: string, key: string): boolean => {
       try {
         pi.registerProvider(name, { apiKey: literalConfigValue(key) });
@@ -229,7 +242,7 @@ export function createAuth(deps: AuthDeps = defaultDeps) {
     };
 
     /**
-     * 按当前 models.json 设置令牌。`all` 为真时所有渠道都重新取（文件被重写但内容没变：可能换了密钥），
+     * 按当前 models.json 设置令牌。`all` 为真时所有渠道都重新取（文件被重写：可能换了密钥），
      * 否则只取新出现、命令变了或上次没取到的渠道。返回内容是否与上次不同。
      */
     const apply = (content: string, all: boolean): boolean => {
@@ -248,24 +261,36 @@ export function createAuth(deps: AuthDeps = defaultDeps) {
       const keys = resolveCommands(deps, pending);
       for (const [name, command] of pending) {
         const key = keys.get(name);
-        applied.set(name, {
-          command: commandKey(command),
-          registered: key !== undefined && register(name, key),
-        });
+        let registered = key !== undefined && register(name, key);
+        // 重新取令牌失败：撤销之前设置的旧令牌（否则 Core 继续用旧密钥）；撤销失败时仍记为已设置，删除渠道时再撤销
+        if (!registered && applied.get(name)?.registered) registered = !unregister(name);
+        applied.set(name, { command: commandKey(command), registered });
       }
       // 渠道已删除，或不再使用取令牌命令：撤销本扩展设置的令牌
       for (const [name, state] of [...applied]) {
         if (commands.has(name)) continue;
         applied.delete(name);
-        if (state.registered && typeof pi.unregisterProvider === "function") {
-          try {
-            pi.unregisterProvider(name);
-          } catch {
-            // 供应商已不存在时忽略
-          }
-        }
+        // 供应商已不存在时撤销会失败，忽略
+        if (state.registered) unregister(name);
       }
       return changed;
+    };
+
+    /** Core 是否还需要重新读取 models.json（内容变了但还没刷新成功） */
+    let refreshPending = false;
+
+    const refresh = async (): Promise<void> => {
+      if (!registry) return;
+      try {
+        await registry.refresh();
+        // Core 读取 models.json 出错时不抛错、改用空配置：保留待刷新状态，下次核对再试
+        const error = registry.getError?.();
+        refreshPending = typeof error === "string" && error.includes(MODELS_FILE);
+        if (refreshPending) deps.warn("primus-auth：内核读取模型配置出错，下次核对时重试");
+      } catch {
+        refreshPending = true;
+        deps.warn("primus-auth：内核重新读取模型配置失败");
+      }
     };
 
     /** 核对 models.json 是否变化；变化时让 Core 重新读取并补设令牌（串行执行） */
@@ -273,19 +298,17 @@ export function createAuth(deps: AuthDeps = defaultDeps) {
       queue = queue
         .then(async () => {
           const stamp = deps.stamp(location.file);
-          if (stamp === lastStamp && stamp !== null) return;
+          if (stamp === lastStamp && stamp !== null) {
+            if (lastContent !== null && [...applied.values()].some((a) => !a.registered))
+              apply(lastContent, false);
+            if (refreshPending) await refresh();
+            return;
+          }
           const content = readContent();
           if (content === null) return;
-          const rewritten = content === lastContent;
           lastStamp = stamp;
-          const changed = apply(content, rewritten);
-          if (changed && registry) {
-            try {
-              await registry.refresh();
-            } catch {
-              deps.warn("primus-auth：内核重新读取模型配置失败");
-            }
-          }
+          if (apply(content, true)) refreshPending = true;
+          if (refreshPending) await refresh();
         })
         .catch(() => {
           // 不让一次失败阻断之后的核对

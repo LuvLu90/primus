@@ -43,6 +43,18 @@ export const DEFAULT_THINKING_LEVELS: ThinkingLevel[] = ["off", "low", "medium",
 /** 思考滑杆拇指宽度（px）；刻度与填充都按“拇指中心可达范围”排布 */
 const THUMB_W = 32;
 
+/** 思考程度滑杆调整档位的按键：方向、Page Up/Down 为步进；Home / End 为 0（到两端单独处理） */
+const ADJUST_KEYS: Record<string, number> = {
+  ArrowRight: 1,
+  ArrowUp: 1,
+  ArrowLeft: -1,
+  ArrowDown: -1,
+  PageUp: 1,
+  PageDown: -1,
+  Home: 0,
+  End: 0,
+};
+
 /**
  * 弹层内容的最大高度：不超过 Radix 给出的可用高度（触发按钮到窗口边缘，已扣除 collisionPadding），
  * 减去玻璃底板的上下内边距（py-2），且不超过 30rem
@@ -335,18 +347,10 @@ function ThinkingSlider({
     // Esc、Tab 交给菜单（关闭、移出焦点）；其余按键不让菜单拿去移动高亮或做首字母跳转
     if (e.key === "Escape" || e.key === "Tab") return;
     e.stopPropagation();
-    const step: Record<string, number> = {
-      ArrowRight: 1,
-      ArrowUp: 1,
-      ArrowLeft: -1,
-      ArrowDown: -1,
-      PageUp: 1,
-      PageDown: -1,
-    };
     let next = draftRef.current;
-    if (e.key in step) next += step[e.key] ?? 0;
-    else if (e.key === "Home") next = 0;
+    if (e.key === "Home") next = 0;
     else if (e.key === "End") next = max;
+    else if (Object.hasOwn(ADJUST_KEYS, e.key)) next += ADJUST_KEYS[e.key] ?? 0;
     else return;
     e.preventDefault();
     set(Math.min(max, Math.max(0, next)));
@@ -354,7 +358,8 @@ function ThinkingSlider({
   const onKeyUp = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key === "Escape" || e.key === "Tab") return;
     e.stopPropagation();
-    commit();
+    // 只在调整档位的按键松开时提交（Shift 等修饰键松开不算选了档位）
+    if (Object.hasOwn(ADJUST_KEYS, e.key)) commit();
   };
 
   const ratio = drag ?? (max > 0 ? draft / max : 0);

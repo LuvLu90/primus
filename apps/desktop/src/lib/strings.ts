@@ -269,6 +269,7 @@ export const strings = {
       pasted: "粘贴的图片",
       unsupportedPasted: "当前模型不支持看图，这张图片无法发送",
       readingBlocksSend: "图片还在读取，读取完成后才能发送",
+      imageUnsupported: "当前环境不支持读取图片",
       dropHint: "松开以添加附件",
       sent: "随消息发送的文件",
       inlined: "已附上文件内容",
@@ -404,6 +405,8 @@ export const strings = {
       empty: "还没有模型渠道。添加一个渠道并获取模型列表后即可对话。",
       loading: "正在读取模型渠道…",
       loadFailed: "读取模型渠道失败",
+      loadFailedRecover:
+        "仍可添加渠道：保存时会把无法读取的配置备份为 providers.json.bak，再重建配置。",
       key: "密钥",
       keyMasked: "••••{hint}",
       keySet: "已设置",
@@ -452,7 +455,7 @@ export const strings = {
         errors: {
           nameRequired: "请填写名称",
           nameTooLong: "名称不能超过 64 个字符",
-          baseUrlInvalid: "接口地址必须以 http:// 或 https:// 开头",
+          baseUrlInvalid: "接口地址必须以 http:// 或 https:// 开头，且不能包含 ? 或 #",
           apiKeyRequired: "请填写 API 密钥",
           fetchNeeds: "请先填写接口地址与 API 密钥",
           positiveInt: "请填写正整数",

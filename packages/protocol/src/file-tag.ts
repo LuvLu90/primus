@@ -31,40 +31,49 @@ export function appendFileTags(message: string, tags: readonly FileTag[]): strin
   return message ? `${message}\n\n${block}` : block;
 }
 
-/** 从 `at` 开始解析一个标签；不是合法标签时返回 undefined */
-function parseTagAt(text: string, at: number): { tag: FileTag; end: number } | undefined {
-  if (!text.startsWith(OPEN, at)) return undefined;
+/**
+ * 从 `at` 开始解析一个标签，返回所有可能的结束位置（不是合法标签时为空）。内联内容本身可能含独占一行的 `</file>`，
+ * 这样的位置都是候选，由 parseBlock 选出能让后面也解析成功的那一个
+ */
+function parseTagAt(text: string, at: number): { tag: FileTag; end: number }[] {
+  if (!text.startsWith(OPEN, at)) return [];
   const nameEnd = text.indexOf('">', at + OPEN.length);
-  if (nameEnd < 0) return undefined;
+  if (nameEnd < 0) return [];
   const path = text.slice(at + OPEN.length, nameEnd);
-  if (!path || path.includes("\n")) return undefined;
+  if (!path || path.includes("\n")) return [];
   const bodyStart = nameEnd + 2;
-  if (text.startsWith(CLOSE, bodyStart)) return { tag: { path }, end: bodyStart + CLOSE.length };
-  // 内联标签：`>\n内容\n</file>`；内容本身可能含 `</file>`，取后面紧跟换行或结尾的那一个
-  if (text[bodyStart] !== "\n") return undefined;
-  let close = text.indexOf(`\n${CLOSE}`, bodyStart);
-  while (close >= 0) {
+  if (text.startsWith(CLOSE, bodyStart)) return [{ tag: { path }, end: bodyStart + CLOSE.length }];
+  // 内联标签：`>\n内容\n</file>`；`</file>` 后面必须紧跟换行或结尾
+  if (text[bodyStart] !== "\n") return [];
+  const found: { tag: FileTag; end: number }[] = [];
+  for (
+    let close = text.indexOf(`\n${CLOSE}`, bodyStart);
+    close >= 0;
+    close = text.indexOf(`\n${CLOSE}`, close + 1)
+  ) {
     const end = close + 1 + CLOSE.length;
-    if (end === text.length || text[end] === "\n") {
-      return { tag: { path, content: text.slice(bodyStart + 1, close) }, end };
-    }
-    close = text.indexOf(`\n${CLOSE}`, close + 1);
+    if (end === text.length || text[end] === "\n")
+      found.push({ tag: { path, content: text.slice(bodyStart + 1, close) }, end });
   }
-  return undefined;
+  return found;
 }
 
-/** 从 `at` 开始解析连续的标签直到正文结尾；中途遇到别的内容返回 undefined */
-function parseBlock(text: string, at: number): FileTag[] | undefined {
-  const tags: FileTag[] = [];
-  let i = at;
-  while (i < text.length) {
-    const parsed = parseTagAt(text, i);
-    if (!parsed) return undefined;
-    tags.push(parsed.tag);
-    i = parsed.end;
+/**
+ * 从 `at` 开始解析连续的标签直到正文结尾；中途遇到别的内容返回 undefined。
+ * `failed` 记下已确定解析不下去的位置，避免回溯时重复尝试
+ */
+function parseBlock(text: string, at: number, failed = new Set<number>()): FileTag[] | undefined {
+  if (at >= text.length) return [];
+  if (failed.has(at)) return undefined;
+  // 优先取最近的结束位置，后面解析不下去时再试更远的（内容里含独占一行的 `</file>`）
+  for (const parsed of parseTagAt(text, at)) {
+    let i = parsed.end;
     while (text[i] === "\n" || text[i] === "\r") i++;
+    const rest = parseBlock(text, i, failed);
+    if (rest) return [parsed.tag, ...rest];
   }
-  return tags.length > 0 ? tags : undefined;
+  failed.add(at);
+  return undefined;
 }
 
 /**
@@ -78,7 +87,7 @@ export function splitFileTags(text: string): { message: string; files: FileTag[]
     candidates.push(i + 2);
   for (const at of candidates) {
     const files = parseBlock(text, at);
-    if (files) return { message: text.slice(0, at).replace(/\s+$/, ""), files };
+    if (files && files.length > 0) return { message: text.slice(0, at).replace(/\s+$/, ""), files };
   }
   return { message: text, files: [] };
 }

@@ -35,6 +35,7 @@ import {
   errorReport,
   formatClock,
   formatDuration,
+  redactSecrets,
 } from "./reply-error";
 
 const t = strings.chat.replyError;
@@ -276,7 +277,7 @@ export function ErrorCard({
               <CopyButton text={report} label={t.copyDetails} size="sm" />
             </div>
             <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words px-2.5 py-2 pr-9 font-mono text-[11.5px] text-fg/85 leading-relaxed">
-              {message.errorMessage || copy.title}
+              {message.errorMessage ? redactSecrets(message.errorMessage) : copy.title}
             </pre>
             {diagnostics.length > 0 && (
               <div className="border-tile-ring border-t px-2.5 py-2">
@@ -288,7 +289,7 @@ export function ErrorCard({
                       <span>{diagnosticLine(d)}</span>
                       {d.details && (
                         <pre className="mt-0.5 whitespace-pre-wrap break-words text-muted">
-                          {JSON.stringify(d.details, null, 2)}
+                          {redactSecrets(JSON.stringify(d.details, null, 2))}
                         </pre>
                       )}
                     </li>
@@ -355,8 +356,11 @@ export function RetryNotice({
             {left > 0 ? fill(t.retryIn, values) : `${fill(t.retrying, values)}…`}
           </span>
         </p>
-        <p className="truncate text-[12px] text-muted" title={retry.errorMessage}>
-          {retry.errorMessage}
+        <p
+          className="truncate text-[12px] text-muted"
+          title={retry.errorMessage && redactSecrets(retry.errorMessage)}
+        >
+          {retry.errorMessage && redactSecrets(retry.errorMessage)}
         </p>
       </div>
       {onStop && (
