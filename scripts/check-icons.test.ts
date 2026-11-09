@@ -9,6 +9,8 @@ import {
   run,
   // @ts-expect-error 纯 JS 脚本，无类型声明
 } from "./check-icons.mjs";
+// @ts-expect-error 纯 JS 脚本，无类型声明
+import { normalize, parseSvg } from "./vendor-reicon.mjs";
 
 type Finding = { line: number; what: string };
 const brief = (list: Finding[]) => list.map((v) => [v.line, v.what]);
@@ -147,6 +149,31 @@ describe("findIconUsageIssues", () => {
     ]);
   });
 
+  it("属性表达式里的 > 不结束标签：后面的属性照样检查", () => {
+    const code = [
+      '<Icon name="x" onClick={() => go()} className="opacity-70" />',
+      '<Icon name="x" title={a > b ? "大" : "小"} size={s} />',
+    ].join("\n");
+    expect(brief(findIconUsageIssues(code))).toEqual([
+      [1, "opacity-70"],
+      [2, "size 只能是 2xs / xs / sm / md / lg / xl"],
+    ]);
+  });
+
+  it("size 条件表达式的每个结果分支都要是令牌：混了标识符的分支报出", () => {
+    const code = [
+      '<Icon name="x" size={compact ? "sm" : otherSize} />',
+      '<Icon name="x" size={compact ? otherSize : "sm"} />',
+      '<Icon name="x" size={a ? "xs" : b ? "sm" : "md"} />',
+      '<Icon name="x" size={n > 1 ? "sm" : "md"} />',
+      '<Icon name="x" size={opts?.dense ?? false ? "xs" : "sm"} />',
+    ].join("\n");
+    expect(findIconUsageIssues(code).map((i) => [i.line, i.kind])).toEqual([
+      [1, "图标尺寸"],
+      [2, "图标尺寸"],
+    ]);
+  });
+
   it("字符串里的 // 不当注释：后面的违规照样报出", () => {
     expect(findIconDataColors('a: ["/repo//cache", { fill: "#000" }]')).toHaveLength(2);
   });
@@ -171,5 +198,20 @@ describe("run", () => {
       "apps/desktop/src/components/icons/icons.generated.ts:1 图标颜色 #000",
       "packages/ui/c.tsx:1 图标库导入 react-icons/fa",
     ]);
+  });
+});
+
+describe("vendor-reicon", () => {
+  it("注释里的标签文本不当成 SVG 标签", () => {
+    const nodes = parseSvg('<!-- <path d="M0 0"/> --><path d="M1 1" stroke="currentColor"/>');
+    expect(nodes).toEqual([
+      { tag: "path", attrs: { d: "M1 1", stroke: "currentColor" }, children: [] },
+    ]);
+  });
+
+  it("图标数据里的 fill-opacity / stroke-opacity 拒绝生成", () => {
+    for (const attr of ["fill-opacity", "stroke-opacity"]) {
+      expect(() => normalize(parseSvg(`<path d="M1 1" ${attr}="0.5"/>`), "x")).toThrow(attr);
+    }
   });
 });

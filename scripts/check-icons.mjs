@@ -84,30 +84,80 @@ const TOKEN_TEXT =
 const ICON_SIZES = new Set(["2xs", "xs", "sm", "md", "lg", "xl"]);
 const BAD_ICON_PROP = /^(?:fill|stroke|color|strokeWidth|opacity|style)$/;
 
+/**
+ * 源码里每个 `<Icon` 起始标签的属性文本：扫到标签结束的 `>` 为止，
+ * {…} 表达式与引号里的 `>`（如 onClick={() => x}）不算结束
+ */
+function iconTags(code) {
+  const out = [];
+  for (const m of code.matchAll(/<Icon\b/g)) {
+    const start = m.index + m[0].length;
+    let depth = 0;
+    let quote = "";
+    let i = start;
+    for (; i < code.length; i++) {
+      const ch = code[i];
+      if (quote) {
+        if (ch === "\\") i++;
+        else if (ch === quote) quote = "";
+      } else if (ch === '"' || ch === "'" || ch === "`") quote = ch;
+      else if (ch === "{") depth++;
+      else if (ch === "}") depth--;
+      else if (ch === ">" && depth <= 0) break;
+    }
+    out.push({ index: m.index, attrs: code.slice(start, i).replace(/\/$/, "") });
+  }
+  return out;
+}
+
+/** size={…} 表达式每个结果分支的取值：字符串字面量给出内容，其余（数值、标识符、调用…）为 undefined */
+function sizeBranches(expr) {
+  const e = expr.trim();
+  const lit = e.match(/^\(?\s*(["'`])([^"'`]*)\1\s*\)?$/);
+  if (lit) return [lit[2]];
+  // 顶层第一个 `?` 与它配对的 `:`（跳过引号内容、`?.`、`??` 与嵌套的条件表达式）
+  let q = -1;
+  let colon = -1;
+  let nest = 0;
+  let quote = "";
+  for (let i = 0; i < e.length && colon < 0; i++) {
+    const ch = e[i];
+    if (quote) {
+      if (ch === "\\") i++;
+      else if (ch === quote) quote = "";
+    } else if (ch === '"' || ch === "'" || ch === "`") quote = ch;
+    else if (ch === "?" && e[i + 1] === "?") i++;
+    else if (ch === "?" && e[i + 1] === "." && !/\d/.test(e[i + 2] ?? "")) i++;
+    else if (ch === "?") {
+      if (q < 0) q = i;
+      else nest++;
+    } else if (ch === ":" && q >= 0) {
+      if (nest === 0) colon = i;
+      else nest--;
+    }
+  }
+  if (q < 0 || colon < 0) return [undefined];
+  return [...sizeBranches(e.slice(q + 1, colon)), ...sizeBranches(e.slice(colon + 1))];
+}
+
 /** <Icon …> 上的透明度、任意颜色与旧式数值属性 */
 export function findIconUsageIssues(code) {
   const clean = stripComments(code);
   const out = [];
-  for (const m of clean.matchAll(/<Icon\b([^>]*?)\/?>/gs)) {
-    const attrs = m[1];
-    const line = lineOf(clean, m.index);
+  for (const { index, attrs } of iconTags(clean)) {
+    const line = lineOf(clean, index);
     for (const p of attrs.matchAll(/(?<![\w-])([A-Za-z]+)=/g)) {
       if (BAD_ICON_PROP.test(p[1])) out.push({ line, kind: "图标属性", what: p[1] });
     }
-    // size 只能是尺寸令牌：size="sm"，或每个分支都是令牌字面量的表达式（size={compact ? "xs" : "sm"}）；
-    // 表达式里不能有数值（标识符里的数字如 compact2 不算）
+    // size 只能是尺寸令牌：size="sm"，或每个结果分支都是令牌字面量的条件表达式（size={compact ? "xs" : "sm"}）；
+    // 分支是数值、标识符等（size={compact ? "sm" : other}）都不行
     const badSize = () =>
       out.push({ line, kind: "图标尺寸", what: "size 只能是 2xs / xs / sm / md / lg / xl" });
     for (const sz of attrs.matchAll(/(?<![\w-])size=(?:"([^"]*)"|'([^']*)')/g)) {
       if (!ICON_SIZES.has(sz[1] ?? sz[2])) badSize();
     }
     for (const sz of attrs.matchAll(/(?<![\w-])size=\{([^}]*)\}/g)) {
-      const literals = [...sz[1].matchAll(/["'`]([^"'`]*)["'`]/g)].map((l) => l[1]);
-      const tokensOnly =
-        literals.length > 0 &&
-        literals.every((l) => ICON_SIZES.has(l)) &&
-        !/(?<![\w$])\.?\d/.test(sz[1].replace(/["'`][^"'`]*["'`]/g, ""));
-      if (!tokensOnly) badSize();
+      if (!sizeBranches(sz[1]).every((b) => b !== undefined && ICON_SIZES.has(b))) badSize();
     }
     for (const c of attrs.matchAll(
       /(?<![\w-])(?:[\w-]+:)*((?:text|fill|stroke|opacity)-[^\s"'`}]+)/g,

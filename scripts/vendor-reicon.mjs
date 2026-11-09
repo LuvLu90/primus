@@ -129,7 +129,8 @@ export function readSource(pkgDir, name, weight = "O") {
 export function parseSvg(fragment) {
   const root = { tag: "#root", attrs: {}, children: [] };
   const stack = [root];
-  const re = /<(\/?)([a-zA-Z]+)((?:\s+[\w:-]+="[^"]*")*)\s*(\/?)>/g;
+  // 完整的注释单独作为一项先匹配：注释里写的 <path …/> 不当成标签
+  const re = /<!--[\s\S]*?-->|<(\/?)([a-zA-Z]+)((?:\s+[\w:-]+="[^"]*")*)\s*(\/?)>/g;
   // 标签之间只允许空白与注释：其他内容（如单引号属性的元素）说明没解析到，不能静默跳过
   const checkGap = (gap) => {
     const rest = gap.replace(/<!--[\s\S]*?-->/g, "").trim();
@@ -140,6 +141,7 @@ export function parseSvg(fragment) {
     checkGap(fragment.slice(last, m.index));
     last = m.index + m[0].length;
     const [, closing, tag, rawAttrs, selfClosing] = m;
+    if (tag === undefined) continue;
     if (closing) {
       const top = stack.pop();
       if (top?.tag !== tag) throw new Error(`标签不配对：</${tag}>`);
@@ -194,7 +196,7 @@ export function normalize(nodes, iconName) {
         throw new Error(`${iconName}: 颜色只能是 currentColor / none，发现 ${k}="${v}"`);
       if (k === "stroke-width" && v !== "1.5")
         throw new Error(`${iconName}: 线宽必须是 1.5，发现 ${v}`);
-      if (k === "opacity" || k === "style" || k === "class")
+      if (["opacity", "fill-opacity", "stroke-opacity", "style", "class"].includes(k))
         throw new Error(`${iconName}: 不允许 ${k} 属性`);
       attrs[REACT_ATTR[k] ?? k] = v;
     }

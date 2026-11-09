@@ -66,6 +66,11 @@ describe("findViolations", () => {
       [4, "text-[11px]"],
     ]);
   });
+
+  it("冒号后隔空白的 // 是注释（对象属性值后的注释），不当网址", () => {
+    const code = ["const o = {", "  value: // 以前是 text-[13px]", '    "sm",', "};"].join("\n");
+    expect(findViolations(code)).toEqual([]);
+  });
 });
 
 describe("run", () => {

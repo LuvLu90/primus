@@ -31,7 +31,7 @@ const PATTERNS = [
 /**
  * 去掉注释（块注释保留换行，行号不变），避免注释里的示例被误报。
  * 按源码语法逐字扫描：字符串、模板字符串与正则字面量里的 `//`、`/*` 不算注释（如 "/repo//cache"）；
- * JSX 文字里的网址（`https://…`，`//` 前是冒号）也不算。check-icons.mjs 共用这一份。
+ * JSX 文字里的网址（`https://…`，`//` 紧跟冒号）也不算。check-icons.mjs 共用这一份。
  */
 export function stripComments(code) {
   let out = "";
@@ -42,7 +42,8 @@ export function stripComments(code) {
   while (i < n) {
     const c = code[i];
     const next = code[i + 1];
-    if (c === "/" && next === "/" && prev !== ":") {
+    // 紧跟冒号的 `//` 是网址（https://…）；冒号后隔了空白（`value: // 注释`）仍是注释
+    if (c === "/" && next === "/" && code[i - 1] !== ":") {
       while (i < n && code[i] !== "\n") i++;
       continue;
     }

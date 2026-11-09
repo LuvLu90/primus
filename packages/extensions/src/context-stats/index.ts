@@ -120,17 +120,16 @@ export function collectContextStats(
   const options = ctx.getSystemPromptOptions?.() ?? fallbackOptions ?? {};
   // 记忆文件（AGENTS.md 等）：系统提示词里有 Core 写入的整段文件块才算（与 agent-core system-prompt.ts
   // renderProjectContext 的格式一致）；空文件也按块判断，扩展把它从提示词里去掉后不再列出
-  const memory = (options.contextFiles ?? [])
-    .filter((f) =>
-      prompt.includes(
-        `<project_instructions path="${f.path}">\n${f.content}\n</project_instructions>`,
-      ),
-    )
-    .map((f) => f.path);
+  const files = (options.contextFiles ?? []).map((f) => ({
+    path: f.path,
+    block: `<project_instructions path="${f.path}">\n${f.content}\n</project_instructions>`,
+  }));
+  const memory = files.filter((f) => prompt.includes(f.block)).map((f) => f.path);
   // 技能：系统提示词 <available_skills> 里实际列出的条目（不给模型调用的不列；
   // read / bash 都关闭时 Core 不列技能，项目文件里碰巧出现技能名也不算）。
-  // Core 的技能段排在项目文件之后：取最后一段，项目文件里写的 <available_skills> 示例不算
-  const blocks = [...prompt.matchAll(/<available_skills>([\s\S]*?)<\/available_skills>/g)];
+  // 先去掉项目文件块再找技能段：项目文件里写的 <available_skills> 示例不算；Core 的技能段排在最后
+  const outsideFiles = files.reduce((text, f) => text.split(f.block).join(""), prompt);
+  const blocks = [...outsideFiles.matchAll(/<available_skills>([\s\S]*?)<\/available_skills>/g)];
   const listed = blocks.at(-1)?.[1] ?? "";
   const skills = (options.skills ?? [])
     .filter(

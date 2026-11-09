@@ -115,6 +115,21 @@ describe("primus-context-stats 上下文清单", () => {
     expect(data.groups.find((g) => g.key === "skills")?.items).toEqual(["pdf"]);
   });
 
+  it("Core 没写技能段（read / bash 都关闭）时，项目文件里列出技能名的示例不算", () => {
+    const agents = "示例：<available_skills><skill><name>pdf</name></skill></available_skills>";
+    const prompt = `你是乾元。\n${block("AGENTS.md", agents)}`;
+    const options = {
+      contextFiles: [{ path: "AGENTS.md", content: agents }],
+      skills: [{ name: "pdf", description: "", filePath: "/s" }],
+    };
+    const data = collectContextStats(
+      ctx({ getSystemPrompt: () => prompt, getSystemPromptOptions: () => options }),
+      TOOLS,
+    );
+    expect(data.groups.find((g) => g.key === "skills")?.items).toEqual([]);
+    expect(data.groups.find((g) => g.key === "memoryFiles")?.items).toEqual(["AGENTS.md"]);
+  });
+
   it("记忆文件按 Core 的文件块判断：空文件的块在才算，被扩展去掉后不列", () => {
     const options = { contextFiles: [{ path: "AGENTS.md", content: "" }] };
     const memoryOf = (prompt: string) =>
