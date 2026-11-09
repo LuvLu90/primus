@@ -15,7 +15,7 @@
 // 用法：node scripts/gen-update-manifest.mjs --version <SemVer> --tag <标签> --repo <owner/name> --assets <目录>
 //         --out-dir <目录> [--notes-file <文件>] [--existing-stable <文件>] [--existing-beta <文件>]
 //         [--pub-date <RFC 3339>] [--verify]
-//   --assets           含 4 个安装包与 4 个 .sig 的目录
+//   --assets           含 4 个安装包与 4 个 .sig 的目录（发布作业从构建 artifact 下载；.sig 不作为 Release 附件）
 //   --existing-*       update-feed 中现有的清单（不存在时省略或指向不存在的文件）
 //   --verify           用 TAURI_SIGNING_PUBLIC_KEY 按 updater 规则校验每个 .sig（含绑定的版本）
 // 输出：写入 out-dir 的清单文件名逐行打印到 stdout（没有要更新的清单时不打印）。

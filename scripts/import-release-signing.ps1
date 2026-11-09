@@ -15,7 +15,7 @@
       并写 PRIMUS_REQUIRE_SIGNING=1（要求 updater 密钥 TAURI_SIGNING_* 同时配置）
   自签名证书（颁发者 = 使用者）把公钥证书加入本机 Root 与 TrustedPublisher，使 signtool verify /pa 能在运行器上
   建立信任链（只允许 GitHub 托管运行器，用完即销毁）。公钥证书导出为 Primus-signing-cert-<Arch>.cer（未给 -Arch 时为
-  Primus-signing-cert.cer）供 Release 附件下载：每个架构的构建作业各自生成证书，由生成它的作业导出自己的公钥证书。
+  Primus-signing-cert.cer），只放进发布工作流的作业间 artifact 供核对，不作为 Release 附件：每个架构的构建作业各自生成证书，由生成它的作业导出自己的公钥证书。
   写入 GITHUB_ENV：PRIMUS_SIGN_CERT_SHA1、PRIMUS_SIGN_TIMESTAMP_URL、PRIMUS_RELEASE_SIGNED=true、
   PRIMUS_RELEASE_SELF_SIGNED、PRIMUS_RELEASE_CERT_SOURCE（generated = 本次临时生成，pfx = 来自 PFX Secret；
   发布说明据此区分「每个版本、每个架构的证书都不同」与「两个架构共用 PFX 中的同一张证书」）、
@@ -25,7 +25,7 @@
   本次发布的版本号，写进临时证书的使用者名称（例如 0.0.4）。
 
 .PARAMETER Arch
-  构建架构（x64 / arm64），写进导出的公钥证书文件名，使每个架构的安装包都有对应的证书附件。
+  构建架构（x64 / arm64），写进导出的公钥证书文件名，使每个架构的安装包都有对应的证书文件（仅工作流内部使用）。
 
 .PARAMETER TimestampUrl
   RFC 3161 时间戳服务器，默认 http://timestamp.digicert.com。
