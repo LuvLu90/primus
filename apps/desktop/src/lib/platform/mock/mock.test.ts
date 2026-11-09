@@ -67,6 +67,39 @@ describe("mock 平台", () => {
         models: [{ ...fetched[0], extra: 1 } as unknown as (typeof fetched)[0]],
       }),
     ).rejects.toThrow("未知字段");
+    // 与薄壳一致的校验：密钥含控制字符、参数不是整数、地址带查询参数
+    const model = fetched[0];
+    if (!model) throw new Error("缺少模型");
+    const base = {
+      name: "y",
+      api: "openai-responses" as const,
+      baseUrl: "https://y",
+      apiKey: "k",
+      enabled: true,
+      models: [model],
+    };
+    await expect(platform.providerSave({ ...base, apiKey: "a\nb" })).rejects.toThrow("无效字符");
+    await expect(
+      platform.providerSave({ ...base, models: [{ ...model, contextWindow: 1.5 }] }),
+    ).rejects.toThrow("正整数");
+    await expect(
+      platform.providerSave({ ...base, baseUrl: "https://y/v1?tenant=a" }),
+    ).rejects.toThrow("查询参数");
+
+    // 默认模型所在渠道停用后回退到其他模型，重新启用也不恢复旧默认值（回退结果已写回）
+    const ioplyView = created.providers.find((p) => p.id === "ioply");
+    if (!ioplyView) throw new Error("缺少 ioply");
+    const ioplyInput = {
+      id: "ioply",
+      name: ioplyView.name,
+      api: ioplyView.api,
+      baseUrl: ioplyView.baseUrl,
+      models: ioplyView.models,
+    };
+    const disabled = await platform.providerSave({ ...ioplyInput, enabled: false });
+    expect(disabled.models.defaultModel).toBe("provider/mock-coder");
+    const enabled = await platform.providerSave({ ...ioplyInput, enabled: true });
+    expect(enabled.models.defaultModel).toBe("provider/mock-coder");
 
     await platform.providerDelete("ioply");
     const left = await platform.providerDelete("provider");

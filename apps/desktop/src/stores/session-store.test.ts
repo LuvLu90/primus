@@ -454,6 +454,36 @@ describe("会话 store：自动重试", () => {
     }
   });
 
+  it("缺号重建时 get_state 显示会话已空闲：清除过期的重试进度；后台 get_commands 失败不提示", () => {
+    const s = applyChunks(initialSessionState, [
+      chunk([
+        { type: "agent_start" },
+        { type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: 2000, errorMessage: "x" },
+        {
+          type: "response",
+          id: "s-1",
+          command: "get_state",
+          success: true,
+          data: {
+            thinkingLevel: "off",
+            isStreaming: false,
+            isCompacting: false,
+            steeringMode: "one-at-a-time",
+            followUpMode: "one-at-a-time",
+            sessionId: "x",
+            autoCompactionEnabled: true,
+            messageCount: 1,
+            pendingMessageCount: 0,
+          },
+        },
+        { type: "response", id: "s-2", command: "get_commands", success: false, error: "boom" },
+      ]),
+    ]);
+    expect(s.retry).toBeUndefined();
+    expect(s.running).toBe(false);
+    expect(s.lastError).toBeUndefined();
+  });
+
   it("错过 auto_retry_end 时，一轮结束（agent_settled）也清除重试进度", () => {
     const s = applyChunks(initialSessionState, [
       chunk([

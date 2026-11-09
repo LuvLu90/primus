@@ -171,15 +171,15 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     if (!statsCommandReady.current) {
       const query: Promise<boolean> = client
         .request("get_commands")
-        .then(
-          (res) =>
-            res.success &&
-            res.data.commands.some(
-              (cmd) => cmd.source === "extension" && cmd.name === CONTEXT_STATS_COMMAND,
-            ),
-        )
+        .then((res) => {
+          // 失败响应与超时一样交给下面的清缓存路径，下次再查
+          if (!res.success) throw new Error(res.error);
+          return res.data.commands.some(
+            (cmd) => cmd.source === "extension" && cmd.name === CONTEXT_STATS_COMMAND,
+          );
+        })
         .catch(() => {
-          // 查询失败（超时等）：下次打开卡片再查；只清掉自己（期间重连或重启已换成新的查询时不动）
+          // 查询失败（失败响应、超时等）：下次打开卡片再查；只清掉自己（期间重连或重启已换成新的查询时不动）
           if (statsCommandReady.current === query) statsCommandReady.current = null;
           return false;
         });

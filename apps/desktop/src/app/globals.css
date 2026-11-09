@@ -40,6 +40,11 @@
   --color-lip: rgb(0 0 0 / 0.045);
   --color-track: rgb(0 0 0 / 0.06);
   --color-track-strong: rgb(0 0 0 / 0.1);
+  /* 叠在图片上的控件（附件图片的删除键与角标）：浅深色一致，保证在任意图片上都清楚 */
+  --color-frost: rgb(255 255 255 / 0.78);
+  --color-on-frost: #1d1d1f;
+  --color-scrim: rgb(0 0 0 / 0.55);
+  --color-on-scrim: #ffffff;
   /* Windows 11 标题栏关闭按钮（系统红），浅深色一致 */
   --color-caption-close: #e81123;
   --color-caption-close-pressed: #f1707a;
@@ -1255,8 +1260,8 @@ html.window-effects.glass-clear body {
 
 /* 图片上的删除键：磨砂白；文件上的删除键：实色面 */
 .att-remove-frost {
-  background: rgb(255 255 255 / 0.78);
-  color: #1d1d1f;
+  background: var(--color-frost);
+  color: var(--color-on-frost);
   box-shadow:
     0 1px 3px rgb(0 0 0 / 0.25),
     inset 0 0 0 0.5px rgb(0 0 0 / 0.08);
@@ -1281,8 +1286,8 @@ html.window-effects.glass-clear body {
   left: 4px;
   padding: 1px 4px;
   border-radius: 5px;
-  background: rgb(0 0 0 / 0.55);
-  color: #fff;
+  background: var(--color-scrim);
+  color: var(--color-on-scrim);
   font-size: var(--text-3xs);
   line-height: var(--text-3xs--line-height);
   backdrop-filter: blur(6px);

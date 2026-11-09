@@ -6,6 +6,7 @@ import {
   errorReport,
   formatDuration,
   parseHttpStatus,
+  redactSecrets,
 } from "./reply-error";
 
 describe("回复错误归类", () => {
@@ -108,5 +109,21 @@ describe("回复错误归类", () => {
     expect(report).toContain("gw API error (529): Overloaded");
     expect(report).toContain("[provider_error] APIError: Overloaded (529)");
     expect(report).toContain('"requestId": "r1"');
+  });
+
+  it("独立的 SSL/TLS 失败归为连接错误，但不当成证书问题", () => {
+    expect(classifyError("TLS handshake failed")).toEqual({ category: "connection" });
+    expect(classifyError("SSL routines: wrong version number")).toEqual({ category: "connection" });
+    expect(connectionReason("self-signed certificate in chain")).toBe("certificate");
+  });
+
+  it("错误文本中的疑似密钥替换成 ***", () => {
+    const text =
+      'Unauthorized: Bearer sk-abcdefgh12345678 rejected; {"x-api-key":"secret-key-9999"} key sk-ant-api03-zzzzzzzzzz';
+    const out = redactSecrets(text);
+    expect(out).not.toMatch(/abcdefgh12345678|secret-key-9999|zzzzzzzzzz/);
+    expect(out).toContain("Bearer ***");
+    expect(out).toContain("sk-ant-***");
+    expect(redactSecrets("Connection error.")).toBe("Connection error.");
   });
 });

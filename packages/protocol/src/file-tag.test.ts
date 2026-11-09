@@ -50,6 +50,17 @@ describe("附件标签（Core @file 格式）", () => {
     });
   });
 
+  it("内联内容含独占一行的 </file> 时仍能解析", () => {
+    const content = "first\n</file>\nsecond";
+    const text = appendFileTags("看", [{ path: "/a.txt", content }, { path: "/b.pdf" }]);
+    expect(splitFileTags(text)).toEqual({
+      message: "看",
+      files: [{ path: "/a.txt", content }, { path: "/b.pdf" }],
+    });
+    const only = appendFileTags("", [{ path: "/a.txt", content }]);
+    expect(splitFileTags(only).files).toEqual([{ path: "/a.txt", content }]);
+  });
+
   it("正文中间提到的标签不算附件", () => {
     const text = '格式是 <file name="x"></file> 这样\n\n后面还有话';
     expect(splitFileTags(text)).toEqual({ message: text, files: [] });

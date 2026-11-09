@@ -282,8 +282,13 @@ function applyRecord(draft: SessionState, record: CoreRecord): void {
     case "response": {
       const r: RpcResponse = record;
       if (!r.success) {
-        // 上下文统计与模型能力是后台刷新，失败不打扰用户（下一次再取）
-        if (r.command === "get_session_stats" || r.command === "get_available_models") return;
+        // 上下文统计、模型能力与扩展命令查询是后台请求，失败不打扰用户（下一次再取）
+        if (
+          r.command === "get_session_stats" ||
+          r.command === "get_available_models" ||
+          r.command === "get_commands"
+        )
+          return;
         draft.lastError = r.error || `${r.command} 失败`;
         return;
       }
@@ -306,6 +311,8 @@ function applyRecord(draft: SessionState, record: CoreRecord): void {
         if (thinkingLevel) draft.thinkingLevel = thinkingLevel;
         draft.autoCompaction = r.data.autoCompactionEnabled;
         draft.compacting = r.data.isCompacting;
+        // 会话已空闲：缺号时可能错过了 auto_retry_end，清掉过期的重试提示（否则会一直显示并盖住最终错误卡片）
+        if (!draft.running) draft.retry = undefined;
       }
       if (r.command === "set_model" && r.data) {
         draft.model = { provider: r.data.provider, id: r.data.id };

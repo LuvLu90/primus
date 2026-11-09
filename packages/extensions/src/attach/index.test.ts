@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FILE_INLINE_MAX_BYTES } from "@primus/protocol";
 import { afterAll, describe, expect, it } from "vitest";
-import attach, { decodeText, expandAttachments, readInline } from "./index.ts";
+import attach, { decodeText, expandAttachments, lineCount, readInline } from "./index.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "primus-attach-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -46,6 +46,16 @@ describe("primus-attach", () => {
     const lines = file("lines.txt", "a\n".repeat(2500));
     for (const p of [xlsx, pdf, nul, gbk, empty, big, lines, join(dir, "missing.txt"), dir])
       expect(await readInline(p), p).toBeUndefined();
+  });
+
+  it("行数与 Core 一致：末尾换行不多算一行", async () => {
+    expect(lineCount("a\nb")).toBe(2);
+    expect(lineCount("a\nb\n")).toBe(2);
+    expect(lineCount("a")).toBe(1);
+    const exact = file("exact.txt", "a\n".repeat(2000));
+    expect(await readInline(exact)).toBe("a\n".repeat(2000));
+    const over = file("over.txt", `${"a\n".repeat(2000)}b`);
+    expect(await readInline(over)).toBeUndefined();
   });
 
   it("图片按文件头识别为二进制", () => {

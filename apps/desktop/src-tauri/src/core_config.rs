@@ -387,18 +387,18 @@ impl ModelConfigState {
     }
 
     /// 订阅配置变化（`models_watch`）：每次重新生成后推送一次完整的 `ModelsInfo`。再次调用替换旧的订阅。
+    /// 注册订阅后立即推送一次当前配置：前端先读后订阅时，两者之间完成的后台获取不会丢。
+    /// 推送与 `notify` 都在订阅锁内读取配置，保证订阅者按顺序收到、不会被较旧的配置覆盖。
     pub(crate) fn set_listener(&self, listener: impl Fn(ModelsInfo) + Send + Sync + 'static) {
-        *self.listener.lock().unwrap_or_else(PoisonError::into_inner) = Some(Box::new(listener));
+        let mut slot = self.listener.lock().unwrap_or_else(PoisonError::into_inner);
+        listener(self.info());
+        *slot = Some(Box::new(listener));
     }
 
     fn notify(&self) -> ModelsInfo {
+        let slot = self.listener.lock().unwrap_or_else(PoisonError::into_inner);
         let info = self.info();
-        if let Some(listener) = self
-            .listener
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_ref()
-        {
+        if let Some(listener) = slot.as_ref() {
             listener(info.clone());
         }
         info
@@ -631,10 +631,16 @@ impl ModelConfigState {
             if store.providers.len() == before {
                 return Err("渠道不存在，可能已被删除".to_owned());
             }
-            store.save(&self.providers_file)?;
-            if let Err(e) = self.vault().remove(&providers::secret_name(id)) {
-                eprintln!("[core_config] 删除渠道密钥失败：{e}");
+            // 先删密钥：失败时渠道保留、报告错误，可以重试（不留下无主的密钥，以后同 ID 的渠道也不会接上旧密钥）。
+            // 保险库无法解密时里面的值本来就用不了，不阻止删除渠道
+            match self.vault().remove(&providers::secret_name(id)) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::InvalidData => {
+                    eprintln!("[core_config] 保险库无法读取，跳过删除渠道密钥：{e}");
+                }
+                Err(e) => return Err(format!("删除渠道密钥失败：{e}")),
             }
+            store.save(&self.providers_file)?;
             let views = self.views(&store);
             self.regenerate(&mut inner, Ok(store));
             views
@@ -1378,7 +1384,8 @@ mod tests {
         state
             .provider_save(input(None, "gw", Some("sk-key-0000"), &["a"]))
             .unwrap();
-        assert_eq!(*seen.lock().unwrap(), [0, 1]);
+        // 注册时先推送一次当前配置
+        assert_eq!(*seen.lock().unwrap(), [0, 0, 1]);
         let _ = fs::remove_dir_all(&root);
     }
 }

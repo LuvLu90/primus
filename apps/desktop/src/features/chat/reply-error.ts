@@ -46,13 +46,14 @@ export function parseHttpStatus(text: string): number | undefined {
 const REASONS: [RegExp, ConnectionReason][] = [
   [/ENOTFOUND|EAI_AGAIN|getaddrinfo|dns/i, "dns"],
   [/ECONNREFUSED|connection refused/i, "refused"],
-  [/certificate|CERT_|self[- ]signed|SSL|TLS/i, "certificate"],
+  [/certificate|CERT_|self[- ]signed/i, "certificate"],
   [/ETIMEDOUT|ESOCKETTIMEDOUT|timed? ?out|timeout/i, "timeout"],
   [/ECONNRESET|socket hang up|connection reset/i, "reset"],
 ];
 
+// 不带证书字样的 SSL/TLS 失败（握手失败、协议不匹配等）也是连接错误，但不归为证书问题
 const CONNECTION =
-  /connection error|network|fetch failed|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|socket hang up|getaddrinfo|certificate|timed? ?out|timeout/i;
+  /connection error|network|fetch failed|ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|socket hang up|getaddrinfo|certificate|\bSSL\b|\bTLS\b|handshake|timed? ?out|timeout/i;
 const RATE_LIMIT = /rate.?limit|too many requests|quota|insufficient_quota|resource.?exhausted/i;
 const AUTH =
   /api key|apikey|unauthori[sz]ed|authentication|invalid.{0,20}(?:key|token)|permission|forbidden|credential/i;
@@ -91,6 +92,25 @@ export function classifyError(errorMessage: string | undefined): ErrorInfo {
   return { category: "unknown" };
 }
 
+/**
+ * 疑似密钥替换成 `***`：渠道可能在错误响应里回显请求头或密钥，Core 原样转发。
+ * 界面显示与“复制详细信息”都只用处理后的文本
+ */
+const SECRET_PATTERNS: [RegExp, string][] = [
+  [/\b(Bearer\s+)[A-Za-z0-9._~+/=-]{8,}/gi, "$1***"],
+  [/\b(sk-(?:ant-|proj-)?)[A-Za-z0-9_-]{8,}/g, "$1***"],
+  [
+    /((?:x-api-key|api[_-]?key|apikey|access[_-]?token|secret|password)["']?\s*[:=]\s*["']?)[^\s"',;}]{4,}/gi,
+    "$1***",
+  ],
+];
+
+export function redactSecrets(text: string): string {
+  let out = text;
+  for (const [re, replacement] of SECRET_PATTERNS) out = out.replace(re, replacement);
+  return out;
+}
+
 /** 耗时：1 秒以内用毫秒，1 分钟以内保留一位小数，更长用 分 秒 */
 export function formatDuration(ms: number): string {
   if (ms < 1000) return `${Math.round(ms)}ms`;
@@ -112,10 +132,10 @@ export function diagnosticLine(d: NonNullable<AssistantMessage["diagnostics"]>[n
   const err = d.error;
   const head = err ? `${err.name ? `${err.name}: ` : ""}${err.message}` : "";
   const code = err?.code !== undefined ? ` (${err.code})` : "";
-  return `[${d.type}] ${head}${code}`.trim();
+  return redactSecrets(`[${d.type}] ${head}${code}`.trim());
 }
 
-/** “复制详细信息”的纯文本：便于贴给渠道方或反馈问题（不含密钥：Core 的错误文本与诊断已脱敏） */
+/** “复制详细信息”的纯文本：便于贴给渠道方或反馈问题（错误文本与诊断经 redactSecrets 去掉疑似密钥） */
 export function errorReport(
   message: AssistantMessage,
   labels: {
@@ -139,10 +159,10 @@ export function errorReport(
     lines.push(`${labels.duration}: ${formatDuration(message.durationMs)}`);
   if (message.timestamp) lines.push(`${labels.time}: ${new Date(message.timestamp).toISOString()}`);
   if (message.responseId) lines.push(`responseId: ${message.responseId}`);
-  lines.push("", message.errorMessage ?? "");
+  lines.push("", redactSecrets(message.errorMessage ?? ""));
   for (const d of message.diagnostics ?? []) {
     lines.push("", diagnosticLine(d));
-    if (d.details) lines.push(JSON.stringify(d.details, null, 2));
+    if (d.details) lines.push(redactSecrets(JSON.stringify(d.details, null, 2)));
   }
   return lines.join("\n").trimEnd();
 }

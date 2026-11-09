@@ -45,8 +45,8 @@ const inputClass =
 const fill = (template: string, values: Record<string, string | number>) =>
   template.replace(/\{(\w+)\}/g, (_, k: string) => String(values[k] ?? ""));
 
-/** 接口地址是否像一个 http(s) 地址（详细校验由薄壳完成） */
-const validUrl = (url: string) => /^https?:\/\/[^\s/]+/i.test(url.trim());
+/** 与薄壳一致：HTTP(S)、有主机、不含空白与查询参数 / 片段（请求路径拼在地址后面） */
+const validUrl = (url: string) => /^https?:\/\/[^\s/?#]+[^\s?#]*$/i.test(url.trim());
 const positiveInt = (v: string) => /^\d+$/.test(v.trim()) && Number(v) > 0;
 
 /** 模型数与密钥一行 */
@@ -82,18 +82,26 @@ export function ProviderSettings() {
   const [pendingDelete, setPendingDelete] = useState<ProviderView | null>(null);
   const hintId = useId();
 
+  // 每次读取或应用保存结果加一：较早发出的 providersList 响应迟到时不覆盖新状态
+  const listSeq = useRef(0);
+
   // 首次读取 + 模型配置变化（保存、删除、后台获取到模型列表）时重新读取
   useEffect(() => {
     let cancelled = false;
-    const load = () =>
-      getPlatform()
+    const load = () => {
+      const seq = ++listSeq.current;
+      return getPlatform()
         .then((p) => p.providersList())
         .then((list) => {
-          if (cancelled) return;
+          if (cancelled || seq !== listSeq.current) return;
           setProviders(list);
           setLoadError(null);
         })
-        .catch((e: unknown) => !cancelled && setLoadError(errorText(e, t.loadFailed)));
+        .catch(
+          (e: unknown) =>
+            !cancelled && seq === listSeq.current && setLoadError(errorText(e, t.loadFailed)),
+        );
+    };
     void load();
     const unsubscribe = subscribeModels(() => void load());
     return () => {
@@ -103,7 +111,9 @@ export function ProviderSettings() {
   }, []);
 
   const applyChanged = (changed: ProvidersChanged) => {
+    listSeq.current++;
     setProviders(changed.providers);
+    setLoadError(null);
     publishModels(changed.models);
   };
 
@@ -130,17 +140,19 @@ export function ProviderSettings() {
     if (p) void run(p.id, t.deleteFailed, async () => (await getPlatform()).providerDelete(p.id));
   };
 
-  if (!providers) {
-    return loadError ? (
-      <p className="text-sm text-danger">{loadError}</p>
-    ) : (
-      <p className="text-sm text-muted">{t.loading}</p>
-    );
-  }
+  // 读取失败（如 providers.json 损坏）时仍显示添加入口：薄壳保存时备份旧文件并重建配置
+  const list = providers ?? (loadError ? [] : null);
+  if (!list) return <p className="text-sm text-muted">{t.loading}</p>;
 
   return (
     <section className="flex flex-col gap-2">
       <h3 className="px-1 text-xs font-medium text-muted">{t.title}</h3>
+      {loadError && !providers && (
+        <div role="alert" className="rounded-2xl px-4 py-3 text-sm ring-1 ring-danger/40">
+          <p className="font-medium text-danger">{loadError}</p>
+          <p className="mt-1 text-muted">{t.loadFailedRecover}</p>
+        </div>
+      )}
       {actionError && (
         <div role="alert" className="rounded-2xl px-4 py-3 text-sm ring-1 ring-danger/40">
           <p className="font-medium text-danger">{actionError.title}</p>
@@ -149,11 +161,11 @@ export function ProviderSettings() {
       )}
       <div className="divide-y divide-border rounded-2xl bg-white/70 shadow-[0_1px_2px_rgb(0_0_0/0.04)] ring-1 ring-black/[0.06] dark:bg-white/[0.06] dark:ring-white/[0.08]">
         <p id={hintId} className="px-4 py-3 text-xs text-muted">
-          {providers.length === 0 ? t.empty : t.hint}
+          {list.length === 0 ? t.empty : t.hint}
         </p>
-        {providers.length > 0 && (
+        {list.length > 0 && (
           <ul aria-label={t.title} aria-describedby={hintId} className="divide-y divide-border">
-            {providers.map((p) => (
+            {list.map((p) => (
               <li key={p.id} className="flex items-center gap-3 px-4 py-3">
                 <div className="min-w-0 flex-1">
                   <p className="flex min-w-0 items-center gap-2 text-sm">
@@ -360,6 +372,12 @@ function ProviderDialog({
   };
   const hasSavedKey = provider?.hasKey ?? false;
 
+  /** 协议或地址变了：进行中的获取结果作废（不再并入列表），可以立即重新获取 */
+  const invalidateFetch = () => {
+    fetchSeq.current++;
+    setFetching(false);
+  };
+
   const updateModel = (id: string, patch: Partial<DraftModel>) =>
     setModels((list) => list.map((d) => (d.id === id ? { ...d, ...patch } : d)));
   const toggleExpanded = (id: string) =>
@@ -490,7 +508,10 @@ function ProviderDialog({
               <select
                 id={ids.api}
                 value={api}
-                onChange={(e) => setApi(e.target.value as ProviderApi)}
+                onChange={(e) => {
+                  invalidateFetch();
+                  setApi(e.target.value as ProviderApi);
+                }}
                 className={inputClass}
               >
                 {APIS.map((a) => (
@@ -508,7 +529,10 @@ function ProviderDialog({
                 id={ids.baseUrl}
                 type="url"
                 value={baseUrl}
-                onChange={(e) => setBaseUrl(e.target.value)}
+                onChange={(e) => {
+                  invalidateFetch();
+                  setBaseUrl(e.target.value);
+                }}
                 placeholder={td.baseUrlPlaceholder}
                 spellCheck={false}
                 autoComplete="off"

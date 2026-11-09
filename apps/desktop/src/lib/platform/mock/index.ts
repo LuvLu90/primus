@@ -386,6 +386,8 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
     keyHint: keyHint(p.apiKey),
   });
   const providersChanged = (): ProvidersChanged => {
+    // 与薄壳一致：默认模型失效时改为第一个可用模型并写回（没有可用模型时清除），重新启用原渠道也不恢复旧默认值
+    defaultModel = modelsInfo().defaultModel;
     notifyModels();
     return { providers: providers.map(providerView), models: modelsInfo() };
   };
@@ -881,6 +883,8 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
     },
     modelsWatch: async (onChange) => {
       modelsListener = onChange;
+      // 与薄壳一致：注册后立即推送一次当前配置
+      onChange(modelsInfo());
     },
     providersList: async () => providers.map(providerView),
     providerSave: async (input) => {
@@ -892,10 +896,14 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       if (!/^https?:\/\/[^/\s]+/i.test(baseUrl)) {
         throw new Error("接口地址必须以 http:// 或 https:// 开头");
       }
+      if (/[?#]/.test(baseUrl)) throw new Error("接口地址不能包含查询参数（?）或片段（#）");
       if (input.api !== "openai-responses" && input.api !== "anthropic-messages") {
         throw new Error("不支持的协议");
       }
       if (input.apiKey !== undefined && !input.apiKey.trim()) throw new Error("API 密钥不能为空");
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: 与薄壳一致，拒绝换行等控制字符
+      if (input.apiKey !== undefined && /[\u0000-\u001f\u007f-\u009f]/.test(input.apiKey.trim()))
+        throw new Error("API 密钥含有换行等无效字符");
       const ids = new Set<string>();
       for (const m of input.models) {
         const extra = Object.keys(m).filter((k) => !PROVIDER_MODEL_KEYS.includes(k));
@@ -905,7 +913,10 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
           throw new Error(`模型 ID 无效：${m.id}`);
         if (ids.has(m.id)) throw new Error(`模型 ID 重复：${m.id}`);
         if (!m.input.includes("text")) throw new Error(`模型 ${m.id} 必须支持文本输入`);
-        if (!(m.contextWindow > 0 && m.maxTokens > 0)) {
+        if (
+          !(Number.isInteger(m.contextWindow) && m.contextWindow > 0) ||
+          !(Number.isInteger(m.maxTokens) && m.maxTokens > 0)
+        ) {
           throw new Error(`模型 ${m.id} 的上下文长度与最大输出必须是正整数`);
         }
         ids.add(m.id);

@@ -8,7 +8,8 @@ use std::path::Path;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use image::{DynamicImage, GenericImageView, ImageFormat, ImageReader, Limits};
+use image::metadata::Orientation;
+use image::{DynamicImage, GenericImageView, ImageDecoder, ImageFormat, ImageReader, Limits};
 use serde::Serialize;
 
 /// 输入文件大小上限。
@@ -90,7 +91,12 @@ pub(crate) fn process(bytes: &[u8], max_edge: u32) -> Result<AttachmentImage, St
     let mut limits = Limits::default();
     limits.max_alloc = Some(MAX_PIXELS * 4);
     reader.limits(limits);
-    let img = reader.decode().map_err(|e| format!("图片无法解码：{e}"))?;
+    let decode_err = |e: image::ImageError| format!("图片无法解码：{e}");
+    let mut decoder = reader.into_decoder().map_err(decode_err)?;
+    // 先按 EXIF 方向旋转 / 镜像：重新编码会丢掉 EXIF，不校正的话缩略图与发给模型的图片方向都会错
+    let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+    let mut img = DynamicImage::from_decoder(decoder).map_err(decode_err)?;
+    img.apply_orientation(orientation);
 
     let edge = max_edge.clamp(MIN_EDGE, MAX_EDGE);
     let img = fit_within(img, edge);
@@ -188,6 +194,22 @@ mod tests {
         assert!(out.thumb.starts_with("data:image/jpeg;base64,"));
         let thumb = decode_b64(out.thumb.split_once(',').unwrap().1);
         assert_eq!(thumb.dimensions().1, THUMB_EDGE);
+    }
+
+    #[test]
+    fn exif_orientation_is_applied_before_resizing() {
+        use image::ImageEncoder as _;
+        // 小端 TIFF 头 + 一个 IFD 项：Orientation(0x0112) = 6（顺时针转 90°）
+        let exif = b"II*\x00\x08\x00\x00\x00\x01\x00\x12\x01\x03\x00\x01\x00\x00\x00\x06\x00\x00\x00\x00\x00\x00\x00".to_vec();
+        let img = RgbImage::from_pixel(80, 40, Rgb([200, 100, 50]));
+        let mut out = Cursor::new(Vec::new());
+        let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 90);
+        encoder.set_exif_metadata(exif).unwrap();
+        encoder
+            .write_image(img.as_raw(), 80, 40, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        let processed = process(&out.into_inner(), 2048).unwrap();
+        assert_eq!((processed.width, processed.height), (40, 80));
     }
 
     #[test]

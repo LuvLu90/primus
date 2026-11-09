@@ -102,7 +102,8 @@ describe("primus-auth", () => {
       });
       const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
       const refresh = vi.fn(async () => {});
-      const ctx = { modelRegistry: { refresh } };
+      const getError = vi.fn((): string | undefined => undefined);
+      const ctx = { modelRegistry: { refresh, getError } };
       const pi = {
         registerProvider: vi.fn(),
         unregisterProvider: vi.fn(),
@@ -115,6 +116,7 @@ describe("primus-auth", () => {
         pi,
         run,
         refresh,
+        getError,
         stopWatch,
         /** 薄壳重写 models.json（providers 为 null 时内容不变，只更新修改时间） */
         write(providers: Record<string, unknown> | null) {
@@ -143,14 +145,15 @@ describe("primus-auth", () => {
       expect(h.refresh).toHaveBeenCalledTimes(1);
     });
 
-    it("文件监听到变化时就补取（不必等到发送），并只取新增的渠道", async () => {
+    it("文件监听到变化时就补取（不必等到发送），所有渠道重新取令牌（换密钥与改配置可能合并成一次写入）", async () => {
       const h = harness({ a: { apiKey: cmd("a") } });
       expect(h.run).toHaveBeenCalledTimes(1);
       await h.emit("session_start");
       h.write({ a: { apiKey: cmd("a") }, b: { apiKey: cmd("b") } });
       h.fireWatch();
       await h.emit("before_agent_start"); // 串行队列：等监听触发的核对完成
-      expect(h.run).toHaveBeenCalledTimes(2);
+      expect(h.run).toHaveBeenCalledTimes(3);
+      expect(h.pi.registerProvider).toHaveBeenCalledWith("a", { apiKey: "key-provider:a-v2" });
       expect(h.run).toHaveBeenLastCalledWith(exe, ["--secret", "provider:b"]);
       expect(h.refresh).toHaveBeenCalledTimes(1);
       h.emit("session_shutdown");
@@ -184,22 +187,46 @@ describe("primus-auth", () => {
       expect(h.refresh).not.toHaveBeenCalled();
     });
 
-    it("上次没取到的渠道在文件变化后重试；渠道删除后撤销令牌", async () => {
+    it("取令牌失败时撤销旧令牌，文件没变也重试没取到的渠道；渠道删除后撤销令牌", async () => {
       const h = harness({ a: { apiKey: cmd("a") }, b: { apiKey: cmd("b") } });
+      expect(h.run).toHaveBeenCalledTimes(2);
       h.run.mockImplementation(() => {
         throw new Error("denied");
       });
       h.write({ a: { apiKey: cmd("a") }, b: { apiKey: cmd("b") }, c: { apiKey: cmd("c") } });
       await h.emit("before_agent_start");
-      // a、b 加载时已取到，只取新增的 c（失败）
-      expect(h.run).toHaveBeenCalledTimes(3);
+      expect(h.run).toHaveBeenCalledTimes(5);
+      // a、b 的旧令牌撤销，Core 改按 models.json 的命令取
+      expect(h.pi.unregisterProvider).toHaveBeenCalledWith("a");
+      expect(h.pi.unregisterProvider).toHaveBeenCalledWith("b");
+      expect(h.pi.unregisterProvider).toHaveBeenCalledTimes(2);
+
       h.run.mockImplementation(() => "ok");
+      await h.emit("before_agent_start");
+      expect(h.run).toHaveBeenCalledTimes(8);
+      expect(h.pi.registerProvider).toHaveBeenLastCalledWith("c", { apiKey: "ok" });
+      await h.emit("before_agent_start");
+      expect(h.run).toHaveBeenCalledTimes(8);
+
       h.write({ a: { apiKey: cmd("a") }, c: { apiKey: cmd("c") } });
       await h.emit("before_agent_start");
-      expect(h.run).toHaveBeenCalledTimes(4);
-      expect(h.run).toHaveBeenLastCalledWith(exe, ["--secret", "provider:c"]);
-      expect(h.pi.unregisterProvider).toHaveBeenCalledWith("b");
-      expect(h.pi.unregisterProvider).toHaveBeenCalledTimes(1);
+      expect(h.run).toHaveBeenCalledTimes(10);
+      expect(h.pi.unregisterProvider).toHaveBeenLastCalledWith("b");
+      expect(h.pi.unregisterProvider).toHaveBeenCalledTimes(3);
+    });
+
+    it("内核读取 models.json 出错时保留待刷新状态，下次核对再刷新", async () => {
+      const h = harness({});
+      await h.emit("session_start");
+      h.getError.mockReturnValueOnce("Failed to load models.json: EBUSY");
+      h.write({ a: { apiKey: cmd("a") } });
+      await h.emit("before_agent_start");
+      expect(h.refresh).toHaveBeenCalledTimes(1);
+      await h.emit("before_agent_start");
+      expect(h.refresh).toHaveBeenCalledTimes(2);
+      await h.emit("before_agent_start");
+      expect(h.refresh).toHaveBeenCalledTimes(2);
+      expect(h.run).toHaveBeenCalledTimes(1);
     });
   });
 });
