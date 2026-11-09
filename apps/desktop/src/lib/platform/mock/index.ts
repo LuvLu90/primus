@@ -968,6 +968,15 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
         throw new Error("接口地址必须以 http:// 或 https:// 开头");
       }
       if (/[?#]/.test(baseUrl)) throw new Error("接口地址不能包含查询参数（?）或片段（#）");
+      // 与薄壳一致：能解析、有主机名、不带用户名密码（端口无效时解析失败）
+      let parsedUrl: URL | undefined;
+      try {
+        parsedUrl = new URL(baseUrl);
+      } catch {
+        parsedUrl = undefined;
+      }
+      if (!parsedUrl?.hostname || parsedUrl.username || parsedUrl.password)
+        throw new Error("接口地址必须是 http:// 或 https:// 开头的地址");
       if (input.api !== "openai-responses" && input.api !== "anthropic-messages") {
         throw new Error("不支持的协议");
       }

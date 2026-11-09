@@ -136,9 +136,11 @@ impl Vault {
             // 无法解密（如从其他用户 / 机器复制来的文件）时整份重建：里面的值本来就用不了。
             // 重建前把原文件另存一份（损坏、或新版本写入的文件降级后读不了时，原内容还能找回），备份失败则不重建
             Err(e) if e.kind() == io::ErrorKind::InvalidData => {
-                let backup = self.file.with_file_name(format!("{VAULT_FILE}.bak"));
-                fs::copy(&self.file, &backup)?;
-                eprintln!("[vault] 保险库无法读取（{e}），已备份为 {VAULT_FILE}.bak 后重建");
+                let backup = self.backup_unreadable()?;
+                eprintln!(
+                    "[vault] 保险库无法读取（{e}），已备份为 {} 后重建",
+                    backup.display()
+                );
                 let mut contents = Contents {
                     v: 1,
                     ..Contents::default()
@@ -148,6 +150,39 @@ impl Vault {
             }
             Err(e) => Err(e),
         }
+    }
+
+    /// 把读不了的保险库另存一份：每次用新的文件名（`.bak`、`.bak.1`…），不覆盖之前的备份
+    fn backup_unreadable(&self) -> io::Result<PathBuf> {
+        let mut source = fs::File::open(&self.file)?;
+        for n in 0..1000u32 {
+            let name = if n == 0 {
+                format!("{VAULT_FILE}.bak")
+            } else {
+                format!("{VAULT_FILE}.bak.{n}")
+            };
+            let path = self.file.with_file_name(name);
+            let mut target = match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(file) => file,
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e),
+            };
+            let copied = io::copy(&mut source, &mut target).and_then(|_| target.sync_all());
+            if let Err(e) = copied {
+                drop(target);
+                let _ = fs::remove_file(&path);
+                return Err(e);
+            }
+            return Ok(path);
+        }
+        Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "保险库备份过多",
+        ))
     }
 }
 
@@ -389,6 +424,17 @@ mod tests {
             fs::read(dir.join(format!("{VAULT_FILE}.bak"))).unwrap(),
             b"garbage",
             "重建前保留原文件"
+        );
+        fs::write(dir.join(VAULT_FILE), b"garbage2").unwrap();
+        assert!(vault.ensure(MODEL_TOKEN_ID, "d").unwrap());
+        assert_eq!(
+            fs::read(dir.join(format!("{VAULT_FILE}.bak"))).unwrap(),
+            b"garbage",
+            "再次重建不覆盖之前的备份"
+        );
+        assert_eq!(
+            fs::read(dir.join(format!("{VAULT_FILE}.bak.1"))).unwrap(),
+            b"garbage2"
         );
         let _ = fs::remove_dir_all(&dir);
     }

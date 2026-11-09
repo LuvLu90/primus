@@ -633,14 +633,25 @@ impl ModelConfigState {
             }
             // 先删密钥：失败时渠道保留、报告错误，可以重试（不留下无主的密钥，以后同 ID 的渠道也不会接上旧密钥）。
             // 保险库无法解密时里面的值本来就用不了，不阻止删除渠道
-            match self.vault().remove(&providers::secret_name(id)) {
+            let vault = self.vault();
+            let secret = providers::secret_name(id);
+            // 删除前记下原密钥：配置保存失败时渠道还在，要把密钥放回去
+            let old_key = vault.get(&secret).ok().flatten();
+            match vault.remove(&secret) {
                 Ok(()) => {}
                 Err(e) if e.kind() == io::ErrorKind::InvalidData => {
                     eprintln!("[core_config] 保险库无法读取，跳过删除渠道密钥：{e}");
                 }
                 Err(e) => return Err(format!("删除渠道密钥失败：{e}")),
             }
-            store.save(&self.providers_file)?;
+            if let Err(e) = store.save(&self.providers_file) {
+                if let Some(key) = old_key
+                    && let Err(restore) = vault.set(&secret, &key)
+                {
+                    eprintln!("[core_config] 配置保存失败后恢复渠道密钥也失败：{restore}");
+                }
+                return Err(e);
+            }
             let views = self.views(&store);
             self.regenerate(&mut inner, Ok(store));
             views
