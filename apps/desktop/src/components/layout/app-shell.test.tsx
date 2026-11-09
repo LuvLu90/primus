@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useRouter } from "next/navigation";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { showPreview, usePreviewStore } from "@/features/files/preview-store";
 import { strings } from "@/lib/strings";
 import { initialAppState, useAppStore } from "@/stores/app-store";
 import { AppShell } from "./app-shell";
@@ -19,6 +20,7 @@ describe("主界面外壳", () => {
   beforeEach(() => {
     // 以下用例多数检查右栏：先展开它（默认收起，见下一条用例）
     useAppStore.setState({ ...initialAppState, inspectorPanelOpen: true });
+    usePreviewStore.setState({ path: null, seq: 0 });
     setViewport(1280, 800);
   });
   afterEach(() => setViewport(original.width, original.height));
@@ -58,13 +60,14 @@ describe("主界面外壳", () => {
     expect(useAppStore.getState().inspectorPanelOpen).toBe(false);
   });
 
-  it("右栏标签切换变更、文件、计划", () => {
+  it("右栏只有文件预览：打开文件后显示文件名与内容，可关闭", async () => {
     render(<AppShell />);
-    const t = strings.inspectorTabs;
-    expect(screen.getByText(t.changesEmpty)).toBeTruthy();
-    fireEvent.mouseDown(screen.getByRole("tab", { name: t.files }));
-    expect(screen.getByText(t.filesEmpty)).toBeTruthy();
-    expect(screen.queryByText(t.changesEmpty)).toBeNull();
+    expect(screen.queryByRole("tab")).toBeNull();
+    act(() => showPreview("/w/src/main.ts"));
+    expect(await screen.findByRole("heading", { name: "main.ts" })).toBeTruthy();
+    expect(await screen.findByText(/answer = 42/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: strings.preview.close }));
+    expect(screen.queryByRole("heading", { name: "main.ts" })).toBeNull();
   });
 
   it("左栏设置按钮先展开菜单，选“设置”才打开设置页", async () => {

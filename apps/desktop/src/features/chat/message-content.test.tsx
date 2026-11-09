@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { usePathname } from "next/navigation";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { usePreviewStore } from "@/features/files/preview-store";
 import { setPlatformForTesting } from "@/lib/platform";
 import { createMockPlatform } from "@/lib/platform/mock";
 import { strings } from "@/lib/strings";
@@ -69,9 +70,7 @@ describe("回复中的文件引用与网页链接", () => {
         .replace("{end}", "58"),
     });
     expect(ref.textContent).toBe("chat-panel.tsx:42–58");
-    expect(ref.getAttribute("title")).toBe(
-      `apps/desktop/src/chat-panel.tsx:42–58\n${t.fileRef.hint}`,
-    );
+    expect(ref.getAttribute("title")).toBe("apps/desktop/src/chat-panel.tsx:42–58");
     expect(ref.dataset.path).toBe("apps/desktop/src/chat-panel.tsx");
     expect(ref.querySelector('[data-file-icon="react-ts"]')).not.toBeNull();
     expect(screen.queryByRole("link")).toBeNull();
@@ -157,7 +156,7 @@ describe("回复中的文件引用与网页链接", () => {
     expect(html).toContain("&lt;img");
   });
 
-  it("点击文件引用：相对路径按会话工作区解析、去掉行号后用默认程序打开，不弹出链接确认", async () => {
+  it("点击文件引用：相对路径按会话工作区解析、去掉行号后在右栏预览，不弹出链接确认", async () => {
     const openPath = vi.fn(async () => "opened" as const);
     const openExternal = vi.fn(async () => {});
     setPlatformForTesting({ ...createMockPlatform(), openPath, openExternal });
@@ -170,20 +169,24 @@ describe("回复中的文件引用与网页链接", () => {
     ref.focus();
     expect(document.activeElement).toBe(ref);
     fireEvent.click(ref);
-    await waitFor(() => expect(openPath).toHaveBeenCalledWith("C:\\work\\primus\\src\\a.ts"));
+    expect(usePreviewStore.getState().path).toBe("C:\\work\\primus\\src\\a.ts");
+    expect(openPath).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: t.linkOpen })).toBeNull();
     expect(openExternal).not.toHaveBeenCalled();
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("绝对路径原样打开", async () => {
+  it("绝对路径原样预览；文件夹仍用系统打开", async () => {
     const openPath = vi.fn(async () => "opened" as const);
     setPlatformForTesting({ ...createMockPlatform(), openPath });
     render(
       <MarkdownText text="[报告](file:///home/me/My%20Project/report.md#L3)" streaming={false} />,
     );
     fireEvent.click(screen.getByRole("button"));
-    await waitFor(() => expect(openPath).toHaveBeenCalledWith("/home/me/My Project/report.md"));
+    expect(usePreviewStore.getState().path).toBe("/home/me/My Project/report.md");
+    render(<MarkdownText text="`/home/me/docs/`" streaming={false} />);
+    fireEvent.click(screen.getAllByRole("button")[1] as HTMLElement);
+    await waitFor(() => expect(openPath).toHaveBeenCalledWith("/home/me/docs"));
   });
 
   it("没有工作区时相对路径无法定位：提示原因，不调用薄壳", async () => {
@@ -207,7 +210,8 @@ describe("回复中的文件引用与网页链接", () => {
         <MarkdownText text="`src/gone.ts`" streaming={false} />
       </FileRefBase.Provider>,
     );
-    fireEvent.click(screen.getByRole("button"));
+    fireEvent.contextMenu(screen.getByRole("button"), { clientX: 20, clientY: 30 });
+    fireEvent.click(await screen.findByRole("menuitem", { name: t.fileRef.open }));
     expect((await screen.findByRole("alert")).textContent).toBe(
       t.fileRef.openFailed
         .replace("{name}", "gone.ts")
@@ -219,7 +223,8 @@ describe("回复中的文件引用与网页链接", () => {
     const openPath = vi.fn(async () => "revealed" as const);
     setPlatformForTesting({ ...createMockPlatform(), openPath });
     render(<MarkdownText text={"`C:\\tools\\setup.exe`"} streaming={false} />);
-    fireEvent.click(screen.getByRole("button"));
+    fireEvent.contextMenu(screen.getByRole("button"), { clientX: 20, clientY: 30 });
+    fireEvent.click(await screen.findByRole("menuitem", { name: t.fileRef.open }));
     expect((await screen.findByRole("status")).textContent).toBe(
       t.fileRef.revealed.replace("{name}", "setup.exe"),
     );
