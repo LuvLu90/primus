@@ -65,6 +65,32 @@ describe("会话列表", () => {
     );
   });
 
+  it("有项目的会话归到可折叠的项目文件夹下，无项目的会话在“最近”", async () => {
+    const revealPath = vi.fn(async () => {});
+    withIndex({
+      sessionList: async () => ({
+        items: [
+          summary(1, { workspace: "D:\\code\\tihu" }),
+          summary(2, { workspace: "C:\\Primus\\data\\users\\S-1\\chat" }),
+        ],
+      }),
+      revealPath,
+    });
+    render(<SessionList />);
+    const project = await screen.findByRole("button", { name: "tihu" });
+    expect(project.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText(t.recent)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^第 1 个会话/ })).toBeTruthy();
+    fireEvent.click(project);
+    expect(screen.queryByRole("button", { name: /^第 1 个会话/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /^第 2 个会话/ })).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole("button", { name: `${t.projectActions}：tihu` }), {
+      key: "Enter",
+    });
+    fireEvent.click(await screen.findByRole("menuitem", { name: t.revealProject }));
+    await waitFor(() => expect(revealPath).toHaveBeenCalledWith("D:\\code\\tihu"));
+  });
+
   it("没有会话时列表区留空；加载失败时显示错误并可重试", async () => {
     let fail = true;
     const sessionList = vi.fn(async () => {
@@ -121,7 +147,7 @@ describe("会话列表", () => {
     const box = screen.getByRole("searchbox", { name: strings.layout.searchSessions });
     fireEvent.change(box, { target: { value: "迁移" } });
     expect(await screen.findByRole("button", { name: /^数据库迁移/ })).toBeTruthy();
-    expect(screen.getByText(`· ${t.archived}`)).toBeTruthy();
+    expect(screen.getByText(new RegExp(`^${t.archived} · `))).toBeTruthy();
     expect(sessionSearch).toHaveBeenCalledWith(null, "迁移");
     expect(screen.getByRole("list", { name: t.searchResults })).toBeTruthy();
 
