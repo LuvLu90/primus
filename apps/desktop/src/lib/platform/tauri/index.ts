@@ -35,6 +35,7 @@ export function createTauriPlatform(): Platform {
     dialogPickFolder: () => call("dialogPickFolder"),
     dialogPickFiles: () => call("dialogPickFiles"),
 
+    sessionDefaultWorkspace: () => call("sessionDefaultWorkspace"),
     sessionList: (workspace, cursor) => call("sessionList", { workspace, cursor }),
     sessionSearch: (workspace, query) => call("sessionSearch", { workspace, query }),
     sessionWatch: (onChange) => {
@@ -127,6 +128,7 @@ export function createTauriPlatform(): Platform {
     openExternal: (target) => call("openExternal", { target }),
     openPath: (path) => call("openPath", { path }),
     revealPath: (path) => call("revealPath", { path }),
+    previewFile: (path) => call("previewFile", { path }),
     storageUsage: () => call("storageUsage"),
     storageClean: (category) => call("storageClean", { category }),
     diagnosticsExport: (options) => call("diagnosticsExport", { options }),

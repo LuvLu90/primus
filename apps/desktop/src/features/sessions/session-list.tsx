@@ -2,7 +2,7 @@
 
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { usePathname } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "@/components/icons";
 import {
   GlassDialog,
@@ -18,22 +18,37 @@ import {
   GlassPopoverSeparator,
   GlassPopoverTrigger,
 } from "@/components/ui/glass-popover";
+import { Tooltip } from "@/components/ui/tooltip";
 import { getPlatform } from "@/lib/platform";
 import type { SessionSummary } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
+import { useAppStore } from "@/stores/app-store";
+import { buildRows, type ListRow, workspaceKey } from "./session-groups";
 import { findTab, tabsForDeletion, useSessionsStore } from "./sessions-store";
+import { useSessionDefaultWorkspace } from "./use-default-workspace";
 import { useSessionIndex, useSessionSearch } from "./use-session-index";
 
 // 左栏会话列表（第 10.2、16.2 节，ADR 0006）：搜索框 + 虚拟滚动的会话列表，滚到底加载下一页；
+// 有项目的会话归到可折叠的项目文件夹下，未选工作区的会话在“最近”（session-groups.ts）；
 // 点击打开（已在某个标签中则切过去），菜单里可归档、删除（删除前确认，永久删除、不可恢复）。
 // 打开中的会话也可以直接删除：先关掉它的标签，薄壳删除时一并结束它的 Core。
 
 const t = strings.sessions;
 /** 行高（px），与样式一致，供虚拟列表估算 */
-export const ROW_HEIGHT = 52;
+export const ROW_HEIGHT = 34;
+/** 分组标题（项目 / 最近）的行高 */
+const HEADER_HEIGHT = 32;
 /** 距底部还剩这么多行时加载下一页 */
 const LOAD_MORE_THRESHOLD = 10;
+/** 连续自动加载但可见行没有增长（如“项目”已折叠、新页全是项目会话）最多这么多页，之后等用户滚动 */
+const MAX_IDLE_PAGES = 2;
+
+/** 当前用户未选工作区时的默认目录键：读取中为 undefined，读取失败为 null（只有空工作区算“最近”） */
+function useDefaultWorkspaceKey(): string | null | undefined {
+  const path = useSessionDefaultWorkspace();
+  return path ? workspaceKey(path) : path;
+}
 
 /** 相对时间（刚刚 / n 分钟前 / n 小时前 / n 天前，超过 30 天显示日期） */
 export function relativeTime(ms: number, now: number): string {
@@ -70,9 +85,30 @@ export function SessionList() {
   const openSession = useSessionsStore((s) => s.openSession);
   const closeTab = useSessionsStore((s) => s.closeTab);
   const tabsFull = useSessionsStore((s) => s.tabsFull);
+  const newTab = useSessionsStore((s) => s.newTab);
+  const [projectsOpen, setProjectsOpen] = useState(true);
+  const [toggled, setToggled] = useState<Record<string, boolean>>({});
+  const activeWorkspace = tabs.find((x) => x.id === activeTabId)?.workspace;
+  const defaultKey = useDefaultWorkspaceKey();
+  // 默认目录读到之前不分组，避免默认目录的会话先显示成项目再挪到“最近”
+  const grouping = defaultKey !== undefined;
 
   const searching = search.results !== null;
-  const rows = search.results ?? index.items;
+  const sessions = search.results ?? index.items;
+  const rows: ListRow[] = useMemo(
+    () =>
+      searching
+        ? sessions.map((s) => ({ kind: "session", key: s.path, session: s, nested: false }))
+        : grouping
+          ? buildRows(sessions, {
+              projectsOpen,
+              toggled,
+              activeKey: activeWorkspace ? workspaceKey(activeWorkspace) : null,
+              defaultKey,
+            })
+          : [],
+    [searching, grouping, sessions, projectsOpen, toggled, activeWorkspace, defaultKey],
+  );
   const listError = searching ? search.error : index.error;
   // 相对时间每分钟刷新一次
   const [now, setNow] = useState(() => Date.now());
@@ -85,7 +121,8 @@ export function SessionList() {
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => ROW_HEIGHT,
+    estimateSize: (i) => (rows[i]?.kind === "header" ? HEADER_HEIGHT : ROW_HEIGHT),
+    getItemKey: (i) => rows[i]?.key ?? i,
     overscan: 8,
     // 测量前（含测试环境）按一屏估算，首帧就能渲染出可见行
     initialRect: { width: 0, height: 640 },
@@ -93,17 +130,65 @@ export function SessionList() {
   const virtualItems = virtualizer.getVirtualItems();
   const lastIndex = virtualItems.at(-1)?.index ?? -1;
   const { hasMore, loading, loadMore, error: indexError } = index;
+  // 自动加载的上一页加载前的行数，与此后连续未增长的页数：连续几页都没让列表变长时停下，等用户滚动
+  const autoLoad = useRef({ rows: -1, idle: 0 });
+  // 自动分页已暂停且列表无法滚动（手动“加载更多”入口）
+  const [stalled, setStalled] = useState(false);
   // 加载失败后不自动重试（否则 loading 复位即再次触发，连续请求）：等用户点“重试”
   useEffect(() => {
     if (
-      !searching &&
-      !indexError &&
-      hasMore &&
-      !loading &&
-      lastIndex >= rows.length - LOAD_MORE_THRESHOLD
+      searching ||
+      !grouping ||
+      indexError ||
+      !hasMore ||
+      loading ||
+      lastIndex < rows.length - LOAD_MORE_THRESHOLD
     )
-      loadMore();
-  }, [searching, indexError, hasMore, loading, lastIndex, rows.length, loadMore]);
+      return;
+    const auto = autoLoad.current;
+    auto.idle = rows.length > auto.rows ? 0 : auto.idle + 1;
+    auto.rows = rows.length;
+    if (auto.idle >= MAX_IDLE_PAGES) {
+      // 暂停自动分页；列表不够长、没法滚动触发时，给一个手动“加载更多”
+      const el = scrollRef.current;
+      setStalled(!el || el.scrollHeight <= el.clientHeight + 1);
+      return;
+    }
+    loadMore();
+  }, [searching, grouping, indexError, hasMore, loading, lastIndex, rows.length, loadMore]);
+  /** 解除“连续未增长”的限制，继续分页 */
+  const resumePaging = () => {
+    const auto = autoLoad.current;
+    auto.idle = 0;
+    auto.rows = -1;
+    setStalled(false);
+    if (hasMore && !loading && !indexError && !searching) loadMore();
+  };
+  /** 用户滚到底部附近：继续分页 */
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (!el || autoLoad.current.idle < MAX_IDLE_PAGES) return;
+    if (el.scrollTop + el.clientHeight < el.scrollHeight - ROW_HEIGHT * 2) return;
+    resumePaging();
+  };
+
+  /** 在项目中新建会话：输入框上方的工作区切到该项目，再开一个空标签 */
+  const newInProject = (workspace: string) => {
+    setActionError(undefined);
+    getPlatform()
+      .then((p) => p.workspaceOpen(workspace))
+      .then((ws) => {
+        // 标签已满时 newTab 失败：不动全局工作区，免得当前会话旁显示别的项目
+        if (newTab()) useAppStore.getState().setWorkspace(ws);
+      })
+      .catch((e) => setActionError(errorText(e)));
+  };
+  const reveal = (workspace: string) => {
+    setActionError(undefined);
+    getPlatform()
+      .then((p) => p.revealPath(workspace))
+      .catch((e) => setActionError(errorText(e)));
+  };
 
   const archive = (s: SessionSummary) => {
     setActionError(undefined);
@@ -182,7 +267,11 @@ export function SessionList() {
         </p>
       )}
 
-      <div ref={scrollRef} className="scroll-thin -mx-1 min-h-0 flex-1 overflow-y-auto px-1">
+      <div
+        ref={scrollRef}
+        onScroll={onScroll}
+        className="scroll-thin -mx-1 min-h-0 flex-1 overflow-y-auto px-1"
+      >
         {rows.length === 0 ? (
           emptyText && <p className="px-2 py-3 text-xs text-muted">{emptyText}</p>
         ) : (
@@ -192,15 +281,47 @@ export function SessionList() {
             style={{ height: virtualizer.getTotalSize() }}
           >
             {virtualItems.map((item) => {
-              const s = rows[item.index];
-              if (!s) return null;
+              const row = rows[item.index];
+              if (!row) return null;
+              if (row.kind === "header")
+                return (
+                  <SectionHeader
+                    key={row.key}
+                    top={item.start}
+                    label={row.section === "projects" ? t.projects : t.recent}
+                    open={row.section === "projects" ? projectsOpen : undefined}
+                    onToggle={
+                      row.section === "projects" ? () => setProjectsOpen((o) => !o) : undefined
+                    }
+                  />
+                );
+              if (row.kind === "project")
+                return (
+                  <ProjectRow
+                    key={row.key}
+                    top={item.start}
+                    name={row.name}
+                    path={row.workspace}
+                    expanded={row.expanded}
+                    onToggle={() =>
+                      setToggled((prev) => ({
+                        ...prev,
+                        [workspaceKey(row.workspace)]: !row.expanded,
+                      }))
+                    }
+                    onNewSession={() => newInProject(row.workspace)}
+                    onReveal={() => reveal(row.workspace)}
+                  />
+                );
+              const s = row.session;
               const tab = findTab(tabs, s);
               return (
                 <SessionRow
-                  key={s.path}
+                  key={row.key}
                   session={s}
                   top={item.start}
                   now={now}
+                  nested={row.nested}
                   active={tab !== undefined && tab.id === activeTabId}
                   running={tab?.running ?? false}
                   deleting={deleting.has(s.path)}
@@ -213,6 +334,15 @@ export function SessionList() {
               );
             })}
           </ul>
+        )}
+        {stalled && hasMore && !searching && !indexError && (
+          <button
+            type="button"
+            onClick={resumePaging}
+            className="mx-auto mt-1 block rounded-md px-2 py-1 text-xs text-muted outline-none transition-colors hover:bg-hover hover:text-fg focus-visible:bg-hover"
+          >
+            {t.loadMore}
+          </button>
         )}
       </div>
 
@@ -251,10 +381,132 @@ function useShellHidden(): boolean {
   return pathname !== null && pathname !== "/" && pathname !== "";
 }
 
+/** 分组标题：“项目”可折叠（带箭头），“最近”只是标题 */
+function SectionHeader({
+  top,
+  label,
+  open,
+  onToggle,
+}: {
+  top: number;
+  label: string;
+  open?: boolean;
+  onToggle?: () => void;
+}) {
+  const content = (
+    <>
+      <span>{label}</span>
+      {onToggle && (
+        <Icon
+          name="chevron-down"
+          size="xs"
+          className={cn("motion-safe:transition-[rotate]", !open && "-rotate-90")}
+        />
+      )}
+    </>
+  );
+  return (
+    <li className="absolute inset-x-0 flex items-end pb-1" style={{ top, height: HEADER_HEIGHT }}>
+      {onToggle ? (
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={onToggle}
+          className="flex items-center gap-1 rounded-md px-2 text-xs text-muted outline-none hover:text-fg focus-visible:text-fg"
+        >
+          {content}
+        </button>
+      ) : (
+        <span className="flex items-center gap-1 px-2 text-xs text-muted">{content}</span>
+      )}
+    </li>
+  );
+}
+
+/** 项目行：文件夹图标 + 名称，点击展开 / 折叠；悬停显示“更多操作”与“新建会话” */
+function ProjectRow({
+  top,
+  name,
+  path,
+  expanded,
+  onToggle,
+  onNewSession,
+  onReveal,
+}: {
+  top: number;
+  name: string;
+  path: string;
+  expanded: boolean;
+  onToggle: () => void;
+  onNewSession: () => void;
+  onReveal: () => void;
+}) {
+  const [moreOpen, setMoreOpen] = useState(false);
+  const shellHidden = useShellHidden();
+  useEffect(() => {
+    if (shellHidden) setMoreOpen(false);
+  }, [shellHidden]);
+  return (
+    <li className="group absolute inset-x-0 flex items-center" style={{ top, height: ROW_HEIGHT }}>
+      <Tooltip content={path}>
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={onToggle}
+          className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-[10px] pr-16 pl-2 text-left text-sm outline-none hover:bg-hover focus-visible:bg-hover"
+        >
+          <Icon name={expanded ? "folder-open" : "folder"} size="md" className="shrink-0" />
+          <span className="truncate">{name}</span>
+        </button>
+      </Tooltip>
+      <span className="absolute right-1.5 flex items-center gap-0.5">
+        <GlassPopover open={moreOpen} onOpenChange={setMoreOpen}>
+          <GlassPopoverTrigger asChild>
+            <button
+              type="button"
+              aria-label={`${t.projectActions}：${name}`}
+              className={hoverButtonClass}
+            >
+              <Icon name="more" size="sm" />
+            </button>
+          </GlassPopoverTrigger>
+          <GlassPopoverContent side="right" align="start" sideOffset={6} tint={0.75} minWidth={168}>
+            <GlassPopoverItem
+              icon={<Icon name="compose" />}
+              label={t.newInProject}
+              onSelect={onNewSession}
+            />
+            <GlassPopoverItem
+              icon={<Icon name="folder-open" />}
+              label={t.revealProject}
+              onSelect={onReveal}
+            />
+          </GlassPopoverContent>
+        </GlassPopover>
+        <Tooltip content={t.newInProject}>
+          <button
+            type="button"
+            aria-label={`${t.newInProject}：${name}`}
+            onClick={onNewSession}
+            className={hoverButtonClass}
+          >
+            <Icon name="compose" size="sm" />
+          </button>
+        </Tooltip>
+      </span>
+    </li>
+  );
+}
+
+const hoverButtonClass =
+  "flex aspect-square size-6 shrink-0 items-center justify-center rounded-md text-muted opacity-0 outline-none hover:bg-hover hover:text-fg focus-visible:opacity-100 group-hover:opacity-100 data-[state=open]:opacity-100";
+
 interface SessionRowProps {
   session: SessionSummary;
   top: number;
   now: number;
+  /** 项目下的会话：缩进到文件夹名称处 */
+  nested: boolean;
   active: boolean;
   running: boolean;
   /** 正在删除：行不可打开 */
@@ -268,6 +520,7 @@ function SessionRow({
   session,
   top,
   now,
+  nested,
   active,
   running,
   deleting,
@@ -313,20 +566,20 @@ function SessionRow({
         setMenuAt({ x: e.clientX - box.left, y: e.clientY - box.top });
       }}
     >
-      <button
-        type="button"
-        onClick={onOpen}
-        disabled={deleting}
-        aria-busy={deleting ? "true" : undefined}
-        aria-current={active ? "true" : undefined}
-        title={title}
-        className={cn(
-          "flex h-[46px] min-w-0 flex-1 flex-col justify-center rounded-[12px] py-1 pr-8 pl-3 text-left outline-none hover:bg-hover focus-visible:bg-hover",
-          active && "bg-hover",
-          deleting && "pointer-events-none opacity-50",
-        )}
-      >
-        <span className="flex w-full items-center gap-1.5">
+      <Tooltip content={title}>
+        <button
+          type="button"
+          onClick={onOpen}
+          disabled={deleting}
+          aria-busy={deleting ? "true" : undefined}
+          aria-current={active ? "true" : undefined}
+          className={cn(
+            "flex h-8 min-w-0 flex-1 items-center gap-1.5 rounded-[10px] pr-2 text-left outline-none hover:bg-hover focus-visible:bg-hover",
+            nested ? "pl-8" : "pl-2",
+            active && "bg-hover",
+            deleting && "pointer-events-none opacity-50",
+          )}
+        >
           {running && (
             <span
               role="img"
@@ -334,20 +587,20 @@ function SessionRow({
               className="size-1.5 shrink-0 rounded-full bg-accent"
             />
           )}
-          <span className="truncate text-sm leading-tight">{title}</span>
-        </span>
-        <span className="mt-0.5 flex items-center gap-1.5 text-2xs text-muted">
-          <span>{relativeTime(session.updatedAt, now)}</span>
-          {session.archived && <span>· {t.archived}</span>}
-        </span>
-      </button>
+          <span className="min-w-0 flex-1 truncate text-sm">{title}</span>
+          <span className="shrink-0 text-2xs text-muted tabular-nums group-hover:invisible">
+            {session.archived ? `${t.archived} · ` : ""}
+            {relativeTime(session.updatedAt, now)}
+          </span>
+        </button>
+      </Tooltip>
       <GlassPopover open={moreOpen} onOpenChange={setMoreOpen}>
         <GlassPopoverTrigger asChild>
           <button
             ref={moreRef}
             type="button"
             aria-label={`${t.moreActions}：${title}`}
-            className="absolute right-1.5 flex size-6 items-center justify-center rounded-full text-muted opacity-0 outline-none hover:bg-hover focus-visible:opacity-100 group-hover:opacity-100 data-[state=open]:opacity-100"
+            className={cn("absolute right-1.5", hoverButtonClass)}
           >
             <Icon name="more" size="sm" />
           </button>

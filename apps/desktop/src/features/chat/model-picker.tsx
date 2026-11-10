@@ -28,6 +28,7 @@ import {
   GlassPopoverContent,
   GlassPopoverTrigger,
 } from "@/components/ui/glass-popover";
+import { Tooltip } from "@/components/ui/tooltip";
 import { formatTokens } from "@/features/settings/account-models";
 import type { ModelSummary } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
@@ -40,6 +41,26 @@ const t = strings.chat.model;
 
 /** 会话打开前（还不知道模型支持哪些档位）对推理模型显示的思考强度 */
 export const DEFAULT_THINKING_LEVELS: ThinkingLevel[] = ["off", "low", "medium", "high", "xhigh"];
+
+/** 全部思考档位，由低到高 */
+const LEVEL_ORDER: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/** 把想要的强度夹到模型支持的档位里（与 Core 一致：取不超过它的最高档；都更高时取最低档） */
+export function clampLevel(level: string, levels: readonly string[]): string {
+  if (levels.includes(level)) return level;
+  const rank = LEVEL_ORDER.indexOf(level as ThinkingLevel);
+  let best: string | undefined;
+  for (const l of levels) {
+    const r = LEVEL_ORDER.indexOf(l as ThinkingLevel);
+    if (
+      r >= 0 &&
+      r <= rank &&
+      (best === undefined || r > LEVEL_ORDER.indexOf(best as ThinkingLevel))
+    )
+      best = l;
+  }
+  return best ?? levels[0] ?? level;
+}
 
 /** 思考滑杆拇指宽度（px）；刻度与填充都按“拇指中心可达范围”排布 */
 const THUMB_W = 32;
@@ -126,6 +147,7 @@ export function ModelPicker({
   thinkingLevel,
   thinkingLevels,
   disabled,
+  modelLocked,
   onSelectModel,
   onSelectThinking,
   onOpenSettings,
@@ -140,6 +162,8 @@ export function ModelPicker({
   /** 当前模型支持的思考强度；未知时按是否推理模型给出默认档位 */
   thinkingLevels: string[] | undefined;
   disabled?: boolean;
+  /** 会话已有消息：模型锁定（只能看、不能换），思考强度仍可调 */
+  modelLocked?: boolean;
   onSelectModel: (key: string) => void;
   onSelectThinking: (level: ThinkingLevel) => void;
   /** 打开设置中的模型渠道（没有可用模型时的入口） */
@@ -159,22 +183,24 @@ export function ModelPicker({
       : current
         ? modelIdOf(current)
         : t.none;
-  // 按钮上只显示已知的档位；未知（会话还没报告）时不显示“默认”
-  const level =
-    showThinking && thinkingLevel ? (t.levels as Record<string, string>)[thinkingLevel] : undefined;
+  // 按钮上显示实际生效的档位：支持思考的模型按它支持的档位夹取，不支持思考的模型显示“关闭”
+  const shownLevel =
+    empty || !thinkingLevel ? undefined : showThinking ? clampLevel(thinkingLevel, levels) : "off";
+  const level = shownLevel ? (t.levels as Record<string, string>)[shownLevel] : undefined;
   return (
     <GlassPopover onOpenChange={onOpenChange}>
       <GlassPopoverTrigger asChild disabled={disabled}>
-        <button
-          type="button"
-          aria-label={`${t.label}：${model?.name ?? name}${level ? `，${t.thinkingDegree}${level}` : ""}`}
-          title={model?.name ?? name}
-          className={composerGhostClass({ className: "max-w-64" })}
-        >
-          <span className="truncate">{name}</span>
-          {level && <span className="shrink-0">· {level}</span>}
-          <Icon name="chevron-down" size="xs" />
-        </button>
+        <Tooltip content={model?.name ?? name}>
+          <button
+            type="button"
+            aria-label={`${t.label}：${model?.name ?? name}${level ? `，${t.thinkingDegree}${level}` : ""}`}
+            className={composerGhostClass({ className: "min-w-0 max-w-64 shrink!" })}
+          >
+            <span className="truncate">{name}</span>
+            {level && <span className="shrink-0">· {level}</span>}
+            <Icon name="chevron-down" size="xs" />
+          </button>
+        </Tooltip>
       </GlassPopoverTrigger>
       <GlassPopoverContent
         side="top"
@@ -197,14 +223,21 @@ export function ModelPicker({
               </Menu.Item>
             </div>
           ) : (
-            <ModelList groups={groups} current={current} onSelect={onSelectModel} />
+            <ModelList
+              groups={groups}
+              current={current}
+              locked={modelLocked}
+              onSelect={(key) => {
+                if (!modelLocked) onSelectModel(key);
+              }}
+            />
           )}
           {showThinking && (
             <div className="shrink-0">
               <Menu.Separator className={separatorClass} />
               <ThinkingSlider
                 levels={levels}
-                value={thinkingLevel}
+                value={shownLevel}
                 onCommit={(level) => onSelectThinking(level as ThinkingLevel)}
               />
             </div>
@@ -222,10 +255,13 @@ export function ModelPicker({
 function ModelList({
   groups,
   current,
+  locked,
   onSelect,
 }: {
   groups: ReturnType<typeof groupByProvider>;
   current: string | null;
+  /** 锁定时除当前模型外都不可选 */
+  locked?: boolean;
   onSelect: (key: string) => void;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -262,10 +298,12 @@ function ModelList({
                 key={m.key}
                 value={m.key}
                 textValue={m.name}
-                title={m.id === m.name ? undefined : m.id}
+                disabled={locked && m.key !== current}
                 className={rowClass}
               >
-                <span className="min-w-0 flex-1 truncate">{m.name}</span>
+                <Tooltip content={m.id === m.name ? undefined : m.id} side="right">
+                  <span className="min-w-0 flex-1 truncate">{m.name}</span>
+                </Tooltip>
                 <span aria-hidden className="shrink-0 text-xs tabular-nums text-muted">
                   {formatTokens(m.contextWindow)}
                 </span>

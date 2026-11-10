@@ -29,7 +29,7 @@ export type SettingsGroup = keyof typeof t.groups;
 const GROUPS = Object.keys(t.groups) as SettingsGroup[];
 
 /** 启动与通知开关的默认值（第 18 章），settings.toml 接入前只读 */
-const PENDING_DEFAULTS = { reopen: true, tray: false, notify: true } as const;
+const PENDING_DEFAULTS = { tray: false, notify: true } as const;
 
 function GeneralSettings() {
   const theme = useAppearanceStore((s) => s.theme);
@@ -54,7 +54,7 @@ function GeneralSettings() {
             </TabsList>
           </Tabs>
         </Row>
-        <Row label={t.glass} hint={t.glassHint}>
+        <Row label={t.glass}>
           <div className="flex items-center gap-3 text-xs text-muted">
             <span>{t.glassClear}</span>
             <Slider
@@ -72,15 +72,12 @@ function GeneralSettings() {
         </Row>
       </Section>
       <Section title={t.startup}>
-        <Row label={t.reopenWorkspace} hint={t.pendingSettingsHint}>
-          <Switch ariaLabel={t.reopenWorkspace} checked={pending.reopen} disabled />
-        </Row>
-        <Row label={t.minimizeToTray} hint={t.pendingSettingsHint}>
+        <Row label={t.minimizeToTray}>
           <Switch ariaLabel={t.minimizeToTray} checked={pending.tray} disabled />
         </Row>
       </Section>
       <Section title={t.notifications}>
-        <Row label={t.notifyEnabled} hint={t.pendingSettingsHint}>
+        <Row label={t.notifyEnabled}>
           <Switch ariaLabel={t.notifyEnabled} checked={pending.notify} disabled />
         </Row>
       </Section>

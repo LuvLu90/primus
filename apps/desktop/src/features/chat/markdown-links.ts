@@ -102,7 +102,9 @@ export function renderFileRef(meta: FileRefMeta, escapeHtml: (s: string) => stri
   return [
     `<button type="button" class="md-file" data-file-ref="${escapeHtml(copy)}"`,
     ` data-path="${escapeHtml(ref.path)}" data-name="${escapeHtml(ref.name)}"`,
-    ` title="${escapeHtml(`${ref.path}${line}\n${strings.chat.fileRef.hint}`)}"`,
+    ref.isDir ? " data-dir" : "",
+    // 悬停提示走统一样式（components/ui/tooltip 的 useDelegatedTooltip），不用原生 title
+    ` data-tooltip="${escapeHtml(`${ref.path}${line}`)}"`,
     ` aria-label="${escapeHtml(fileRefAriaLabel(ref, name))}">`,
     fileIconHtml(fileRefIcon(ref), "md-file-icon"),
     iconHtml("check", "md-file-done"),

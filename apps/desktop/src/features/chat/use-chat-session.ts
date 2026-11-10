@@ -45,6 +45,9 @@ function describeError(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/** 新会话与切换模型后默认使用的思考强度（Core 会夹到模型支持的范围，不支持思考的模型为 off） */
+export const DEFAULT_THINKING_LEVEL: ThinkingLevel = "medium";
+
 const nextFrame: (cb: () => void) => void =
   typeof requestAnimationFrame === "function"
     ? (cb) => requestAnimationFrame(() => cb())
@@ -94,6 +97,8 @@ export interface ChatSession {
   selectModel: (choice: { model?: string; thinkingLevel?: ThinkingLevel }) => Promise<boolean>;
   /** 会话打开前记下的选择（界面据此显示） */
   pendingModel: { model?: string; thinkingLevel?: ThinkingLevel };
+  /** 模型是否锁定：已有消息，或历史会话的历史还没加载完（思考强度仍可调） */
+  modelLocked: boolean;
   /** 重新读取 Core 的 get_available_models（模型能力以 Core 为准） */
   refreshModels: () => void;
 }
@@ -161,6 +166,9 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
   }>({});
   const pendingModelRef = useRef(pendingModel);
   pendingModelRef.current = pendingModel;
+  // 用户想要的思考强度：默认“中”，用户选过即以所选为准。新会话打开与切换模型后都按它设置，
+  // 否则 Core 沿用自己的默认值或上一个模型夹出来的 off（换回支持思考的模型后也还是 off）
+  const preferredThinking = useRef<ThinkingLevel>(DEFAULT_THINKING_LEVEL);
 
   // 只在每个连接（含重启后的新进程）上查一次命令是否注册，结果缓存；之后扩展在每轮结束时主动重推，
   // 打开卡片不再现场串行 get_commands → prompt → setWidget
@@ -211,7 +219,12 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
   /** 会话打开后：应用打开前选的模型与思考强度、同步权限模式，再读取当前模型与可选的思考强度 */
   const applySession = useCallback(
     async (client: RpcClient) => {
-      const { model, thinkingLevel } = pendingModelRef.current;
+      const pending = pendingModelRef.current;
+      const { model } = pending;
+      // 新会话（以及换了模型的会话）按想要的强度设置；历史会话沿用它自己记下的强度
+      const thinkingLevel =
+        pending.thinkingLevel ??
+        (model || !optionsRef.current.sessionPath ? preferredThinking.current : undefined);
       const [provider, ...rest] = model?.split("/") ?? [];
       // 成功应用的才从待应用选择中移除；失败的保留，下一次发送前再试（失败响应同样报错，由调用方提示）
       const failures: string[] = [];
@@ -268,6 +281,10 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
   // 历史会话的历史已显示：任意一次重建（首次加载、缺口重建、重启后重建）成功即为 true；
   // 打开或重建失败时保持 false，下次发送前再加载
   const historyLoaded = useRef(false);
+  // 历史消息已写入 store：重建的 response 排在帧队列里，下一帧 applyChunks 之后才算数。
+  // 模型锁定只看它，避免“已加载但 store 仍为空”的间隙里切换模型（ref 供 selectModel，state 供界面渲染）
+  const historyShown = useRef(false);
+  const [historyReady, setHistoryReady] = useState(false);
 
   const ensureOpen = useCallback((): Promise<void> => {
     if (conn.current) return Promise.resolve();
@@ -323,6 +340,8 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
           syncUnresponsive();
           const failures = resyncFailures.current;
           nextFrame(() => {
+            historyShown.current = true;
+            setHistoryReady(true);
             if (resyncFailures.current === failures) clearError("resync");
           });
         },
@@ -458,10 +477,21 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
 
   const selectModel = useCallback(
     async (choice: { model?: string; thinkingLevel?: ThinkingLevel }): Promise<boolean> => {
+      // 会话已有消息（或历史会话的历史尚未加载完）时模型锁定：只接受思考强度。
+      // 同时请求模型与强度时强度照常应用，但返回 false，表示请求没有全部生效。
+      const locked =
+        store.getState().messages.length > 0 ||
+        (Boolean(optionsRef.current.sessionPath) && !historyShown.current);
+      const modelRejected = Boolean(choice.model) && locked;
+      if (modelRejected) {
+        if (!choice.thinkingLevel) return false;
+        choice = { thinkingLevel: choice.thinkingLevel };
+      }
+      if (choice.thinkingLevel) preferredThinking.current = choice.thinkingLevel;
       const c = conn.current;
       if (!c) {
         setPendingModel((p) => ({ ...p, ...choice }));
-        return true;
+        return !modelRejected;
       }
       try {
         if (choice.model) {
@@ -472,17 +502,22 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
           });
           if (!res.success) throw new Error(`${strings.chat.model.switchFailed}：${res.error}`);
           setPendingModel((p) => ({ ...p, model: undefined }));
-          await c.client.request("get_available_thinking_levels");
         }
-        if (choice.thinkingLevel) {
-          const res = await c.client.request("set_thinking_level", { level: choice.thinkingLevel });
+        // 换模型后 Core 只会把强度往下夹（换回支持思考的模型时仍是 off）：重新按想要的强度设置
+        const level =
+          choice.thinkingLevel ?? (choice.model ? preferredThinking.current : undefined);
+        if (level) {
+          const res = await c.client.request("set_thinking_level", { level });
           if (!res.success) throw new Error(`${strings.chat.model.switchFailed}：${res.error}`);
           setPendingModel((p) => ({ ...p, thinkingLevel: undefined }));
-          store.setState((s) => withModel(s, undefined, choice.thinkingLevel), true);
-          // Core 会把强度夹到模型支持的范围内：读回实际生效的值
-          await c.client.request("get_state");
+          // 用户亲自选的强度立即显示；随模型切换自动设置的等读回，免得不支持思考的模型先闪一下“中”
+          if (choice.thinkingLevel)
+            store.setState((s) => withModel(s, undefined, choice.thinkingLevel), true);
         }
-        return true;
+        if (choice.model) await c.client.request("get_available_thinking_levels");
+        // Core 会把强度夹到模型支持的范围内：读回实际生效的值
+        if (level) await c.client.request("get_state");
+        return !modelRejected;
       } catch (e) {
         fail(e);
         return false;
@@ -538,7 +573,8 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
   }, [fail]);
 
   // 自动压缩：先乐观更新 store（开关立即停在新位置），set_auto_compaction 失败再回滚到切换前的值。
-  // 不再用 get_state 读回：成功响应即表示 Core 已写入设置（compaction.enabled，全局持久）
+  // 不再用 get_state 读回：成功响应即表示 Core 已写入设置（compaction.enabled，全局持久）。
+  // 请求在途期间 store 记着 autoCompactionPending，期间到达的旧 get_state 不改开关（见 session-store）。
   const autoCompactionSeq = useRef(0);
   const setAutoCompaction = useCallback(
     async (enabled: boolean): Promise<boolean> => {
@@ -546,19 +582,33 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
       if (!c) return false;
       const previous = store.getState().autoCompaction;
       const seq = ++autoCompactionSeq.current;
-      store.setState((s) => ({ ...s, autoCompaction: enabled }), true);
+      store.setState(
+        (s) => ({
+          ...s,
+          autoCompaction: enabled,
+          autoCompactionPending: (s.autoCompactionPending ?? 0) + 1,
+        }),
+        true,
+      );
+      const settle = (value?: boolean) =>
+        store.setState(
+          (s) => ({
+            ...s,
+            // 只有最后一次切换决定最终值（连续切换时较早那次的结果不覆盖之后的选择）
+            autoCompaction:
+              value !== undefined && seq === autoCompactionSeq.current ? value : s.autoCompaction,
+            autoCompactionPending: Math.max(0, (s.autoCompactionPending ?? 1) - 1),
+          }),
+          true,
+        );
       try {
         const res = await c.client.request("set_auto_compaction", { enabled });
         if (!res.success)
           throw new Error(`${strings.chat.contextCard.autoCompactFailed}：${res.error}`);
-        // 期间到达的旧 get_state 可能把值改回去：以最后一次成功的切换为准
-        if (seq === autoCompactionSeq.current)
-          store.setState((s) => ({ ...s, autoCompaction: enabled }), true);
+        settle(enabled);
         return true;
       } catch (e) {
-        // 只回滚最后一次切换（连续切换时较早那次的失败不覆盖之后的选择）
-        if (seq === autoCompactionSeq.current)
-          store.setState((s) => ({ ...s, autoCompaction: previous }), true);
+        settle(previous);
         fail(e);
         return false;
       }
@@ -618,6 +668,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     selectModel,
     refreshModels,
     pendingModel,
+    modelLocked: state.messages.length > 0 || (historyPath !== null && !historyReady),
     connected,
     refreshStats,
     requestContextStats,

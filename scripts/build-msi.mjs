@@ -289,7 +289,7 @@ export function checkRuntimePlatform(manifest, arch) {
   return `dist/runtime 的内置 Node 运行时平台为 ${actual ?? "未知"}，与目标架构 ${arch} 不符，请先运行 pnpm build:core --platform ${nodePlatform}`;
 }
 
-/** 构建记录文件名（写在 Primus.exe 旁边，供 --skip-tauri 与 build-nsis.mjs 校验 exe 的版本与架构） */
+/** 构建记录文件名（写在 Primus.exe 旁边，供 --skip-tauri 校验 exe 的版本与架构） */
 export const EXE_STAMP = "Primus.exe.build.json";
 
 /**

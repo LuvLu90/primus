@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type Platform, type SessionSummary, setPlatformForTesting } from "@/lib/platform";
 import { createMockPlatform } from "@/lib/platform/mock";
 import { strings } from "@/lib/strings";
+import { useAppStore } from "@/stores/app-store";
 import { relativeTime, SessionList } from "./session-list";
 import { createInitialSessionsState, MAX_TABS, useSessionsStore } from "./sessions-store";
 
@@ -65,6 +66,83 @@ describe("会话列表", () => {
     );
   });
 
+  it("有项目的会话归到可折叠的项目文件夹下，无项目的会话在“最近”", async () => {
+    const revealPath = vi.fn(async () => {});
+    withIndex({
+      sessionList: async () => ({
+        items: [
+          summary(1, { workspace: "D:\\code\\tihu" }),
+          summary(2, { workspace: "C:\\Primus\\data\\users\\S-1\\chat" }),
+          // 只有当前用户的默认目录算“最近”：别处同样以 users/<名>/chat 结尾的文件夹是项目
+          summary(3, { workspace: "D:\\projects\\users\\alice\\chat" }),
+        ],
+      }),
+      sessionDefaultWorkspace: async () => "c:/primus/data/users/s-1/chat/",
+      revealPath,
+    });
+    render(<SessionList />);
+    const project = await screen.findByRole("button", { name: "tihu" });
+    expect(screen.getByRole("button", { name: `${t.projectActions}：chat` })).toBeTruthy();
+    expect(project.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText(t.recent)).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^第 1 个会话/ })).toBeTruthy();
+    fireEvent.click(project);
+    expect(screen.queryByRole("button", { name: /^第 1 个会话/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /^第 2 个会话/ })).toBeTruthy();
+    // 第 2 个会话（默认目录）在“最近”分组：“最近”标题之后
+    const recentAt = screen
+      .getByText(t.recent)
+      .compareDocumentPosition(screen.getByRole("button", { name: /^第 2 个会话/ }));
+    expect(recentAt & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole("button", { name: `${t.projectActions}：tihu` }), {
+      key: "Enter",
+    });
+    fireEvent.click(await screen.findByRole("menuitem", { name: t.revealProject }));
+    await waitFor(() => expect(revealPath).toHaveBeenCalledWith("D:\\code\\tihu"));
+  });
+
+  it("在项目中新建会话：新标签开出后才把工作区切到该项目；标签已满时不切", async () => {
+    withIndex({
+      sessionList: async () => ({ items: [summary(1, { workspace: "D:\\code\\tihu" })] }),
+    });
+    useAppStore.setState({
+      workspace: { path: "D:\\other", name: "other", trusted: true, needsTrust: false },
+    });
+    const newTab = vi.fn(() => false);
+    useSessionsStore.setState({ newTab });
+    render(<SessionList />);
+    const action = await screen.findByRole("button", { name: `${t.newInProject}：tihu` });
+    fireEvent.click(action);
+    await waitFor(() => expect(newTab).toHaveBeenCalledOnce());
+    expect(useAppStore.getState().workspace?.path).toBe("D:\\other");
+    newTab.mockReturnValue(true);
+    fireEvent.click(action);
+    await waitFor(() => expect(useAppStore.getState().workspace?.path).toBe("D:\\code\\tihu"));
+  });
+
+  it("“项目”折叠后新页只有项目会话时，不会一直自动翻页", async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const sessionList = vi.fn(async (_ws: string | null, cursor?: string) => {
+      const n = cursor ? Number(cursor.slice(1)) + 1 : 1;
+      if (cursor) await gate;
+      return { items: [summary(n, { workspace: "D:\\code\\tihu" })], nextCursor: `c${n}` };
+    });
+    withIndex({ sessionList });
+    render(<SessionList />);
+    fireEvent.click(await screen.findByRole("button", { name: t.projects }));
+    release();
+    const pages = () => sessionList.mock.calls.filter(([, cursor]) => cursor).map(([, c]) => c);
+    await waitFor(() => expect(pages()).toEqual(["c1", "c2"]));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(pages()).toEqual(["c1", "c2"]);
+    // 列表不够长、没法滚动：手动“加载更多”继续翻页
+    fireEvent.click(await screen.findByRole("button", { name: t.loadMore }));
+    await waitFor(() => expect(pages()).toContain("c3"));
+  });
+
   it("没有会话时列表区留空；加载失败时显示错误并可重试", async () => {
     let fail = true;
     const sessionList = vi.fn(async () => {
@@ -121,7 +199,7 @@ describe("会话列表", () => {
     const box = screen.getByRole("searchbox", { name: strings.layout.searchSessions });
     fireEvent.change(box, { target: { value: "迁移" } });
     expect(await screen.findByRole("button", { name: /^数据库迁移/ })).toBeTruthy();
-    expect(screen.getByText(`· ${t.archived}`)).toBeTruthy();
+    expect(screen.getByText(new RegExp(`^${t.archived} · `))).toBeTruthy();
     expect(sessionSearch).toHaveBeenCalledWith(null, "迁移");
     expect(screen.getByRole("list", { name: t.searchResults })).toBeTruthy();
 

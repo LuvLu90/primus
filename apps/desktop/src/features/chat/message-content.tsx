@@ -12,6 +12,7 @@ import {
   GlassDialogDescription,
   GlassDialogTitle,
 } from "@/components/ui/glass-dialog";
+import { useDelegatedTooltip } from "@/components/ui/tooltip";
 import { getPlatform } from "@/lib/platform";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
@@ -124,6 +125,8 @@ export const MarkdownText = memo(function MarkdownText({
   }, [pathname]);
 
   const fileRefs = useFileRefActions();
+  // 文件引用的悬停提示（data-tooltip）：与界面其他地方相同的 Tooltip 样式
+  const tooltip = useDelegatedTooltip();
   // 文件引用：点击用系统默认程序打开，右键弹出操作菜单（file-ref-actions.tsx）。
   // 回复内容不可信：链接只处理 http/https，打开前先确认（技术方案：点击外部链接前先确认）
   const onClick = (e: MouseEvent<HTMLDivElement>) => {
@@ -155,10 +158,12 @@ export const MarkdownText = memo(function MarkdownText({
         className={cn("md", className)}
         onClick={onClick}
         onContextMenu={fileRefs.onContextMenu}
+        {...tooltip.handlers}
         // biome-ignore lint/security/noDangerouslySetInnerHtml: markdown-it 关闭了 html，输入中的标签已转义
         dangerouslySetInnerHTML={{ __html: html }}
       />
       {fileRefs.ui}
+      {tooltip.ui}
       {pendingLink !== null && (
         <GlassDialog open onOpenChange={(open) => !open && setPendingLink(null)}>
           <GlassDialogContent>

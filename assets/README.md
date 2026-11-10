@@ -5,16 +5,12 @@
 
 ## 重新生成图标
 
-换 logo 时先替换本目录的 `logo.png`，再在仓库根目录执行（Tauri CLI 版本与 `apps/desktop/package.json` 锁定的一致；Pillow 版本锁定在 `scripts/requirements.txt`）：
+换 logo 时先替换本目录的 `logo.png`，再在仓库根目录执行（Pillow 版本锁定在 `scripts/requirements.txt`）：
 
 ```sh
-pnpm --filter @primus/desktop exec tauri icon ../../assets/logo.png -o src-tauri/icons
-rm -rf apps/desktop/src-tauri/icons/android apps/desktop/src-tauri/icons/ios
 python3 -m pip install -r scripts/requirements.txt   # Pillow==13.0.0
-python3 scripts/render-app-icon.py   # icon.ico 改为白色圆角底 + 黑色线稿（桌面快捷方式在深色桌面上也看得清）
-cp assets/logo.png apps/desktop/src-tauri/icons/app-icon.png
-cp apps/desktop/src-tauri/icons/128x128@2x.png apps/desktop/src/app/icon.png
+python3 scripts/render-app-icon.py   # 生成全部图标：深色满版圆角底 + 白色标志（小尺寸单独绘制）
 ```
 
-- `apps/desktop/src-tauri/icons/`：`icon.ico`（白色圆角底，由 `scripts/render-app-icon.py` 生成；其余图标为透明底线稿）编进 `Primus.exe`，同时是 MSI（`Primus.wxs` 的 `ARPPRODUCTICON`，“应用和功能”里的图标）的图标；其余 PNG / `icon.icns` 供 Tauri 打包与后续 macOS 使用。目前只发 Windows，不保留 Android / iOS 图标。
+- `apps/desktop/src-tauri/icons/`：全部由 `scripts/render-app-icon.py` 生成（深色满版圆角底 + 白色标志，图形铺满画布；16 px 为像素对齐的简化立方体，20–40 px 为实心轮廓）。`icon.ico`（16–256 px 各尺寸单独绘制）编进 `Primus.exe`，同时是 MSI（`Primus.wxs` 的 `ARPPRODUCTICON`，“应用和功能”里的图标）的图标；其余 PNG / `icon.icns` 供 Tauri 打包与后续 macOS 使用。目前只发 Windows，不保留 Android / iOS 图标。
 - `apps/desktop/src/app/icon.png`：Next.js 图标约定文件，静态导出时生成 `<link rel="icon">`（浏览器预览 `pnpm dev:web` 的标签页图标）。

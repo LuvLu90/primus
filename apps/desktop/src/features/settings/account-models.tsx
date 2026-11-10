@@ -52,10 +52,7 @@ export function AccountSettings() {
   const account = status.loggedIn ? status.account : null;
   return (
     <Section title={ta.title}>
-      <Row
-        label={account?.name ?? ta.notSignedIn}
-        hint={status.loginAvailable ? undefined : ta.notSignedInHint}
-      >
+      <Row label={account?.name ?? ta.notSignedIn}>
         {status.loggedIn && <span className="shrink-0 text-sm text-muted">{ta.signedIn}</span>}
       </Row>
       <Row label={status.loggedIn ? ta.logout : ta.login} hint={ta.loginUnavailable}>
@@ -134,8 +131,8 @@ export function ModelSettings() {
         </div>
       )}
       <Section title={tm.defaultModel}>
-        <p id={labelId} className="px-4 pt-3 text-xs text-muted">
-          {tm.defaultHint}
+        <p id={labelId} className="sr-only">
+          {tm.defaultModel}
         </p>
         <RadioGroup.Root
           aria-labelledby={labelId}
@@ -169,7 +166,7 @@ export function ModelSettings() {
         </RadioGroup.Root>
       </Section>
       <Section title={tm.background}>
-        <Row label={nameOf(info.compactionModel)} hint={tm.backgroundHint}>
+        <Row label={nameOf(info.compactionModel)}>
           <button
             type="button"
             onClick={refresh}

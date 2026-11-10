@@ -2,7 +2,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { ModelSummary } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
-import { ModelPicker, modelIdOf, withCoreCaps } from "./model-picker";
+import { clampLevel, ModelPicker, modelIdOf, withCoreCaps } from "./model-picker";
 
 const t = strings.chat.model;
 
@@ -59,6 +59,22 @@ describe("模型选择", () => {
     expect(container.querySelectorAll("svg")).toHaveLength(1);
   });
 
+  it("想要的强度超出模型支持的档位时，按 Core 的规则夹到能用的最高档", () => {
+    render(
+      <ModelPicker
+        models={MODELS}
+        current="p/b"
+        thinkingLevel="xhigh"
+        thinkingLevels={["off", "low", "medium", "high"]}
+        onSelectModel={vi.fn()}
+        onSelectThinking={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "模型：Sonnet 5，思考程度高" })).toBeTruthy();
+    expect(clampLevel("medium", ["off", "high"])).toBe("off");
+    expect(clampLevel("minimal", ["low", "high"])).toBe("low");
+  });
+
   it("档位未知时只显示模型名，不显示“默认”", () => {
     render(
       <ModelPicker
@@ -89,6 +105,21 @@ describe("模型选择", () => {
     ).toBe("false");
     fireEvent.click(screen.getByRole("menuitemradio", { name: "Sonnet 5" }));
     expect(onSelectModel).toHaveBeenCalledWith("p/b");
+  });
+
+  it("会话已有消息：模型锁定（其他模型不可选），思考程度仍可调", async () => {
+    const { onSelectModel, onSelectThinking } = open({ modelLocked: true });
+    const other = await screen.findByRole("menuitemradio", { name: "Sonnet 5" });
+    expect(other.getAttribute("data-disabled")).not.toBeNull();
+    expect(
+      screen.getByRole("menuitemradio", { name: "Fable 5" }).getAttribute("data-disabled"),
+    ).toBeNull();
+    fireEvent.click(other);
+    expect(onSelectModel).not.toHaveBeenCalled();
+    const slider = screen.getByRole("slider");
+    fireEvent.keyDown(slider, { key: "ArrowRight" });
+    fireEvent.keyUp(slider, { key: "ArrowRight" });
+    expect(onSelectThinking).toHaveBeenCalledWith("high");
   });
 
   it("思考程度滑杆：两端“更快 / 更聪明”，方向键与 Home/End 逐档移动，抬键才提交", async () => {
@@ -126,20 +157,20 @@ describe("模型选择", () => {
     expect(onSelectThinking).toHaveBeenLastCalledWith("high");
   });
 
-  it("只有一个档位的模型不显示思考程度", async () => {
+  it("不支持思考的模型显示“关闭”，不显示思考滑杆", async () => {
     const onSelectModel = vi.fn();
     render(
       <ModelPicker
         models={MODELS}
         current="p/c"
-        thinkingLevel="off"
+        thinkingLevel="medium"
         thinkingLevels={["off"]}
         onSelectModel={onSelectModel}
         onSelectThinking={vi.fn()}
       />,
     );
-    const trigger = screen.getByRole("button", { name: "模型：Fast" });
-    expect(trigger.textContent).toBe("Fast");
+    const trigger = screen.getByRole("button", { name: "模型：Fast，思考程度关闭" });
+    expect(trigger.textContent).toBe("Fast· 关闭");
     fireEvent.keyDown(trigger, { key: "Enter" });
     await screen.findByRole("menuitemradio", { name: "Fast" });
     expect(screen.queryByRole("slider")).toBeNull();

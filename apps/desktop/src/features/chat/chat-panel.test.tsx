@@ -1,7 +1,16 @@
 import type { CoreBatch } from "@primus/protocol";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { useRouter } from "next/navigation";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { usePreviewStore } from "@/features/files/preview-store";
 import {
   CORE_NOT_RUNNING,
   type ModelsInfo,
@@ -9,9 +18,34 @@ import {
   setPlatformForTesting,
 } from "@/lib/platform";
 import { createMockPlatform } from "@/lib/platform/mock";
+import { WRITE_TAG } from "@/lib/platform/mock/scenario";
 import { strings } from "@/lib/strings";
 import { initialAppState, useAppStore } from "@/stores/app-store";
 import { ChatPanel } from "./chat-panel";
+import { useChatSession } from "./use-chat-session";
+
+/**
+ * 悬停直到出现统一 Tooltip，返回它（role="tooltip"）。对话区在流式输出时会自动滚动，
+ * Radix 的提示遇到祖先滚动就关闭，所以每轮先移开再悬停，直到提示出现。
+ */
+async function hoverForTooltip(get: () => Element): Promise<HTMLElement> {
+  let tip: HTMLElement | null = null;
+  await waitFor(
+    () => {
+      // 每轮重新取元素：消息列表重渲染时元素可能已被替换
+      const el = get();
+      // 只认这个元素的提示（经 aria-describedby 关联），别处同时打开的提示不算
+      const id = el.closest("[data-state]")?.getAttribute("aria-describedby");
+      tip = id ? document.getElementById(id) : null;
+      if (tip) return;
+      fireEvent.pointerLeave(el, { pointerType: "mouse" });
+      fireEvent.pointerMove(el, { pointerType: "mouse" });
+      throw new Error("tooltip not open yet");
+    },
+    { interval: 400, timeout: 4000 },
+  );
+  return tip as unknown as HTMLElement;
+}
 
 /** 用户消息的 prompt（不含 primus-guard 的 /primus-mode 等扩展命令） */
 const isUserPrompt = (r: { type: string; message?: unknown }) =>
@@ -62,6 +96,23 @@ describe("对话区（mock 事件流）", () => {
     );
     await waitFor(() => expect(screen.getByRole("button", { name: t.send })).toBeTruthy());
   });
+
+  it("未选工作区时，一轮结束按默认会话目录解析相对写入路径并打开预览", async () => {
+    usePreviewStore.setState({ path: null, seq: 0 });
+    // 记录分多帧到达：界面能看到“运行中 → 空闲”的变化
+    setPlatformForTesting(createMockPlatform({ intervalMs: 16, batchSize: 4 }));
+    render(<ChatPanel />);
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    fireEvent.change(input, { target: { value: `${WRITE_TAG} 记一下` } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(
+      () =>
+        expect(usePreviewStore.getState().path).toBe(
+          "C:\\Users\\mock\\AppData\\Roaming\\Primus\\users\\mock\\chat\\notes.md",
+        ),
+      { timeout: 8000 },
+    );
+  }, 10_000);
 
   it("没有可用的模型时禁止发送，可去设置添加渠道，推送新配置后恢复", async () => {
     const base = createMockPlatform({ intervalMs: 1, batchSize: 50 });
@@ -423,7 +474,9 @@ describe("对话区（mock 事件流）", () => {
     expect(sessionOpen.mock.calls[0]?.slice(0, 2)).toEqual(["C:\\work\\demo", entry.path]);
     // 历史会话的工作区锁定显示，不出现选择文件夹条
     expect(screen.queryByRole("button", { name: new RegExp(t.chooseFolder) })).toBeNull();
-    expect(screen.getByTitle(new RegExp(t.workspaceLocked)).textContent).toContain("demo");
+    expect((await hoverForTooltip(() => screen.getByText("demo"))).textContent).toContain(
+      t.workspaceLocked,
+    );
   });
 
   it("历史会话打开失败后，下一次发送前重新打开并加载历史", async () => {
@@ -552,7 +605,10 @@ describe("对话区（mock 事件流）", () => {
       key: "Enter",
     });
     fireEvent.click(await screen.findByRole("menuitem", { name: /示例工作区/ }));
-    expect(await screen.findByTitle(`${t.lip.branch}：main`)).toBeTruthy();
+    await screen.findByText("main");
+    expect((await hoverForTooltip(() => screen.getByText("main"))).textContent).toBe(
+      `${t.lip.branch}：main`,
+    );
     // 换到不是仓库的文件夹：分支消失
     useAppStore.setState({
       workspace: {
@@ -562,7 +618,7 @@ describe("对话区（mock 事件流）", () => {
         needsTrust: false,
       },
     });
-    await waitFor(() => expect(screen.queryByTitle(new RegExp(t.lip.branch))).toBeNull());
+    await waitFor(() => expect(screen.queryByText("main")).toBeNull());
     expect(screen.getByRole("button", { name: "新项目" })).toBeTruthy();
   });
 
@@ -755,21 +811,173 @@ describe("对话区（mock 事件流）", () => {
         level: "high",
       }),
     );
-    // 会话打开后切换模型：立即发 set_model，按钮随之更新（等这一轮回答结束、按钮解锁）
+    // 会话已有消息：模型锁定（不发 set_model），思考强度仍可切换
     await waitFor(() => expect(screen.getByText(/你刚才说：「你好」/)).toBeTruthy());
     const second = await screen.findByRole("button", { name: /模型：Mock 大模型，思考程度高/ });
-    await waitFor(() => expect(second.hasAttribute("disabled")).toBe(false));
+    expect(second.hasAttribute("disabled")).toBe(false);
     fireEvent.keyDown(second, { key: "Enter" });
-    fireEvent.click(await screen.findByRole("menuitemradio", { name: "Mock 快速模型" }));
+    const fast = await screen.findByRole("menuitemradio", { name: "Mock 快速模型" });
+    expect(fast.getAttribute("data-disabled")).not.toBeNull();
+    fireEvent.click(fast);
+    const slider2 = await screen.findByRole("slider", { name: t.model.thinkingDegree });
+    fireEvent.keyDown(slider2, { key: "ArrowLeft" });
+    fireEvent.keyUp(slider2, { key: "ArrowLeft" });
     await waitFor(() =>
-      expect(records.find((r) => r.type === "set_model")).toMatchObject({
-        provider: "ioply",
-        modelId: "mock-fast",
+      expect(records.filter((r) => r.type === "set_thinking_level").at(-1)).toMatchObject({
+        level: "medium",
       }),
     );
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: /模型：Mock 快速模型/ })).toBeTruthy(),
-    );
+    expect(records.some((r) => r.type === "set_model")).toBe(false);
+  });
+
+  it("思考强度默认为“中”：新会话打开与切换模型后都按它设置，不支持思考的模型才为关闭", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    setPlatformForTesting(platform);
+    const records: { type: string; [k: string]: unknown }[] = [];
+    const coreSend = platform.coreSend.bind(platform);
+    vi.spyOn(platform, "coreSend").mockImplementation((key, record) => {
+      records.push(record as { type: string });
+      return coreSend(key, record);
+    });
+    // 不支持思考的模型：打开后 Core 夹到 off
+    const fast = renderHook(() => useChatSession());
+    await act(async () => {
+      await fast.result.current.selectModel({ model: "ioply/mock-fast" });
+    });
+    expect(fast.result.current.pendingModel).toEqual({ model: "ioply/mock-fast" });
+    await act(async () => {
+      await fast.result.current.send("你好");
+    });
+    await waitFor(() => expect(fast.result.current.state.thinkingLevel).toBe("off"));
+    const types = records.map((r) => r.type);
+    expect(types.indexOf("set_thinking_level")).toBeGreaterThan(types.indexOf("set_model"));
+    expect(records.find((r) => r.type === "set_thinking_level")).toMatchObject({ level: "medium" });
+    fast.unmount();
+
+    // 支持思考的模型：先选不支持的再换回来，仍为“中”（Core 换回后不会自己恢复）
+    records.length = 0;
+    const large = renderHook(() => useChatSession());
+    await act(async () => {
+      await large.result.current.selectModel({ model: "ioply/mock-fast" });
+      await large.result.current.selectModel({ model: "ioply/mock-large" });
+    });
+    await act(async () => {
+      await large.result.current.send("你好");
+    });
+    await waitFor(() => expect(large.result.current.state.thinkingLevel).toBe("medium"));
+    expect(records.filter((r) => r.type === "set_thinking_level").at(-1)).toMatchObject({
+      level: "medium",
+    });
+  });
+
+  it("用户选过的思考强度在切换模型后保持", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    setPlatformForTesting(platform);
+    const { result } = renderHook(() => useChatSession());
+    await act(async () => {
+      await result.current.selectModel({ thinkingLevel: "high" });
+      await result.current.selectModel({ model: "ioply/mock-large" });
+    });
+    await act(async () => {
+      await result.current.send("你好");
+    });
+    await waitFor(() => expect(result.current.state.thinkingLevel).toBe("high"));
+  });
+
+  it("直接调用 selectModel：有消息后单独选模型返回 false；组合时不发 set_model 但强度生效", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    setPlatformForTesting(platform);
+    const records: { type: string; [k: string]: unknown }[] = [];
+    const coreSend = platform.coreSend.bind(platform);
+    vi.spyOn(platform, "coreSend").mockImplementation((key, record) => {
+      records.push(record as { type: string });
+      return coreSend(key, record);
+    });
+    const { result } = renderHook(() => useChatSession());
+    expect(result.current.modelLocked).toBe(false);
+    await act(async () => {
+      await result.current.send("你好");
+    });
+    await waitFor(() => expect(result.current.state.messages.length).toBeGreaterThan(0));
+    expect(result.current.modelLocked).toBe(true);
+    let ok: boolean | undefined;
+    await act(async () => {
+      ok = await result.current.selectModel({ model: "ioply/mock-fast" });
+    });
+    expect(ok).toBe(false);
+    await act(async () => {
+      ok = await result.current.selectModel({ model: "ioply/mock-fast", thinkingLevel: "low" });
+    });
+    expect(ok).toBe(false);
+    expect(records.some((r) => r.type === "set_model")).toBe(false);
+    expect(records.filter((r) => r.type === "set_thinking_level").at(-1)).toMatchObject({
+      level: "low",
+    });
+  });
+
+  it("历史会话的历史加载完成前也锁定模型，思考强度仍可调", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    // 打开一直挂起：历史始终未加载
+    vi.spyOn(platform, "sessionOpen").mockImplementation(() => new Promise(() => {}));
+    setPlatformForTesting(platform);
+    const { result } = renderHook(() => useChatSession({ sessionPath: "/tmp/history.jsonl" }));
+    expect(result.current.modelLocked).toBe(true);
+    let ok: boolean | undefined;
+    await act(async () => {
+      ok = await result.current.selectModel({ model: "ioply/mock-fast" });
+    });
+    expect(ok).toBe(false);
+    await act(async () => {
+      ok = await result.current.selectModel({ thinkingLevel: "high" });
+    });
+    expect(ok).toBe(true);
+    expect(result.current.pendingModel).toEqual({ thinkingLevel: "high" });
+  });
+
+  it("历史会话：get_messages 已返回但历史尚未写入 store 时仍锁定模型，写入后保持锁定", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    setPlatformForTesting(platform);
+    const first = renderHook(() => useChatSession());
+    await act(async () => {
+      await first.result.current.send("你好");
+    });
+    await waitFor(() => {
+      expect(first.result.current.state.running).toBe(false);
+      expect(first.result.current.state.messages.length).toBeGreaterThan(1);
+    });
+    first.unmount();
+    const path = (await platform.sessionList(null)).items[0]?.path ?? "";
+    expect(path).not.toBe("");
+
+    // 接管帧队列：重建的 response 已到达、但还没在帧里写入 store
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => frames.push(cb));
+    try {
+      const records: { type: string }[] = [];
+      const coreSend = platform.coreSend.bind(platform);
+      vi.spyOn(platform, "coreSend").mockImplementation((key, record) => {
+        records.push(record as { type: string });
+        return coreSend(key, record);
+      });
+      const { result } = renderHook(() => useChatSession({ sessionPath: path }));
+      // 一帧是排队的记录合并，另一帧是重建成功后的收尾
+      await waitFor(() => expect(frames.length).toBeGreaterThanOrEqual(2));
+      expect(result.current.state.messages).toHaveLength(0);
+      expect(result.current.modelLocked).toBe(true);
+      let ok: boolean | undefined;
+      await act(async () => {
+        ok = await result.current.selectModel({ model: "ioply/mock-fast" });
+      });
+      expect(ok).toBe(false);
+      expect(records.some((r) => r.type === "set_model")).toBe(false);
+      await act(async () => {
+        for (const cb of frames.splice(0)) cb(0);
+      });
+      expect(result.current.state.messages.length).toBeGreaterThan(1);
+      expect(result.current.modelLocked).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("扩展的操作确认显示在输入框上方，选择后回复 Core 并消失", async () => {
@@ -945,7 +1153,9 @@ describe("对话区（mock 事件流）", () => {
     const files = await screen.findByRole("list", { name: t.attachments.sent });
     expect(bubble.contains(files)).toBe(true);
     expect(screen.getByLabelText(`说明.md（${t.attachments.inlined}）`)).toBeTruthy();
-    expect(screen.getByLabelText("表.xlsx").getAttribute("title")).toBe("C:\\a\\表.xlsx");
+    expect((await hoverForTooltip(() => screen.getByLabelText("表.xlsx"))).textContent).toBe(
+      "C:\\a\\表.xlsx",
+    );
     expect(bubble.textContent).toContain("看看这些");
     expect(bubble.textContent).not.toContain("很长的内容");
     expect(bubble.textContent).not.toContain("<file");
@@ -968,6 +1178,7 @@ describe("对话区（mock 事件流）", () => {
     const card = await screen.findByRole("region", {
       name: `${t.replyFailed}：${t.replyError.categories.auth.title}`,
     });
+    fireEvent.click(within(card).getByRole("button", { name: t.replyError.details }));
     expect(card.textContent).toContain("401");
     const retry = await screen.findByRole("button", { name: t.replyError.retry });
     fireEvent.click(retry);
@@ -1024,10 +1235,11 @@ describe("对话区（mock 事件流）", () => {
         .closest(".overflow-y-auto") as HTMLElement;
       // 输入框 150px + 间距 20px
       expect(scroller.style.paddingBottom).toBe("170px");
-      // 底部渐隐遮罩：输入框上沿之上 20px 内淡出，输入框后面不透出正文
-      expect(scroller.className).toContain("composer-fade");
-      expect(scroller.style.getPropertyValue("--composer-h")).toBe("150px");
-      expect(scroller.style.getPropertyValue("--composer-fade")).toBe("20px");
+      // 底部渐隐盖层（不给滚动容器加遮罩）：输入框上沿之上 20px 内淡出，输入框后面不透出正文
+      expect(scroller.className).not.toContain("composer-fade");
+      const fade = document.querySelector(".composer-fade") as HTMLElement;
+      expect(fade.style.getPropertyValue("--composer-h")).toBe("150px");
+      expect(fade.style.getPropertyValue("--composer-fade")).toBe("20px");
     } finally {
       spy.mockRestore();
     }

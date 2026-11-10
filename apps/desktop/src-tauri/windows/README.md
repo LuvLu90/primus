@@ -23,7 +23,7 @@
 | 更新服务（ADR 0007） | `ServiceInstall`：`PrimusUpdate`，LocalSystem、按需启动、参数 `--service`；服务 DACL 只给交互用户查询与启动；`ServiceControl` 升级与卸载时先停止，卸载时删除。`HKLM\Software\Primus\Version` 记已安装的 SemVer（服务据此拒绝降级）。暂存目录 `%ProgramData%\Primus\Update`：`PermissionEx` 设为所有者 SYSTEM、只有 SYSTEM 与 Administrators 可写的受保护 DACL；完全卸载时 `util:RemoveFolderEx` 删除整个 `%ProgramData%\Primus`（升级时保留） |
 | 从 NSIS 版迁移 | `AppSearch` 读到 NSIS 版的卸载信息与安装目录、且没有 MSI 记下的安装目录时，装回 NSIS 版的目录，并在 `CheckInstallDir` 之前以 `remove-nsis.ps1` 静默卸载 NSIS 版（`data` 保留） |
 | 完成页 | “立即启动 乾元 Primus”勾选框（默认勾选，仅全新安装 / 升级显示），`WixShellExec` 以安装者身份启动 |
-| 快捷方式 | 公共开始菜单“乾元 Primus”，`System.AppUserModel.ID = com.primus.desktop`（通知归属） |
+| 快捷方式 | 公共开始菜单与公共桌面“乾元 Primus”，`System.AppUserModel.ID = com.primus.desktop`（通知归属） |
 | 卸载信息 | `ARPPRODUCTICON`；`ARPNOMODIFY`（由 WixUI_InstallDir 提供；安装目录装后不可改，修复 / 卸载可用） |
 
 CI（`.github/workflows/ci.yml` Windows 作业）构建 MSI 后用 `scripts/msi-smoke.ps1` 静默安装，检查布局、`data` 的 ACL（`BUILTIN\Users` 显式 Modify 且继承，显式与继承的 Users 授权都没有更改权限 / 取得所有权）、以中完整性级别（去掉管理员权限）实际写入 `data` 且写不进安装目录根、开始菜单快捷方式与 WebView2 处理、更新服务的安装与暂存目录 ACL，再卸载并确认 `data` 与其中文件仍在、服务与 `%ProgramData%\Primus` 已删除；随后 `scripts/update-service-smoke.ps1` 用 `scripts/build-upgrade-test-msi.mjs` 生成的两个更高版本的 MSI，以中完整性级别经命名管道验证静默升级、拒绝错签与降级、程序运行中时放弃安装。

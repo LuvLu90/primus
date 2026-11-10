@@ -9,6 +9,7 @@ import {
   useState,
 } from "react";
 import { Icon } from "@/components/icons";
+import { Tooltip } from "@/components/ui/tooltip";
 import { ChatPanel } from "@/features/chat/chat-panel";
 import { useSessionsStore } from "@/features/sessions/sessions-store";
 import { getWindowControls, type WindowControls } from "@/lib/platform";
@@ -480,21 +481,22 @@ function PanelToggle({
   disabled?: boolean;
 }) {
   return (
-    <button
-      type="button"
-      aria-label={label}
-      title={label}
-      aria-pressed={open}
-      onClick={() => {
-        if (!disabled) onToggle();
-      }}
-      aria-disabled={disabled || undefined}
-      className={cn(
-        "absolute top-1.5 z-20 grid size-7 place-items-center rounded-[10px] text-muted transition-colors hover:bg-hover hover:text-fg aria-pressed:text-fg",
-        side === "left" ? "left-1.5" : "right-1.5",
-      )}
-    >
-      <Icon name={side === "left" ? "sidebar-left" : "sidebar-right"} />
-    </button>
+    <Tooltip content={label}>
+      <button
+        type="button"
+        aria-label={label}
+        aria-pressed={open}
+        onClick={() => {
+          if (!disabled) onToggle();
+        }}
+        aria-disabled={disabled || undefined}
+        className={cn(
+          "absolute top-1.5 z-20 grid size-7 place-items-center rounded-[10px] text-muted transition-colors hover:bg-hover hover:text-fg aria-pressed:text-fg",
+          side === "left" ? "left-1.5" : "right-1.5",
+        )}
+      >
+        <Icon name={side === "left" ? "sidebar-left" : "sidebar-right"} />
+      </button>
+    </Tooltip>
   );
 }

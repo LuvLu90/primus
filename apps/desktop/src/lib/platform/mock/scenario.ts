@@ -100,19 +100,28 @@ const REFERENCES_ANSWER = [
 ].join("\n");
 
 /** 为一次 prompt 生成完整事件序列 */
+/** 消息里带 `#写入` 时，工具调用换成 write（相对路径 notes.md），用于检查一轮结束后的自动预览 */
+export const WRITE_TAG = "#写入";
+
 export function promptScenario(prompt: string, now: number): ScenarioResult {
   const records: CoreRecord[] = [];
   const messages: AgentMessage[] = [];
   const toolCallId = `call_mock_${now}`;
-  const thinking = "用户发来了一条消息。先看看工作区里有什么，再回答。";
-  const firstText = "我先查看一下工作区的文件。";
-  const toolArgs = { path: "README.md" };
-  const toolOutput = "# 示例工作区\n\n这是 mock 平台返回的假文件内容。";
+  const writes = prompt.includes(WRITE_TAG);
+  const thinking = writes
+    ? "用户发来了一条消息。先把笔记写进工作区，再回答。"
+    : "用户发来了一条消息。先看看工作区里有什么，再回答。";
+  const firstText = writes ? "我先把笔记写入 notes.md。" : "我先查看一下工作区的文件。";
+  const toolName = writes ? "write" : "read";
+  const toolArgs = writes ? { path: "notes.md", content: "# 笔记" } : { path: "README.md" };
+  const toolOutput = writes
+    ? "已写入 notes.md。"
+    : "# 示例工作区\n\n这是 mock 平台返回的假文件内容。";
   const answer = prompt.includes(TYPOGRAPHY_TAG)
     ? TYPOGRAPHY_ANSWER
     : prompt.includes(REFERENCES_TAG)
       ? REFERENCES_ANSWER
-      : `这是来自 mock 平台的模拟回答（浏览器预览模式，没有连接真实内核）。\n\n你刚才说：「${prompt}」\n\n工作区里有一个 README.md，内容是示例文本。`;
+      : `这是来自 mock 平台的模拟回答（浏览器预览模式，没有连接真实内核）。\n\n你刚才说：「${prompt}」\n\n${writes ? "已在工作区写入 notes.md。" : "工作区里有一个 README.md，内容是示例文本。"}`;
 
   const user: AgentMessage = { role: "user", content: prompt, timestamp: now };
   messages.push(user);
@@ -126,7 +135,7 @@ export function promptScenario(prompt: string, now: number): ScenarioResult {
     content: [
       { type: "thinking", thinking },
       { type: "text", text: firstText },
-      { type: "toolCall", id: toolCallId, name: "read", arguments: toolArgs },
+      { type: "toolCall", id: toolCallId, name: toolName, arguments: toolArgs },
     ],
     stopReason: "toolUse",
     usage: u1,
@@ -146,7 +155,7 @@ export function promptScenario(prompt: string, now: number): ScenarioResult {
       type: "toolcall_start",
       contentIndex: 2,
       id: toolCallId,
-      toolName: "read",
+      toolName,
     },
   });
   for (const delta of chunk(JSON.stringify(toolArgs), 8)) {
@@ -162,7 +171,7 @@ export function promptScenario(prompt: string, now: number): ScenarioResult {
     assistantMessageEvent: {
       type: "toolcall_end",
       contentIndex: 2,
-      toolCall: { type: "toolCall", id: toolCallId, name: "read", arguments: toolArgs },
+      toolCall: { type: "toolCall", id: toolCallId, name: toolName, arguments: toolArgs },
     },
   });
   records.push({ type: "message_end", message: first });
@@ -170,25 +179,25 @@ export function promptScenario(prompt: string, now: number): ScenarioResult {
 
   // 工具执行
   const result = { content: [{ type: "text" as const, text: toolOutput }], details: {} };
-  records.push({ type: "tool_execution_start", toolCallId, toolName: "read", args: toolArgs });
+  records.push({ type: "tool_execution_start", toolCallId, toolName, args: toolArgs });
   records.push({
     type: "tool_execution_update",
     toolCallId,
-    toolName: "read",
+    toolName,
     args: toolArgs,
     partialResult: { content: [{ type: "text", text: "# 示例工作区" }], details: {} },
   });
   records.push({
     type: "tool_execution_end",
     toolCallId,
-    toolName: "read",
+    toolName,
     result,
     isError: false,
   });
   const toolResult: AgentMessage = {
     role: "toolResult",
     toolCallId,
-    toolName: "read",
+    toolName,
     content: result.content,
     isError: false,
     timestamp: now + 2,

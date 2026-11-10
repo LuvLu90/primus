@@ -1,6 +1,7 @@
 import { appendFileTags } from "@primus/protocol";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { TOOLTIP_DELAY } from "@/components/ui/tooltip";
 import { strings } from "@/lib/strings";
 import { COPIED_MS } from "./copy-button";
 import { UserBubble } from "./user-bubble";
@@ -28,14 +29,17 @@ describe("用户消息的复制按钮", () => {
     render(<UserBubble index={0} text={"第一行\n第二行"} />);
     const bubble = screen.getByRole("article", { name: t.you });
     const button = within(bubble).getByRole("button", { name: t.copy });
-    expect(button.getAttribute("title")).toBe(t.copy);
+    // 悬停提示（统一 Tooltip）显示按钮名称
+    fireEvent.pointerMove(button, { pointerType: "mouse" });
+    act(() => {
+      vi.advanceTimersByTime(TOOLTIP_DELAY + 10);
+    });
+    expect(screen.getByRole("tooltip").textContent).toBe(t.copy);
     await act(async () => {
       fireEvent.click(button);
     });
     expect(writeText).toHaveBeenCalledExactlyOnceWith("第一行\n第二行");
-    expect(within(bubble).getByRole("button", { name: t.copied }).getAttribute("title")).toBe(
-      t.copied,
-    );
+    expect(within(bubble).getByRole("button", { name: t.copied })).toBeTruthy();
     act(() => {
       vi.advanceTimersByTime(COPIED_MS);
     });
