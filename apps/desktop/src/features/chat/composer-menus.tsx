@@ -10,6 +10,7 @@ import {
   GlassPopoverContent,
   GlassPopoverTrigger,
 } from "@/components/ui/glass-popover";
+import { Tooltip } from "@/components/ui/tooltip";
 import { canPickFiles, canUseWorkspaces, getPlatform } from "@/lib/platform";
 import type { WorkspaceInfo } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
@@ -180,11 +181,12 @@ export function WorkspacePicker({
                   key={ws.path}
                   className={rowClass}
                   textValue={ws.name}
-                  title={ws.path}
                   onSelect={() => void open(ws.path)}
                 >
                   <Icon name="folder" size="sm" className="text-muted" />
-                  <span className="min-w-0 flex-1 truncate">{ws.name}</span>
+                  <Tooltip content={ws.path} side="right">
+                    <span className="min-w-0 flex-1 truncate">{ws.name}</span>
+                  </Tooltip>
                   {current?.path === ws.path && <Icon name="check" size="sm" />}
                 </Menu.Item>
               ))
@@ -284,22 +286,20 @@ export function AttachmentChips({
   return (
     <ul aria-label={t.attach} className="flex flex-wrap gap-1.5 px-1 pb-1">
       {paths.map((p) => (
-        <li
-          key={p}
-          title={p}
-          className="group flex h-7 max-w-56 items-center gap-1.5 rounded-[9px] bg-tile pl-2 pr-1 text-xs ring-1 ring-tile-ring"
-        >
-          <FileIcon name={fileIconForName(baseName(p))} size="sm" />
-          <span className="min-w-0 truncate">{baseName(p)}</span>
-          <button
-            type="button"
-            aria-label={`${t.removeAttachment} ${baseName(p)}`}
-            onClick={() => onRemove(p)}
-            className="grid size-5 shrink-0 place-items-center rounded-md text-muted outline-none hover:bg-hover hover:text-fg"
-          >
-            <Icon name="x" size="xs" />
-          </button>
-        </li>
+        <Tooltip key={p} content={p}>
+          <li className="group flex h-7 max-w-56 items-center gap-1.5 rounded-[9px] bg-tile pl-2 pr-1 text-xs ring-1 ring-tile-ring">
+            <FileIcon name={fileIconForName(baseName(p))} size="sm" />
+            <span className="min-w-0 truncate">{baseName(p)}</span>
+            <button
+              type="button"
+              aria-label={`${t.removeAttachment} ${baseName(p)}`}
+              onClick={() => onRemove(p)}
+              className="grid size-5 shrink-0 place-items-center rounded-md text-muted outline-none hover:bg-hover hover:text-fg"
+            >
+              <Icon name="x" size="xs" />
+            </button>
+          </li>
+        </Tooltip>
       ))}
     </ul>
   );

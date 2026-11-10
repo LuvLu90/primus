@@ -10,6 +10,7 @@ import {
   GlassDialogTitle,
 } from "@/components/ui/glass-dialog";
 import { Switch } from "@/components/ui/switch";
+import { Tooltip } from "@/components/ui/tooltip";
 import {
   getPlatform,
   type ProviderApi,
@@ -80,7 +81,6 @@ export function ProviderSettings() {
   /** 正在编辑的渠道；"new" 为添加 */
   const [editing, setEditing] = useState<ProviderView | "new" | null>(null);
   const [pendingDelete, setPendingDelete] = useState<ProviderView | null>(null);
-  const hintId = useId();
 
   // 每次读取或应用保存结果加一：较早发出的 providersList 响应迟到时不覆盖新状态
   const listSeq = useRef(0);
@@ -161,11 +161,9 @@ export function ProviderSettings() {
         </div>
       )}
       <div className="divide-y divide-border rounded-2xl bg-white/70 shadow-[0_1px_2px_rgb(0_0_0/0.04)] ring-1 ring-black/[0.06] dark:bg-white/[0.06] dark:ring-white/[0.08]">
-        <p id={hintId} className="px-4 py-3 text-xs text-muted">
-          {list.length === 0 ? t.empty : t.hint}
-        </p>
+        {list.length === 0 && <p className="px-4 py-3 text-xs text-muted">{t.empty}</p>}
         {list.length > 0 && (
-          <ul aria-label={t.title} aria-describedby={hintId} className="divide-y divide-border">
+          <ul aria-label={t.title} className="divide-y divide-border">
             {list.map((p) => (
               <li key={p.id} className="flex items-center gap-3 px-4 py-3">
                 <div className="min-w-0 flex-1">
@@ -173,9 +171,9 @@ export function ProviderSettings() {
                     <span className="truncate font-medium">{p.name}</span>
                     <Badge>{protocols[p.api] ?? p.api}</Badge>
                   </p>
-                  <p className="mt-0.5 truncate text-xs text-muted" title={p.baseUrl}>
-                    {p.baseUrl}
-                  </p>
+                  <Tooltip content={p.baseUrl}>
+                    <p className="mt-0.5 truncate text-xs text-muted">{p.baseUrl}</p>
+                  </Tooltip>
                   <p className="mt-0.5 text-xs text-muted">{providerMeta(p)}</p>
                 </div>
                 <Switch
@@ -184,26 +182,28 @@ export function ProviderSettings() {
                   disabled={busy !== null}
                   onCheckedChange={(enabled) => void toggle(p, enabled)}
                 />
-                <button
-                  type="button"
-                  aria-label={fill(t.editLabel, { name: p.name })}
-                  title={t.edit}
-                  disabled={busy !== null}
-                  onClick={() => setEditing(p)}
-                  className={iconButtonClass}
-                >
-                  <Icon name="pen" />
-                </button>
-                <button
-                  type="button"
-                  aria-label={fill(t.deleteLabel, { name: p.name })}
-                  title={t.delete}
-                  disabled={busy !== null}
-                  onClick={() => setPendingDelete(p)}
-                  className={cn(iconButtonClass, "hover:text-danger")}
-                >
-                  <Icon name="trash" />
-                </button>
+                <Tooltip content={t.edit}>
+                  <button
+                    type="button"
+                    aria-label={fill(t.editLabel, { name: p.name })}
+                    disabled={busy !== null}
+                    onClick={() => setEditing(p)}
+                    className={iconButtonClass}
+                  >
+                    <Icon name="pen" />
+                  </button>
+                </Tooltip>
+                <Tooltip content={t.delete}>
+                  <button
+                    type="button"
+                    aria-label={fill(t.deleteLabel, { name: p.name })}
+                    disabled={busy !== null}
+                    onClick={() => setPendingDelete(p)}
+                    className={cn(iconButtonClass, "hover:text-danger")}
+                  >
+                    <Icon name="trash" />
+                  </button>
+                </Tooltip>
               </li>
             ))}
           </ul>
@@ -483,7 +483,9 @@ function ProviderDialog({
     <GlassDialog open onOpenChange={(open) => !open && !saving && onClose()}>
       <GlassDialogContent>
         <GlassDialogTitle>{editing ? td.editTitle : td.addTitle}</GlassDialogTitle>
-        <GlassDialogDescription>{td.description}</GlassDialogDescription>
+        <GlassDialogDescription className="sr-only">
+          {editing ? td.editTitle : td.addTitle}
+        </GlassDialogDescription>
         <form onSubmit={save} noValidate className="mt-4 flex flex-col gap-3">
           <div className="scroll-thin -mx-1 flex max-h-[min(60vh,560px)] flex-col gap-3 overflow-y-auto px-1 pb-1">
             <div>

@@ -1,8 +1,8 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-// 回复里文件引用胶囊的操作：点击用系统默认程序打开；右键（或菜单键 / Shift+F10）弹出菜单：
-// 打开、在文件夹中显示、复制路径。相对路径按会话工作区解析（FileRefBase），失败时在胶囊下方短暂提示。
+// 回复里文件引用胶囊的操作：点击文件在右栏预览（文件夹用系统文件管理器打开）；右键（或菜单键 / Shift+F10）弹出菜单：
+// 预览、用默认程序打开、在文件夹中显示、复制路径。相对路径按会话工作区解析（FileRefBase），失败时在胶囊下方短暂提示。
 import {
   createContext,
   type MouseEvent,
@@ -20,6 +20,7 @@ import {
   GlassPopoverItem,
   GlassPopoverTrigger,
 } from "@/components/ui/glass-popover";
+import { showPreview } from "@/features/files/preview-store";
 import { getPlatform } from "@/lib/platform";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
@@ -134,6 +135,18 @@ export function useFileRefActions(): {
       }, fail(el));
   };
 
+  /** 文件在右栏预览；文件夹没有内容可预览，交给系统打开 */
+  const preview = (el: HTMLElement) => {
+    if (el.dataset.dir !== undefined) {
+      open(el);
+      return;
+    }
+    const path = resolve(el);
+    if (!path) return;
+    setNotice(null);
+    showPreview(path);
+  };
+
   const reveal = (el: HTMLElement) => {
     const path = resolve(el);
     if (!path) return;
@@ -150,7 +163,7 @@ export function useFileRefActions(): {
     const el = target(e);
     if (!el) return false;
     e.preventDefault();
-    open(el);
+    preview(el);
     return true;
   };
 
@@ -199,8 +212,15 @@ export function useFileRefActions(): {
                 menu.el.focus();
               }}
             >
+              {menu.el.dataset.dir === undefined && (
+                <GlassPopoverItem
+                  icon={<Icon name="sidebar-right" />}
+                  label={t.preview}
+                  onSelect={() => preview(menu.el)}
+                />
+              )}
               <GlassPopoverItem
-                icon={<Icon name="file-text" />}
+                icon={<Icon name="external-link" />}
                 label={t.open}
                 onSelect={() => open(menu.el)}
               />

@@ -62,11 +62,10 @@ describe("设置·账号与模型", () => {
     expect(formatTokens(512)).toBe("512");
   });
 
-  it("账号服务未开放：显示未登录与说明，登录按钮禁用", async () => {
+  it("账号服务未开放：显示未登录，登录按钮禁用", async () => {
     usePlatform({ authStatus: async () => auth });
     render(<AccountSettings />);
     expect(await screen.findByText(ta.notSignedIn)).toBeTruthy();
-    expect(screen.getByText(ta.notSignedInHint)).toBeTruthy();
     expect(screen.queryByText(ta.signedIn)).toBeNull();
     expect(screen.queryByText(/内置/)).toBeNull();
     expect((screen.getByRole("button", { name: ta.login }) as HTMLButtonElement).disabled).toBe(

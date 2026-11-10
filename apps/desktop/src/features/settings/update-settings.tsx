@@ -94,7 +94,7 @@ export function UpdateSettings() {
         <Row label={tu.currentVersion} hint={status.available ? undefined : tu.unavailableHint}>
           <span className="text-sm text-muted tabular-nums">{status.currentVersion}</span>
         </Row>
-        <Row label={tu.autoUpdate} hint={tu.autoUpdateHint}>
+        <Row label={tu.autoUpdate}>
           <Switch
             ariaLabel={tu.autoUpdate}
             checked={status.settings.autoUpdate}
@@ -102,7 +102,7 @@ export function UpdateSettings() {
             onCheckedChange={(autoUpdate) => void save({ autoUpdate })}
           />
         </Row>
-        <Row label={tu.channel} hint={tu.channelHint} labelId={channelLabel}>
+        <Row label={tu.channel} labelId={channelLabel}>
           <Tabs
             value={status.settings.channel}
             onValueChange={(v) => void save({ channel: v as UpdateChannel })}

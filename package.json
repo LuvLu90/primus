@@ -29,6 +29,7 @@
     "check:versions": "node scripts/check-versions.mjs",
     "check:type-scale": "node scripts/check-type-scale.mjs",
     "check:icons": "node scripts/check-icons.mjs",
+    "check:no-title": "node scripts/check-no-title.mjs",
     "check:model-capabilities": "node scripts/generate-model-capabilities.mjs --check",
     "generate:model-capabilities": "node scripts/generate-model-capabilities.mjs",
     "review:local": "node scripts/cr-prereview.mjs",

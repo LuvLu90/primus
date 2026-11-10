@@ -4,6 +4,7 @@
 // 不把路径与内联的文件内容原样铺在气泡里。悬停看完整路径；内联了内容的文本文件注明“已附上内容”。
 import type { FileTag } from "@primus/protocol";
 import { FileIcon } from "@/components/icons";
+import { Tooltip } from "@/components/ui/tooltip";
 import { strings } from "@/lib/strings";
 import { fileIconForName } from "../file-ref";
 
@@ -21,17 +22,20 @@ export function SentFiles({ files }: { files: FileTag[] }) {
         const name = baseName(f.path);
         const inlined = f.content !== undefined;
         return (
-          <li
+          <Tooltip
             // 同一路径可能出现两次（重发），按位置区分
             // biome-ignore lint/suspicious/noArrayIndexKey: 列表只随消息整体替换，不会重排
             key={`${i}-${f.path}`}
-            title={inlined ? `${f.path}\n${t.inlined}` : f.path}
-            aria-label={inlined ? `${name}（${t.inlined}）` : name}
-            className="flex h-7 max-w-56 items-center gap-1.5 rounded-[9px] bg-tile px-2 text-xs ring-1 ring-tile-ring"
+            content={inlined ? `${f.path}\n${t.inlined}` : f.path}
           >
-            <FileIcon name={fileIconForName(name)} size="sm" />
-            <span className="min-w-0 truncate">{name}</span>
-          </li>
+            <li
+              aria-label={inlined ? `${name}（${t.inlined}）` : name}
+              className="flex h-7 max-w-56 items-center gap-1.5 rounded-[9px] bg-tile px-2 text-xs ring-1 ring-tile-ring"
+            >
+              <FileIcon name={fileIconForName(name)} size="sm" />
+              <span className="min-w-0 truncate">{name}</span>
+            </li>
+          </Tooltip>
         );
       })}
     </ul>

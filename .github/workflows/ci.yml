@@ -52,6 +52,7 @@ jobs:
       - run: pnpm check:tauri-imports
       - run: pnpm check:type-scale
       - run: pnpm check:icons
+      - run: pnpm check:no-title
       - run: pnpm test
       - run: pnpm --filter @primus/desktop typecheck
       - run: pnpm --filter @primus/protocol typecheck # 协议类型与 Core 文档示例的编译期对照

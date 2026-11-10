@@ -803,6 +803,8 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       fingerprint: "mock",
     }),
 
+    sessionDefaultWorkspace: async () =>
+      "C:\\Users\\mock\\AppData\\Roaming\\Primus\\users\\mock\\chat",
     sessionList: async (workspace, cursor) => {
       // 键集分页（与薄壳一致）：只返回排在游标那条之后的会话，归档或新增会话不会让后续页漏项或重复
       const after = cursor ? parseCursor(cursor) : undefined;
@@ -1132,6 +1134,14 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
     },
     revealPath: async (path) => {
       console.info("[mock] 在文件夹中显示", mockAbsolutePath(path));
+    },
+    // 浏览器预览读不到本机文件：Markdown 返回示例内容，其余按扩展名给出示例代码
+    previewFile: async (path) => {
+      const absolute = mockAbsolutePath(path);
+      const text = /\.(md|markdown)$/i.test(absolute)
+        ? "# 示例文档\n\nmock 平台返回的**假内容**，用于预览 `Markdown` 渲染。\n"
+        : `// ${absolute}\nexport const answer = 42;\n`;
+      return { kind: "text", text, truncated: false, size: text.length };
     },
     storageUsage: async () => ({ sessions: 0, logs: 0, cache: 0 }),
     storageClean: async () => {},

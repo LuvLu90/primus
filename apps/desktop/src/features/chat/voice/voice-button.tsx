@@ -5,6 +5,7 @@
 import { Icon } from "@/components/icons";
 import { glassButtonClass, useGlassStyle } from "@/components/layout/glass-panel";
 import { GlassButton } from "@/components/ui/glass-button";
+import { Tooltip } from "@/components/ui/tooltip";
 import { strings } from "@/lib/strings";
 
 const t = strings.chat.voice;
@@ -32,19 +33,20 @@ export function VoiceButton({
   return (
     <div className="voice-pill" data-recording={recording || undefined}>
       <span className="voice-idle absolute inset-y-0 right-0 flex">
-        <GlassButton
-          size={30}
-          {...glass}
-          aria-label={t.start}
-          title={t.start}
-          disabled={disabled || recording}
-          tabIndex={recording ? -1 : undefined}
-          aria-hidden={recording || undefined}
-          onClick={onStart}
-          className={glassButtonClass}
-        >
-          <Icon name="mic" />
-        </GlassButton>
+        <Tooltip content={t.start}>
+          <GlassButton
+            size={30}
+            {...glass}
+            aria-label={t.start}
+            disabled={disabled || recording}
+            tabIndex={recording ? -1 : undefined}
+            aria-hidden={recording || undefined}
+            onClick={onStart}
+            className={glassButtonClass}
+          >
+            <Icon name="mic" size="sm" />
+          </GlassButton>
+        </Tooltip>
       </span>
       <span className="voice-live" aria-hidden={!recording || undefined}>
         <span className="voice-dot size-[7px] shrink-0 rounded-full bg-danger" />
@@ -61,16 +63,17 @@ export function VoiceButton({
         >
           {clock(elapsed)}
         </span>
-        <button
-          type="button"
-          aria-label={t.stop}
-          title={t.stop}
-          tabIndex={recording ? undefined : -1}
-          onClick={onStop}
-          className="ml-auto grid size-[22px] shrink-0 place-items-center rounded-full bg-danger text-on-danger outline-none transition-transform active:scale-90 focus-visible:ring-2 focus-visible:ring-danger/40"
-        >
-          <Icon name="stop" size="2xs" />
-        </button>
+        <Tooltip content={t.stop}>
+          <button
+            type="button"
+            aria-label={t.stop}
+            tabIndex={recording ? undefined : -1}
+            onClick={onStop}
+            className="ml-auto grid size-[22px] shrink-0 place-items-center rounded-full bg-danger text-on-danger outline-none transition-transform active:scale-90 focus-visible:ring-2 focus-visible:ring-danger/40"
+          >
+            <Icon name="stop" size="2xs" />
+          </button>
+        </Tooltip>
       </span>
     </div>
   );

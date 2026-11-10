@@ -292,6 +292,9 @@ Assert-True ($entry[0].Publisher -eq $ProductName) "卸载信息中的发布者�
 Assert-True (Test-Path -LiteralPath $ShortcutPath -PathType Leaf) "开始菜单快捷方式 $ShortcutPath"
 $target = Get-ShortcutTarget $ShortcutPath
 Assert-True ($target -ieq $mainExe) "快捷方式指向 $mainExe（实际 $target）"
+Assert-True (Test-Path -LiteralPath $DesktopShortcut -PathType Leaf) "桌面快捷方式 $DesktopShortcut"
+$desktopTarget = Get-ShortcutTarget $DesktopShortcut
+Assert-True ($desktopTarget -ieq $mainExe) "桌面快捷方式指向 $mainExe（实际 $desktopTarget）"
 
 # ---- 3. data 目录可写（与 MSI 一致，第 3.3.2 节）----
 Write-Step 'data 目录权限（hooks.nsh）'

@@ -70,7 +70,7 @@ function GlassPopoverItem({
   return (
     <MenuPrimitive.Item
       className={cn(
-        "mx-2 flex cursor-default select-none items-center gap-3 rounded-[12px] px-3 py-2 text-fg outline-none data-[highlighted]:bg-black/8 data-[disabled]:opacity-45 dark:data-[highlighted]:bg-white/12",
+        "mx-2 flex cursor-default select-none items-center gap-2.5 rounded-[10px] px-3 py-2 text-fg outline-none data-[highlighted]:bg-black/8 data-[disabled]:opacity-45 dark:data-[highlighted]:bg-white/12",
         destructive && "text-danger",
         className,
       )}
@@ -78,7 +78,7 @@ function GlassPopoverItem({
       {...props}
     >
       {icon ? (
-        <span className="inline-flex w-5 shrink-0 items-center justify-center [&_svg]:size-4">
+        <span className="inline-flex size-4 shrink-0 items-center justify-center [&_svg]:size-4">
           {icon}
         </span>
       ) : null}

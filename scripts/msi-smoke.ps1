@@ -72,6 +72,7 @@ $Msi = (Resolve-Path -LiteralPath $Msi).Path
 $InstallDir = [IO.Path]::GetFullPath($InstallDir.TrimEnd('\'))
 $DataDir = Join-Path $InstallDir 'data'
 $ShortcutPath = Join-Path ([Environment]::GetFolderPath('CommonPrograms')) "$ProductName.lnk"
+$DesktopShortcut = Join-Path ([Environment]::GetFolderPath('CommonDesktopDirectory')) "$ProductName.lnk"
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
 function Write-Step([string] $Message) { Write-Host "`n==> $Message" -ForegroundColor Cyan }
@@ -338,6 +339,9 @@ Assert-True ($null -ne $recordedDir -and $recordedDir.TrimEnd('\') -ieq $Install
 Assert-True (Test-Path -LiteralPath $ShortcutPath -PathType Leaf) "开始菜单快捷方式 $ShortcutPath"
 $target = Get-ShortcutTarget $ShortcutPath
 Assert-True ($target -ieq $mainExe) "快捷方式指向 $mainExe（实际 $target）"
+Assert-True (Test-Path -LiteralPath $DesktopShortcut -PathType Leaf) "桌面快捷方式 $DesktopShortcut"
+$desktopTarget = Get-ShortcutTarget $DesktopShortcut
+Assert-True ($desktopTarget -ieq $mainExe) "桌面快捷方式指向 $mainExe（实际 $desktopTarget）"
 
 # ---- 3. data 目录可写（第 3.3.2 节、第 3.7 节第 3 步）----
 Write-Step 'data 目录权限'
@@ -472,6 +476,7 @@ Assert-True (-not (Test-Path -LiteralPath $mainExe)) '已移除 Primus.exe'
 Assert-True (-not (Test-Path -LiteralPath (Join-Path $InstallDir 'resources\runtime'))) '已移除 resources\runtime'
 Assert-True (-not (Test-Path -LiteralPath $coreDir)) '已移除 resources\agent-core'
 Assert-True (-not (Test-Path -LiteralPath $ShortcutPath)) '已移除开始菜单快捷方式'
+Assert-True (-not (Test-Path -LiteralPath $DesktopShortcut)) '已移除桌面快捷方式'
 Assert-True ($null -eq (Get-UninstallEntry)) '已清除卸载信息'
 Assert-True ($null -eq (Get-RecordedInstallDir)) "已清除 $InstallDirKey 中的安装目录记录"
 Assert-True (Test-Path -LiteralPath $DataDir -PathType Container) "卸载后 data 目录保留（$DataDir）"

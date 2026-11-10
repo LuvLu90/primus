@@ -115,6 +115,17 @@ describe("build-nsis", () => {
     );
     expect(nsi).toContain(`BrandingText "${ref("PRODUCTNAME")} ${ref("VERSION")}"`);
     expect(nsi).toContain('SetFont /LANG=2052 "Microsoft YaHei UI" 9');
+    // 安装后总是创建桌面快捷方式（不再只限静默 / 被动安装），完成页不再有勾选框
+    const install = /Section Install([\s\S]*?)SectionEnd/.exec(nsi)?.[1] ?? "";
+    expect(install).toMatch(/^\s*Call CreateOrUpdateDesktopShortcut$/m);
+    expect(nsi).not.toContain("MUI_FINISHPAGE_SHOWREADME");
+    // 复制大量资源文件期间不逐条刷新详情（逐个重绘导致界面闪烁），复制后恢复
+    const quiet = install.indexOf("SetDetailsPrint none");
+    expect(quiet).toBeGreaterThan(-1);
+    expect(quiet).toBeLessThan(install.indexOf(`File "${ref("MAINBINARYSRCPATH")}"`));
+    expect(install.indexOf("SetDetailsPrint both")).toBeGreaterThan(quiet);
+    // 界面升级先卸载旧版时静默运行旧卸载程序，不隐藏本窗口再切回
+    expect(nsi).toContain('StrCpy $R1 "$R1 /S"');
     // 模板仍须包含钩子与各占位符，由 Tauri 渲染
     expect(nsi).toContain('!include "{{installer_hooks}}"');
     const hooks = readFileSync(tauriFile(nsis.installerHooks));

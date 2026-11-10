@@ -1,6 +1,9 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { useRouter } from "next/navigation";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { showPreview, usePreviewStore } from "@/features/files/preview-store";
+import { setPlatformForTesting } from "@/lib/platform";
+import { createMockPlatform } from "@/lib/platform/mock";
 import { strings } from "@/lib/strings";
 import { initialAppState, useAppStore } from "@/stores/app-store";
 import { AppShell } from "./app-shell";
@@ -19,6 +22,7 @@ describe("主界面外壳", () => {
   beforeEach(() => {
     // 以下用例多数检查右栏：先展开它（默认收起，见下一条用例）
     useAppStore.setState({ ...initialAppState, inspectorPanelOpen: true });
+    usePreviewStore.setState({ path: null, seq: 0 });
     setViewport(1280, 800);
   });
   afterEach(() => setViewport(original.width, original.height));
@@ -58,13 +62,56 @@ describe("主界面外壳", () => {
     expect(useAppStore.getState().inspectorPanelOpen).toBe(false);
   });
 
-  it("右栏标签切换变更、文件、计划", () => {
+  it("右栏只有文件预览：打开文件后显示文件名与内容，可关闭", async () => {
     render(<AppShell />);
-    const t = strings.inspectorTabs;
-    expect(screen.getByText(t.changesEmpty)).toBeTruthy();
-    fireEvent.mouseDown(screen.getByRole("tab", { name: t.files }));
-    expect(screen.getByText(t.filesEmpty)).toBeTruthy();
-    expect(screen.queryByText(t.changesEmpty)).toBeNull();
+    expect(screen.queryByRole("tab")).toBeNull();
+    act(() => showPreview("/w/src/main.ts"));
+    expect(await screen.findByRole("heading", { name: "main.ts" })).toBeTruthy();
+    expect(await screen.findByText(/answer = 42/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: strings.preview.close }));
+    expect(screen.queryByRole("heading", { name: "main.ts" })).toBeNull();
+  });
+
+  it("预览提示：二进制、截断、图片超限；重新读取同一文件时保留原内容并丢弃过期结果", async () => {
+    type Text = { kind: "text"; text: string; truncated: boolean; size: number };
+    const platform = createMockPlatform();
+    const pending: ((v: Text) => void)[] = [];
+    vi.spyOn(platform, "previewFile").mockImplementation(async (path) => {
+      if (path.endsWith(".bin")) return { kind: "binary", size: 10 };
+      return new Promise<Text>((resolve) => pending.push(resolve));
+    });
+    vi.spyOn(platform, "attachmentImage").mockRejectedValue("图片超过 20 MB，无法作为图片发送");
+    setPlatformForTesting(platform);
+    try {
+      render(<AppShell />);
+      act(() => showPreview("/w/a.bin"));
+      expect(await screen.findByText(strings.preview.binary)).toBeTruthy();
+      act(() => showPreview("/w/huge.png"));
+      expect(await screen.findByText(strings.preview.imageTooLarge)).toBeTruthy();
+      expect(screen.queryByText(/无法作为图片发送/)).toBeNull();
+      act(() => showPreview("/w/big.log"));
+      await waitFor(() => expect(pending).toHaveLength(1));
+      await act(async () =>
+        pending[0]?.({ kind: "text", text: "旧内容", truncated: true, size: 2e6 }),
+      );
+      expect(screen.getByText("旧内容")).toBeTruthy();
+      expect(screen.getByText(strings.preview.truncated)).toBeTruthy();
+      // 再次打开同一文件两次：读取期间仍显示原内容；先发出的那次迟到时被丢弃
+      act(() => showPreview("/w/big.log"));
+      act(() => showPreview("/w/big.log"));
+      await waitFor(() => expect(pending).toHaveLength(3));
+      expect(screen.getByText("旧内容")).toBeTruthy();
+      await act(async () =>
+        pending[2]?.({ kind: "text", text: "新内容", truncated: false, size: 1 }),
+      );
+      await act(async () =>
+        pending[1]?.({ kind: "text", text: "过期", truncated: false, size: 1 }),
+      );
+      expect(screen.getByText("新内容")).toBeTruthy();
+      expect(screen.queryByText("过期")).toBeNull();
+    } finally {
+      setPlatformForTesting(undefined);
+    }
   });
 
   it("左栏设置按钮先展开菜单，选“设置”才打开设置页", async () => {

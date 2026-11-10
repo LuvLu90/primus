@@ -5,6 +5,7 @@
 import type { ExtensionUiDialogRequest, ExtensionUiResponse } from "@primus/protocol";
 import { useState } from "react";
 import { Icon } from "@/components/icons";
+import { Tooltip } from "@/components/ui/tooltip";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 
@@ -51,15 +52,16 @@ export function ApprovalCard({
             )}
           </section>
         </div>
-        <button
-          type="button"
-          aria-label={t.dismiss}
-          title={t.dismiss}
-          onClick={cancel}
-          className="grid size-6 shrink-0 place-items-center rounded-full text-muted hover:bg-hover hover:text-fg"
-        >
-          <Icon name="x" size="sm" />
-        </button>
+        <Tooltip content={t.dismiss}>
+          <button
+            type="button"
+            aria-label={t.dismiss}
+            onClick={cancel}
+            className="grid size-6 shrink-0 place-items-center rounded-full text-muted hover:bg-hover hover:text-fg"
+          >
+            <Icon name="x" size="sm" />
+          </button>
+        </Tooltip>
       </div>
       {request.method === "select" && (
         <div className="flex flex-wrap justify-end gap-2">

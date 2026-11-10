@@ -4,6 +4,7 @@
 // 无障碍名称同步换成“已复制”。剪贴板不可用或写入失败时保持原样（不打扰用户）。
 import { useEffect, useState } from "react";
 import { Icon } from "@/components/icons";
+import { Tooltip } from "@/components/ui/tooltip";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 
@@ -38,26 +39,27 @@ export function CopyButton({
   }, [copied]);
   const name = copied ? strings.chat.copied : label;
   return (
-    <button
-      type="button"
-      aria-label={name}
-      title={name}
-      onClick={() => {
-        void navigator.clipboard?.writeText(text).then(
-          () => setCopied(true),
-          () => {},
-        );
-      }}
-      className={cn(
-        "grid place-items-center text-muted outline-none transition-colors hover:bg-hover hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40",
-        size === "sm" ? "size-6 rounded-md" : "size-7 rounded-lg",
-      )}
-    >
-      {copied ? (
-        <Icon name="check" size="sm" className="step-in" />
-      ) : (
-        <Icon name="copy" size="sm" />
-      )}
-    </button>
+    <Tooltip content={name}>
+      <button
+        type="button"
+        aria-label={name}
+        onClick={() => {
+          void navigator.clipboard?.writeText(text).then(
+            () => setCopied(true),
+            () => {},
+          );
+        }}
+        className={cn(
+          "grid place-items-center text-muted outline-none transition-colors hover:bg-hover hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40",
+          size === "sm" ? "size-6 rounded-md" : "size-7 rounded-lg",
+        )}
+      >
+        {copied ? (
+          <Icon name="check" size="sm" className="step-in" />
+        ) : (
+          <Icon name="copy" size="sm" />
+        )}
+      </button>
+    </Tooltip>
   );
 }

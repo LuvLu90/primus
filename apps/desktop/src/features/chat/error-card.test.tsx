@@ -26,7 +26,7 @@ const failed = (errorMessage: string, extra: Partial<AssistantMessage> = {}): As
 afterEach(() => setPlatformForTesting(undefined));
 
 describe("错误卡片", () => {
-  it("连接错误：标题、建议、元信息与操作", () => {
+  it("连接错误：一行标题与操作，建议在悬停提示里，元信息收在详细信息中", async () => {
     const onRetry = vi.fn();
     const onOpenSettings = vi.fn();
     render(
@@ -42,8 +42,23 @@ describe("错误卡片", () => {
         name: `${strings.chat.replyFailed}：${t.categories.connection.title}`,
       }),
     ).toBeTruthy();
-    expect(screen.getByText(t.categories.connection.hint)).toBeTruthy();
+    expect(screen.queryByText(t.categories.connection.hint)).toBeNull();
+    // 提示文字放在悬停提示里
+    fireEvent.pointerMove(
+      screen.getByRole("heading", {
+        name: `${strings.chat.replyFailed}：${t.categories.connection.title}`,
+      }),
+      { pointerType: "mouse" },
+    );
+    expect((await screen.findByRole("tooltip")).textContent).toBe(t.categories.connection.hint);
     expect(screen.getByText(t.retried.replace("{n}", "3"))).toBeTruthy();
+    expect(screen.queryByText("ioply 网关")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: t.details }));
+    // 提示在详情里也能看到（触屏、键盘用户无需悬停）
+    // 详情里同时给出原因与按类别区分的处理建议
+    expect(
+      screen.getByText(`${t.categories.connection.hint}${t.categories.connection.action}`),
+    ).toBeTruthy();
     expect(screen.getByText("ioply 网关")).toBeTruthy();
     expect(screen.getByText("mock-large")).toBeTruthy();
     expect(screen.getByText("10.4s")).toBeTruthy();
@@ -66,6 +81,7 @@ describe("错误卡片", () => {
     expect(
       screen.getByText(`${strings.chat.replyFailed}：${t.categories.auth.title}`),
     ).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: t.details }));
     expect(screen.getByText("401")).toBeTruthy();
     expect(screen.getByRole("button", { name: t.probe })).toBeTruthy();
     unmount();
@@ -82,6 +98,11 @@ describe("错误卡片", () => {
     expect(screen.queryByRole("button", { name: t.probe })).toBeNull();
     // 没有重试回调（历史轮次或运行中）时不显示重试
     expect(screen.queryByRole("button", { name: t.retry })).toBeNull();
+    // 详细信息里保留按类别区分的处理建议
+    fireEvent.click(screen.getByRole("button", { name: t.details }));
+    expect(
+      screen.getByText(`${t.categories.rateLimit.hint}${t.categories.rateLimit.action}`),
+    ).toBeTruthy();
   });
 
   it("详细信息可折叠，含完整错误文本与诊断，可复制", async () => {

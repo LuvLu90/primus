@@ -483,6 +483,12 @@ describe("build-msi", () => {
       expect(permission).not.toContain(right);
     // 安装目录本身：受保护的 DACL，Users 只读和执行（装在 D:\primus 等自选目录时不继承盘根的“修改”）
     expect(wxs).toContain('<ComponentRef Id="InstallDirAcl" />');
+    // 开始菜单与桌面快捷方式
+    expect(wxs).toContain('<ComponentRef Id="StartMenuShortcut" />');
+    expect(wxs).toContain('<ComponentRef Id="DesktopShortcut" />');
+    expect(wxs).toMatch(
+      /<StandardDirectory Id="DesktopFolder">\s*<Component Id="DesktopShortcut">/,
+    );
     const sddl = /<PermissionEx Sddl="([^"]+)"/.exec(wxs)?.[1] ?? "";
     // 所有者为 Administrators：用户预先建好的目录，原所有者不再保有隐式的更改权限
     expect(sddl).toMatch(/^O:BA/);

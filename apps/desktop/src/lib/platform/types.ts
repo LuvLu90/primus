@@ -257,6 +257,8 @@ export interface Platform {
    * 会话列表：最后活动时间倒序、每页 50 条、不含已归档。`workspace` 为 null 时列出全部工作区，
    * 空串为未选工作区的默认目录；`cursor` 为上一页的 `nextCursor`
    */
+  /** 未选工作区时会话的默认工作目录（完整路径） */
+  sessionDefaultWorkspace(): Promise<string>;
   sessionList(workspace: string | null, cursor?: string): Promise<Page<SessionSummary>>;
   /** 搜索会话（含已归档，最多 50 条）；3 个字符以上匹配消息全文，更短只匹配会话名与首条消息 */
   sessionSearch(workspace: string | null, query: string): Promise<SessionSummary[]>;
@@ -337,6 +339,8 @@ export interface Platform {
   openPath(path: string): Promise<OpenPathOutcome>;
   /** 在系统文件管理器中显示并选中文件或文件夹；校验同 `openPath` */
   revealPath(path: string): Promise<void>;
+  /** 右栏预览本机文件：校验同 `openPath`，只读，最多 1 MiB；二进制文件不返回内容（图片走 `attachmentImage`） */
+  previewFile(path: string): Promise<FilePreview>;
   storageUsage(): Promise<Record<string, number>>;
   storageClean(category: string): Promise<void>;
   diagnosticsExport(options?: Record<string, unknown>): Promise<string>;
@@ -355,6 +359,11 @@ export interface Platform {
   updateInstall(force?: boolean): Promise<void>;
   logWrite(level: LogLevel, message: string): Promise<void>;
 }
+
+/** `previewFile` 的结果 */
+export type FilePreview =
+  | { kind: "text"; text: string; truncated: boolean; size: number }
+  | { kind: "binary"; size: number };
 
 /** `openPath` 的结果：已打开，或因是可执行 / 脚本文件改为在文件夹中显示 */
 export type OpenPathOutcome = "opened" | "revealed";
@@ -398,6 +407,7 @@ export const COMMANDS = {
   workspaceTrust: "workspace_trust",
   dialogPickFolder: "dialog_pick_folder",
   dialogPickFiles: "dialog_pick_files",
+  sessionDefaultWorkspace: "session_default_workspace",
   sessionList: "session_list",
   sessionSearch: "session_search",
   sessionWatch: "session_watch",
@@ -437,6 +447,7 @@ export const COMMANDS = {
   openExternal: "open_external",
   openPath: "open_path",
   revealPath: "reveal_path",
+  previewFile: "preview_file",
   storageUsage: "storage_usage",
   storageClean: "storage_clean",
   diagnosticsExport: "diagnostics_export",

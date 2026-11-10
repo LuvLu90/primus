@@ -4,6 +4,7 @@
 // 不是 Git 仓库时不显示分支；会话开始后工作区锁定，只显示名称。
 import { useEffect, useState } from "react";
 import { Icon } from "@/components/icons";
+import { Tooltip } from "@/components/ui/tooltip";
 import { getPlatform } from "@/lib/platform";
 import type { GitBranch as Branch, WorkspaceInfo } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
@@ -48,14 +49,15 @@ export function ComposerLip({
   return (
     <div className="composer-lip mx-3.5 -mb-3 flex h-11 items-center gap-4 rounded-t-2xl bg-lip px-3.5 pb-3 text-xs text-muted shadow-[inset_0_0_0_1px_var(--color-border)]">
       {branch && (
-        <span
+        <Tooltip
           key={`${workspace?.path}:${branch.name}`}
-          className={item}
-          title={`${t.lip.branch}：${branch.name}${branch.detached ? `（${t.lip.detached}）` : ""}`}
+          content={`${t.lip.branch}：${branch.name}${branch.detached ? `（${t.lip.detached}）` : ""}`}
         >
-          <Icon name="git-branch" size="sm" />
-          <span className="max-w-40 truncate">{branch.name}</span>
-        </span>
+          <span className={item}>
+            <Icon name="git-branch" size="sm" />
+            <span className="max-w-40 truncate">{branch.name}</span>
+          </span>
+        </Tooltip>
       )}
       {!workspace ? (
         <WorkspacePicker current={null} onPicked={onPicked} onError={onError}>
@@ -69,40 +71,41 @@ export function ComposerLip({
         </WorkspacePicker>
       ) : locked ? (
         // 会话已绑定到开始时的工作区，之后不能切换，避免界面与 Core 实际工作区不一致
-        <span
-          className={item}
-          title={`${t.currentWorkspace}：${workspace.path}\n${t.workspaceLocked}`}
-        >
-          <Icon name="folder" size="sm" />
-          <span className="max-w-48 truncate">{workspace.name}</span>
-        </span>
+        <Tooltip content={`${t.currentWorkspace}：${workspace.path}\n${t.workspaceLocked}`}>
+          <span className={item}>
+            <Icon name="folder" size="sm" />
+            <span className="max-w-48 truncate">{workspace.name}</span>
+          </span>
+        </Tooltip>
       ) : (
         // 悬停（或键盘聚焦）时文件夹图标换成关闭按钮，取消已选的工作区。
         // 关闭按钮是触发器的兄弟元素、叠在图标位置上（按钮里不能嵌套按钮），点它不会打开菜单
         <span key={workspace.path} className={`${item} group/ws relative`}>
           <WorkspacePicker current={workspace} onPicked={onPicked} onError={onError}>
+            <Tooltip content={`${t.currentWorkspace}：${workspace.path}`}>
+              <button
+                type="button"
+                className="flex min-w-0 items-center gap-1.5 outline-none transition-colors hover:text-fg focus-visible:text-fg data-[state=open]:text-fg"
+              >
+                <Icon
+                  name="folder"
+                  size="sm"
+                  className="transition-opacity group-focus-within/ws:opacity-0 group-hover/ws:opacity-0"
+                />
+                <span className="max-w-48 truncate">{workspace.name}</span>
+              </button>
+            </Tooltip>
+          </WorkspacePicker>
+          <Tooltip content={t.clearWorkspace}>
             <button
               type="button"
-              title={`${t.currentWorkspace}：${workspace.path}`}
-              className="flex min-w-0 items-center gap-1.5 outline-none transition-colors hover:text-fg focus-visible:text-fg data-[state=open]:text-fg"
+              aria-label={`${t.clearWorkspace} ${workspace.name}`}
+              onClick={onClear}
+              className="absolute -left-[3px] top-1/2 grid size-[19px] -translate-y-1/2 place-items-center rounded-full opacity-0 outline-none transition-opacity hover:bg-hover hover:text-fg focus-visible:opacity-100 group-focus-within/ws:opacity-100 group-hover/ws:opacity-100"
             >
-              <Icon
-                name="folder"
-                size="sm"
-                className="transition-opacity group-focus-within/ws:opacity-0 group-hover/ws:opacity-0"
-              />
-              <span className="max-w-48 truncate">{workspace.name}</span>
+              <Icon name="x" size="xs" />
             </button>
-          </WorkspacePicker>
-          <button
-            type="button"
-            aria-label={`${t.clearWorkspace} ${workspace.name}`}
-            title={t.clearWorkspace}
-            onClick={onClear}
-            className="absolute -left-[3px] top-1/2 grid size-[19px] -translate-y-1/2 place-items-center rounded-full opacity-0 outline-none transition-opacity hover:bg-hover hover:text-fg focus-visible:opacity-100 group-focus-within/ws:opacity-100 group-hover/ws:opacity-100"
-          >
-            <Icon name="x" size="xs" />
-          </button>
+          </Tooltip>
         </span>
       )}
     </div>
