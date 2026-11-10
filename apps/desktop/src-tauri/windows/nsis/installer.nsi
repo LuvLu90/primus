@@ -379,8 +379,17 @@ Function PageLeaveReinstall
   ${EndIf}
 
   reinst_uninstall:
-    HideWindow
     ClearErrors
+
+    ; Primus：界面升级时（选了“先卸载再安装”）旧版卸载程序静默运行（/S，并带 /UPDATE 保留快捷方式与固定项，
+    ; 新版随后重建），不再隐藏本窗口、弹出旧版卸载向导再切回来——那一下窗口消失又出现就是安装时的“闪”。
+    ; 只卸载（同版本选“卸载”）与从 MSI 迁移时仍显示卸载界面（前者要让用户选择是否删除数据）。
+    StrCpy $5 0
+    ${If} $WixMode = 1
+    ${OrIf} $UninstallOnly = 1
+      StrCpy $5 1
+      HideWindow
+    ${EndIf}
 
     ${If} $WixMode = 1
       ReadRegStr $R1 HKLM "$R6" "UninstallString"
@@ -388,13 +397,20 @@ Function PageLeaveReinstall
     ${Else}
       ReadRegStr $4 SHCTX "${MANUPRODUCTKEY}" ""
       ReadRegStr $R1 SHCTX "${UNINSTKEY}" "UninstallString"
-      ${IfThen} $UpdateMode = 1 ${|} StrCpy $R1 "$R1 /UPDATE" ${|} ; append /UPDATE
+      ${If} $UpdateMode = 1
+      ${OrIf} $UninstallOnly <> 1
+        StrCpy $R1 "$R1 /UPDATE" ; append /UPDATE
+      ${EndIf}
       ${IfThen} $PassiveMode = 1 ${|} StrCpy $R1 "$R1 /P" ${|} ; append /P
+      ${If} $PassiveMode <> 1
+      ${AndIf} $UninstallOnly <> 1
+        StrCpy $R1 "$R1 /S"
+      ${EndIf}
       StrCpy $R1 "$R1 _?=$4" ; append uninstall directory
       ExecWait '$R1' $0
     ${EndIf}
 
-    BringToFront
+    ${IfThen} $5 = 1 ${|} BringToFront ${|}
 
     ${IfThen} ${Errors} ${|} StrCpy $0 2 ${|} ; ExecWait failed, set fake exit code
 
@@ -453,10 +469,7 @@ Var AppStartMenuFolder
 ; Don't auto jump to finish page after installation page,
 ; because the installation page has useful info that can be used debug any issues with the installer.
 !define MUI_FINISHPAGE_NOAUTOCLOSE
-; Use show readme button in the finish page as a button create a desktop shortcut
-!define MUI_FINISHPAGE_SHOWREADME
-!define MUI_FINISHPAGE_SHOWREADME_TEXT "$(createDesktop)"
-!define MUI_FINISHPAGE_SHOWREADME_FUNCTION CreateOrUpdateDesktopShortcut
+; Primus：桌面快捷方式在安装页已创建，完成页不再提供“创建桌面快捷方式”勾选框
 ; Show run app after installation.
 !define MUI_FINISHPAGE_RUN
 !define MUI_FINISHPAGE_RUN_FUNCTION RunMainBinary
@@ -729,6 +742,11 @@ Section Install
 
   !insertmacro CheckIfAppIsRunning "$INSTDIR\${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
 
+  ; Primus：资源目录有大量小文件，逐个解压时安装页的状态文字与详情列表每个文件都要重绘，界面一直闪烁；
+  ; 复制期间只显示一行汇总（进度条照常前进），复制完再恢复逐条显示
+  DetailPrint "正在复制程序文件…"
+  SetDetailsPrint none
+
   ; Copy main executable
   File "${MAINBINARYSRCPATH}"
 
@@ -744,6 +762,8 @@ Section Install
   {{#each binaries}}
     File /a "/oname={{this}}" "{{no-escape @key}}"
   {{/each}}
+
+  SetDetailsPrint both
 
   ; Create file associations
   {{#each file_associations as |association| ~}}
@@ -808,12 +828,9 @@ Section Install
     Call CreateOrUpdateStartMenuShortcut
   !insertmacro MUI_STARTMENU_WRITE_END
 
-  ; Create desktop shortcut for silent and passive installers
-  ; because finish page will be skipped
-  ${If} $PassiveMode = 1
-  ${OrIf} ${Silent}
-    Call CreateOrUpdateDesktopShortcut
-  ${EndIf}
+  ; Primus：安装后总是创建桌面快捷方式（原模板只在静默 / 被动安装时创建，界面安装要在完成页勾选）；
+  ; 更新模式与 /NS 仍不创建（见 CreateOrUpdateDesktopShortcut）
+  Call CreateOrUpdateDesktopShortcut
 
   !ifmacrodef NSIS_HOOK_POSTINSTALL
     !insertmacro NSIS_HOOK_POSTINSTALL

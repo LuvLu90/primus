@@ -108,12 +108,25 @@
       </Component>
     </StandardDirectory>
 
+    <!-- 桌面快捷方式：按机器安装时进公共桌面，卸载时移除。键路径同上放在 HKCU。 -->
+    <StandardDirectory Id="DesktopFolder">
+      <Component Id="DesktopShortcut">
+        <Shortcut Id="DesktopShortcut" Name="乾元 Primus" Description="乾元 Primus 桌面 Agent"
+                  Target="[#MainExeFile]" WorkingDirectory="INSTALLFOLDER">
+          <ShortcutProperty Key="System.AppUserModel.ID" Value="com.primus.desktop" />
+        </Shortcut>
+        <RegistryValue Root="HKCU" Key="Software\Primus\Installer" Name="DesktopShortcut"
+                       Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
     <Feature Id="Main" Title="乾元 Primus" AllowAbsent="no">
       <ComponentRef Id="MainExe" />
       <ComponentRef Id="InstallDirRegistry" />
       <ComponentRef Id="InstallDirAcl" />
       <ComponentRef Id="DataDir" />
       <ComponentRef Id="StartMenuShortcut" />
+      <ComponentRef Id="DesktopShortcut" />
       <!-- 整目录收集（第 3.3.2 节）：不逐个列文件，Core 升级后自动包含新文件 -->
       <Files Directory="RUNTIMEDIR" Include="!(bindpath.runtime)\**" />
       <Files Directory="COREDIR" Include="!(bindpath.core)\**" />
