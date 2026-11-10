@@ -60,6 +60,11 @@ export function Tooltip({
   const empty = content === undefined || content === null || content === false || content === "";
   // 始终受控：内容在有无之间切换时不在受控/非受控间来回变
   const [open, setOpen] = useState(false);
+  // 内容变空时把打开状态也清掉：受控值已是 false，移开时 Radix 不会再通知关闭，
+  // 否则下次内容出现时没有悬停也会直接弹出
+  useEffect(() => {
+    if (empty) setOpen(false);
+  }, [empty]);
   return (
     <TooltipPrimitive.Provider delayDuration={TOOLTIP_DELAY} skipDelayDuration={TOOLTIP_DELAY}>
       <TooltipPrimitive.Root open={!empty && open} onOpenChange={setOpen}>

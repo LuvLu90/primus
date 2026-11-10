@@ -59,6 +59,23 @@ describe("Tooltip", () => {
     expect(screen.getByRole("button", { name: "发送" })).toBe(button);
   });
 
+  it("显示中内容变空再恢复：没有悬停时不会自己弹出", () => {
+    vi.useFakeTimers();
+    const view = (content?: string) => (
+      <Tooltip content={content}>
+        <button type="button">发送</button>
+      </Tooltip>
+    );
+    const { rerender } = render(view("正在读取附件"));
+    hover(screen.getByRole("button", { name: "发送" }));
+    expect(screen.getByRole("tooltip")).toBeTruthy();
+    rerender(view(undefined));
+    expect(screen.queryByRole("tooltip")).toBeNull();
+    fireEvent.pointerLeave(screen.getByRole("button", { name: "发送" }));
+    rerender(view("正在读取附件"));
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+
   it("wrap：禁用按钮外包一层，悬停包装层也能显示提示", () => {
     vi.useFakeTimers();
     render(
