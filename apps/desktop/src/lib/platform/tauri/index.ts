@@ -131,6 +131,7 @@ export function createTauriPlatform(): Platform {
     previewFile: (path) => call("previewFile", { path }),
     // 薄壳以原始字节返回（tauri::ipc::Response），invoke 得到 ArrayBuffer
     previewFileBytes: (path) => call("previewFileBytes", { path }),
+    previewDir: (path) => call("previewDir", { path }),
     storageUsage: () => call("storageUsage"),
     storageClean: (category) => call("storageClean", { category }),
     diagnosticsExport: (options) => call("diagnosticsExport", { options }),

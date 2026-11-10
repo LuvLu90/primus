@@ -6,6 +6,8 @@
 // - Word：docx-preview；PowerPoint：@aiden0z/pptx-renderer。两者体积大，按需动态加载，不进启动包。
 // - PDF：blob URL 交给 WebView2 自带的 PDF 查看器（CSP 的 frame-src 放行 blob:）。
 // - Excel（.xlsx / .xlsm）：@cj-tech-master/excelts 解析（按需动态加载），sheet-view 显示为带行列号的网格与工作表标签。
+// - 音频 / 视频、GIF / ICO / AVIF 图片：整份字节做成 blob URL 交给 <audio> / <video> / <img>
+//   （CSP 的 media-src、img-src 放行 blob:），播放 / 解码失败时提示用默认程序打开。
 import { useEffect, useRef, useState } from "react";
 import { strings } from "@/lib/strings";
 import { readWorkbook, type Sheet } from "./sheet-model";
@@ -58,6 +60,68 @@ export function PdfView({ data }: { data: ArrayBuffer }) {
   return (
     // biome-ignore lint/a11y/useIframeTitle: 原生 title 会成为悬停提示（check:no-title 禁止），可访问名称用 aria-label
     <iframe aria-label={t.pdf} src={url} className="size-full border-0 bg-page" />
+  );
+}
+
+/** 字节 → blob URL（卸载或换数据时释放） */
+function useBlobUrl(data: ArrayBuffer, mime: string): string | null {
+  const [url, setUrl] = useState<string | null>(null);
+  useEffect(() => {
+    const next = URL.createObjectURL(new Blob([data], { type: mime }));
+    setUrl(next);
+    return () => URL.revokeObjectURL(next);
+  }, [data, mime]);
+  return url;
+}
+
+/** 音频 / 视频 / 图片：blob URL 交给原生元素；失败时提示 */
+export function BlobMediaView({
+  kind,
+  data,
+  mime,
+  name,
+}: {
+  kind: "image" | "audio" | "video";
+  data: ArrayBuffer;
+  mime: string;
+  name: string;
+}) {
+  const url = useBlobUrl(data, mime);
+  const [failed, setFailed] = useState(false);
+  if (failed)
+    return (
+      <p role="alert" className="px-4 py-3 text-sm text-danger">
+        {kind === "image" ? t.imageFailed : t.mediaFailed}
+      </p>
+    );
+  if (!url) return null;
+  const onError = () => setFailed(true);
+  if (kind === "image")
+    return (
+      <div className="scroll-thin size-full overflow-auto px-4 py-3">
+        {/* biome-ignore lint/performance/noImgElement: 静态导出、本地 blob URL，不需要 next/image */}
+        <img src={url} alt={name} onError={onError} className="mx-auto max-w-full" />
+      </div>
+    );
+  if (kind === "audio")
+    return (
+      <div className="flex size-full items-center justify-center px-4">
+        {/* biome-ignore lint/a11y/useMediaCaption: 本地文件预览，没有字幕轨 */}
+        <audio src={url} controls aria-label={name} onError={onError} className="w-full" />
+      </div>
+    );
+  return (
+    <div className="flex size-full items-center justify-center">
+      {/* biome-ignore lint/a11y/useMediaCaption: 本地文件预览，没有字幕轨 */}
+      <video
+        src={url}
+        controls
+        playsInline
+        aria-label={name}
+        onError={onError}
+        className="max-h-full max-w-full"
+      />
+    </div>
   );
 }
 

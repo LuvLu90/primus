@@ -178,7 +178,7 @@ describe("回复中的文件引用与网页链接", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("绝对路径原样预览；文件夹仍用系统打开", async () => {
+  it("绝对路径原样预览；文件夹也在右栏预览", async () => {
     const openPath = vi.fn(async () => "opened" as const);
     setPlatformForTesting({ ...createMockPlatform(), openPath });
     render(
@@ -188,7 +188,8 @@ describe("回复中的文件引用与网页链接", () => {
     expect(usePreviewStore.getState().path).toBe("/home/me/My Project/report.md");
     render(<MarkdownText text="`/home/me/docs/`" streaming={false} />);
     fireEvent.click(screen.getAllByRole("button")[1] as HTMLElement);
-    await waitFor(() => expect(openPath).toHaveBeenCalledWith("/home/me/docs"));
+    expect(usePreviewStore.getState().path).toBe("/home/me/docs");
+    expect(openPath).not.toHaveBeenCalled();
   });
 
   it("没有工作区时相对路径无法定位：提示原因，不调用薄壳", async () => {

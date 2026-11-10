@@ -1111,6 +1111,14 @@ mod windows_impl {
         Ok((control & SE_DACL_PROTECTED != 0, aces))
     }
 
+    /// 右栏文件夹预览：带“隐藏”或“系统”属性的项（与资源管理器默认不显示的一致）。
+    pub(crate) fn is_hidden_entry(meta: &std::fs::Metadata, _name: &OsStr) -> bool {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+        const FILE_ATTRIBUTE_SYSTEM: u32 = 0x4;
+        meta.file_attributes() & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM) != 0
+    }
+
     /// 文件系统身份（[`file_keys`]）：卷序列号 + 64 位文件索引，跟随符号链接。只要 `FILE_READ_ATTRIBUTES`，
     /// 共享读写删除，不与 Core 对会话文件的打开冲突。打不开或查询失败时为 None。
     pub(crate) fn file_system_id(path: &Path) -> Option<String> {
@@ -1156,6 +1164,11 @@ mod fallback_impl {
     /// 非 Windows：Core 的 `powershell` 工具只在 Windows 原生进程中可用，命令工具保持 `bash`。
     pub(crate) fn powershell_available() -> bool {
         false
+    }
+
+    /// 右栏文件夹预览：非 Windows 以 `.` 开头的项为隐藏项。
+    pub(crate) fn is_hidden_entry(_meta: &std::fs::Metadata, name: &std::ffi::OsStr) -> bool {
+        name.to_string_lossy().starts_with('.')
     }
 
     /// 文件系统身份（[`file_keys`]）：Unix 为 dev + ino，跟随符号链接；取不到时为 None。

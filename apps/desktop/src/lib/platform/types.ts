@@ -338,14 +338,23 @@ export interface Platform {
   openPath(path: string): Promise<OpenPathOutcome>;
   /** 在系统文件管理器中显示并选中文件或文件夹；校验同 `openPath` */
   revealPath(path: string): Promise<void>;
-  /** 右栏预览本机文件：校验同 `openPath`，只读，最多 1 MiB；二进制文件不返回内容（图片走 `attachmentImage`） */
+  /**
+   * 右栏预览本机文件：校验同 `openPath`，只读，最多 1 MiB；二进制文件不返回内容（图片走 `attachmentImage`），
+   * 文件夹返回 `{ kind: "directory" }`（改用 `previewDir`）
+   */
   previewFile(path: string): Promise<FilePreview>;
   /**
-   * 右栏按“打开后的样子”预览 Word / PowerPoint / Excel / PDF：读取整份文件字节（校验同 `openPath`，只接受
-   * docx / pptx / xlsx / xlsm / pdf，
-   * 最多 30 MiB，超过时报错，错误文案可直接显示）
+   * 右栏按“打开后的样子”预览：读取整份文件字节（校验同 `openPath`）。只接受 Word / PowerPoint / Excel / PDF
+   * （docx / pptx / xlsx / xlsm / pdf）与 GIF / ICO / AVIF 图片（最多 30 MiB），以及音频视频
+   * （mp3 / wav / ogg / oga / opus / m4a / aac / flac / mp4 / m4v / webm / mov / ogv，最多 64 MiB）；
+   * 超过时报错，错误文案可直接显示
    */
   previewFileBytes(path: string): Promise<ArrayBuffer>;
+  /**
+   * 右栏文件夹预览：列出直接子项（校验同 `openPath`，只读元数据），文件夹在前、按名称自然排序，
+   * 最多 2000 项（`truncated`）；隐藏 / 系统项带 `hidden`
+   */
+  previewDir(path: string): Promise<DirListing>;
   storageUsage(): Promise<Record<string, number>>;
   storageClean(category: string): Promise<void>;
   diagnosticsExport(options?: Record<string, unknown>): Promise<string>;
@@ -368,7 +377,30 @@ export interface Platform {
 /** `previewFile` 的结果 */
 export type FilePreview =
   | { kind: "text"; text: string; truncated: boolean; size: number }
-  | { kind: "binary"; size: number };
+  | { kind: "binary"; size: number }
+  | { kind: "directory" };
+
+/** `previewDir` 中的一项 */
+export interface DirEntry {
+  name: string;
+  /** 文件夹（指向文件夹的链接也算） */
+  dir: boolean;
+  /** 字节数；文件夹与取不到时为 null */
+  size: number | null;
+  /** 修改时间（Unix 毫秒）；取不到时为 null */
+  modifiedMs: number | null;
+  /** 隐藏或系统项（Windows 隐藏 / 系统属性；其他平台 `.` 开头） */
+  hidden: boolean;
+}
+
+/** `previewDir` 的结果 */
+export interface DirListing {
+  entries: DirEntry[];
+  /** 子项总数（扫描上限 20000，超过时为下限） */
+  total: number;
+  /** 只返回了一部分 */
+  truncated: boolean;
+}
 
 /** `openPath` 的结果：已打开，或因是可执行 / 脚本文件改为在文件夹中显示 */
 export type OpenPathOutcome = "opened" | "revealed";
@@ -454,6 +486,7 @@ export const COMMANDS = {
   revealPath: "reveal_path",
   previewFile: "preview_file",
   previewFileBytes: "preview_file_bytes",
+  previewDir: "preview_dir",
   storageUsage: "storage_usage",
   storageClean: "storage_clean",
   diagnosticsExport: "diagnostics_export",

@@ -357,6 +357,12 @@ const MOCK_RISKY = new RegExp(
 );
 
 /** mock 的路径校验：只认绝对路径（含 `~/`），拒绝空路径、超长与含控制字符的路径、网址与网络路径（与薄壳的错误文案一致） */
+/** mock 的文件夹判断：以分隔符结尾，或最后一段没有扩展名 */
+const MOCK_DIR = /(?:[\\/]|(?:^|[\\/])[^\\/.]+)$/;
+/** 与薄壳 preview.rs 的 DOCUMENT / IMAGE_BYTES / MEDIA 扩展名一致 */
+const MOCK_PREVIEW_BYTES =
+  /\.(docx|pptx|xlsx|xlsm|pdf|gif|ico|avif|mp3|wav|ogg|oga|opus|m4a|aac|flac|mp4|m4v|webm|mov|ogv)$/i;
+
 function mockAbsolutePath(path: string): string {
   // biome-ignore lint/suspicious/noControlCharactersInRegex: 与薄壳一致，拒绝控制字符
   if (!path || [...path].length > 4096 || /[\u0000-\u001f\u007f-\u009f]/.test(path)) {
@@ -1134,9 +1140,11 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
     revealPath: async (path) => {
       console.info("[mock] 在文件夹中显示", mockAbsolutePath(path));
     },
-    // 浏览器预览读不到本机文件：Markdown、网页返回示例内容，其余按扩展名给出示例代码
+    // 浏览器预览读不到本机文件：Markdown、网页返回示例内容，其余按扩展名给出示例代码；
+    // 以分隔符结尾或最后一段没有扩展名的按文件夹处理
     previewFile: async (path) => {
       const absolute = mockAbsolutePath(path);
+      if (MOCK_DIR.test(absolute)) return { kind: "directory" };
       const text = /\.(md|markdown)$/i.test(absolute)
         ? "# 示例文档\n\nmock 平台返回的**假内容**，用于预览 `Markdown` 渲染。\n"
         : /\.html?$/i.test(absolute)
@@ -1144,12 +1152,23 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
           : `// ${absolute}\nexport const answer = 42;\n`;
       return { kind: "text", text, truncated: false, size: text.length };
     },
-    // 与薄壳一致：只接受 docx / pptx / xlsx / xlsm / pdf；浏览器预览读不到本机文件的字节
+    // 与薄壳一致：只接受文档、音频视频与 GIF / ICO / AVIF；浏览器预览读不到本机文件的字节
     previewFileBytes: async (path) => {
       const absolute = mockAbsolutePath(path);
-      if (!/\.(docx|pptx|xlsx|xlsm|pdf)$/i.test(absolute))
-        throw new Error("该类型的文件不能按文档预览");
+      if (!MOCK_PREVIEW_BYTES.test(absolute)) throw new Error("该类型的文件不能按文档预览");
       return notAvailable("读取本机文档");
+    },
+    // 浏览器预览读不到本机文件夹：返回固定的示例列表（文件夹在前）
+    previewDir: async (path) => {
+      mockAbsolutePath(path);
+      const now = Date.now();
+      const entries = [
+        { name: "src", dir: true, size: null, modifiedMs: now - 3_600_000, hidden: false },
+        { name: ".git", dir: true, size: null, modifiedMs: now - 60_000, hidden: true },
+        { name: "README.md", dir: false, size: 2048, modifiedMs: now - 86_400_000, hidden: false },
+        { name: "报告.docx", dir: false, size: 524_288, modifiedMs: now, hidden: false },
+      ];
+      return { entries, total: entries.length, truncated: false };
     },
     storageUsage: async () => ({ sessions: 0, logs: 0, cache: 0 }),
     storageClean: async () => {},

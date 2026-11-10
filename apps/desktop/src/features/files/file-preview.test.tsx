@@ -235,4 +235,157 @@ describe("右栏文件预览：显示打开后的样子", () => {
     act(() => showPreview("/w/main.ts"));
     expect(await screen.findByText(/answer = 42/)).toBeTruthy();
   });
+
+  it("JSON 格式化显示（数字原样），可切换到源码再切回", async () => {
+    const { previewFile } = setup();
+    const raw = '{"a":1,"big":12345678901234567890}';
+    previewFile.mockResolvedValue({ kind: "text", text: raw, truncated: false, size: raw.length });
+    render(<FilePreview />);
+    act(() => showPreview("/w/data.json"));
+    const pretty = '{\n  "a": 1,\n  "big": 12345678901234567890\n}';
+    await waitFor(() => expect(document.querySelector("pre")?.textContent).toBe(pretty));
+    const toggle = screen.getByRole("button", { name: t.showSource });
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(toggle);
+    expect(document.querySelector("pre")?.textContent).toBe(raw);
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(toggle);
+    expect(document.querySelector("pre")?.textContent).toBe(pretty);
+  });
+
+  it("Markdown 渲染，可切换到源码；普通代码文件没有切换按钮", async () => {
+    const { previewFile } = setup();
+    previewFile.mockResolvedValueOnce({
+      kind: "text",
+      text: "# 标题\n\n正文",
+      truncated: false,
+      size: 10,
+    });
+    const view = render(<FilePreview />);
+    act(() => showPreview("/w/README.md"));
+    expect(await screen.findByRole("heading", { name: "标题" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: t.showSource }));
+    expect(document.querySelector("pre")?.textContent).toBe("# 标题\n\n正文");
+    expect(screen.queryByRole("heading", { name: "标题" })).toBeNull();
+    view.unmount();
+
+    render(<FilePreview />);
+    act(() => showPreview("/w/main.ts"));
+    await screen.findByText(/answer = 42/);
+    expect(screen.queryByRole("button", { name: t.showSource })).toBeNull();
+  });
+
+  it("音频、视频与 GIF 读取整份字节，用 blob URL 播放 / 显示，关闭时释放", async () => {
+    const { previewFileBytes, previewFile } = setup();
+    const create = vi.fn((_blob: Blob) => "blob:media");
+    const revoke = vi.fn();
+    Object.assign(URL, { createObjectURL: create, revokeObjectURL: revoke });
+    render(<FilePreview />);
+    act(() => showPreview("C:\\w\\歌.mp3"));
+    await waitFor(() => expect(document.querySelector("audio")).not.toBeNull());
+    const audio = document.querySelector("audio") as HTMLAudioElement;
+    expect(audio.getAttribute("aria-label")).toBe("歌.mp3");
+    expect(audio.getAttribute("src")).toBe("blob:media");
+    expect(previewFileBytes).toHaveBeenCalledWith("C:\\w\\歌.mp3");
+    expect(create.mock.calls[0]?.[0]?.type).toBe("audio/mpeg");
+
+    act(() => showPreview("C:\\w\\clip.webm"));
+    await waitFor(() =>
+      expect(document.querySelector("video")?.getAttribute("aria-label")).toBe("clip.webm"),
+    );
+    expect(revoke).toHaveBeenCalledWith("blob:media");
+
+    act(() => showPreview("C:\\w\\动图.gif"));
+    const img = (await screen.findByRole("img", { name: "动图.gif" })) as HTMLImageElement;
+    expect(img.getAttribute("src")).toBe("blob:media");
+    expect(previewFile).not.toHaveBeenCalled();
+
+    // 解码失败：提示用默认程序打开
+    fireEvent.error(img);
+    expect((await screen.findByRole("alert")).textContent).toBe(t.imageFailed);
+  });
+
+  it("文件夹列出文件：文件夹在前，点文件夹进入、点文件预览，返回回到上一个位置", async () => {
+    const { previewFile } = setup();
+    const platform = createMockPlatform();
+    const previewDir = vi.fn(async (path: string) => ({
+      entries:
+        path === "D:\\w"
+          ? [
+              { name: "src", dir: true, size: null, modifiedMs: null, hidden: false },
+              { name: ".git", dir: true, size: null, modifiedMs: null, hidden: true },
+              { name: "a.ts", dir: false, size: 1536, modifiedMs: null, hidden: false },
+            ]
+          : [],
+      total: path === "D:\\w" ? 3 : 0,
+      truncated: false,
+    }));
+    previewFile.mockImplementation(async (path: string) =>
+      /\.ts$/.test(path)
+        ? { kind: "text", text: "export {}", truncated: false, size: 9 }
+        : { kind: "directory" },
+    );
+    setPlatformForTesting({ ...platform, previewFile, previewDir });
+    withViewport();
+    render(<FilePreview />);
+    act(() => showPreview("D:\\w"));
+    const list = await screen.findByRole("list", { name: t.folder.list });
+    // 隐藏项默认不显示
+    expect(
+      within(list)
+        .getAllByRole("button")
+        .map((b) => b.textContent),
+    ).toEqual(["src", "a.ts1.5 KB"]);
+    fireEvent.click(screen.getByRole("button", { name: t.folder.showHidden.replace("{n}", "1") }));
+    expect(within(list).getAllByRole("button")).toHaveLength(3);
+
+    // 进入子文件夹：空文件夹提示；面包屑可回到上一级
+    fireEvent.click(within(list).getByRole("button", { name: /^src/ }));
+    expect(await screen.findByText(t.folder.empty)).toBeTruthy();
+    expect(previewDir).toHaveBeenLastCalledWith("D:\\w\\src");
+    expect(usePreviewStore.getState().path).toBe("D:\\w\\src");
+    const crumbs = screen.getByRole("navigation", { name: t.folder.path });
+    expect(within(crumbs).getByText("src").getAttribute("aria-current")).toBe("location");
+    fireEvent.click(within(crumbs).getByRole("button", { name: "w" }));
+    await screen.findByRole("list", { name: t.folder.list });
+
+    // 点文件在右栏预览，返回回到文件夹
+    fireEvent.click(screen.getByRole("button", { name: /^a\.ts/ }));
+    expect(await screen.findByText("export {}")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: t.back }));
+    await waitFor(() => expect(usePreviewStore.getState().path).toBe("D:\\w"));
+    await screen.findByRole("list", { name: t.folder.list });
+    // 上一级：D:\ 是根目录，再往上不可用
+    fireEvent.click(screen.getByRole("button", { name: t.folder.up }));
+    await waitFor(() => expect(usePreviewStore.getState().path).toBe("D:\\"));
+    await waitFor(() =>
+      expect(
+        (screen.getByRole("button", { name: t.folder.up }) as HTMLButtonElement).disabled,
+      ).toBe(true),
+    );
+  });
+
+  it("文件夹超过显示上限时提示", async () => {
+    const { previewFile } = setup();
+    previewFile.mockResolvedValue({ kind: "directory" });
+    const entries = Array.from({ length: 3 }, (_, i) => ({
+      name: `f${i}`,
+      dir: false,
+      size: 0,
+      modifiedMs: null,
+      hidden: false,
+    }));
+    setPlatformForTesting({
+      ...createMockPlatform(),
+      previewFile,
+      previewDir: async () => ({ entries, total: 2500, truncated: true }),
+    });
+    render(<FilePreview />);
+    act(() => showPreview("/w/big"));
+    expect(
+      await screen.findByText(
+        t.folder.truncated.replace("{shown}", "3").replace("{total}", "2500"),
+      ),
+    ).toBeTruthy();
+  });
 });

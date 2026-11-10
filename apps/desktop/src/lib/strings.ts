@@ -62,6 +62,39 @@ export const strings = {
     sheetEmpty: "空工作表",
     /** 工作簿里没有可显示的工作表（全部隐藏） */
     noSheets: "没有可显示的工作表",
+    /** 标题栏：回到预览里上一个位置 */
+    back: "返回",
+    /** 网页 / Markdown / JSON / SVG：切换源码与渲染结果 */
+    showSource: "显示源码",
+    showRendered: "显示预览",
+    /** 音频 / 视频播放失败（格式或编码不受支持） */
+    mediaFailed: "无法播放此文件，可用默认程序打开",
+    /** 图片（GIF / ICO / AVIF）显示失败 */
+    imageFailed: "无法显示此图片，可用默认程序打开",
+    /** 文件夹预览 */
+    folder: {
+      /** 文件列表的可访问名称 */
+      list: "文件夹内容",
+      /** 面包屑导航的可访问名称 */
+      path: "位置",
+      up: "上一级",
+      /** 列标题 */
+      name: "名称",
+      size: "大小",
+      modified: "修改时间",
+      empty: "空文件夹",
+      /** 只有隐藏项 */
+      onlyHidden: "只有隐藏的项目",
+      /** {n}：隐藏项个数 */
+      showHidden: "显示隐藏的项目（{n}）",
+      hideHidden: "不显示隐藏的项目",
+      /** {shown} / {total}：超过显示上限 */
+      truncated: "仅显示前 {shown} 项（共 {total} 项）",
+      /** 扫描到上限仍未读完 */
+      truncatedMore: "仅显示前 {shown} 项（超过 {total} 项）",
+      /** {n}：项数 */
+      count: "{n} 项",
+    },
   },
   drawerTabs: {
     terminal: "终端",

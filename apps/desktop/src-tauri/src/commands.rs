@@ -84,12 +84,21 @@ pub(crate) fn preview_file(path: String) -> Result<crate::preview::Preview, Stri
     crate::preview::read_preview(&checked.path)
 }
 
-/// 右栏按“打开后的样子”预览 Word / PowerPoint / PDF（附录 B `preview_file_bytes`）：校验同 `open_path`，
-/// 只读，只接受 docx / pptx / pdf，最多 30 MiB；以原始字节返回（前端得到 ArrayBuffer，不走 JSON / base64）。
+/// 右栏按“打开后的样子”预览 Word / PowerPoint / Excel / PDF、音频视频与 GIF / ICO / AVIF 图片
+/// （附录 B `preview_file_bytes`）：校验同 `open_path`，只读，只接受这些扩展名，文档与图片最多 30 MiB、
+/// 音频视频最多 64 MiB；以原始字节返回（前端得到 ArrayBuffer，不走 JSON / base64）。
 #[tauri::command(async)]
 pub(crate) fn preview_file_bytes(path: String) -> Result<tauri::ipc::Response, String> {
     let checked = crate::open_path::check_path(&path)?;
     crate::preview::read_document(&checked.path).map(tauri::ipc::Response::new)
+}
+
+/// 右栏文件夹预览（附录 B `preview_dir`）：校验同 `open_path`，只读目录项元数据，列出直接子项
+/// （文件夹在前、按名称排序，最多 2000 项），隐藏 / 系统项带 `hidden` 标记由前端决定是否显示。
+#[tauri::command(async)]
+pub(crate) fn preview_dir(path: String) -> Result<crate::preview::DirListing, String> {
+    let checked = crate::open_path::check_path(&path)?;
+    crate::preview::list_dir(&checked.path, crate::platform::is_hidden_entry)
 }
 
 /// 原子设置主窗口外框（物理像素），侧栏开关时窗口边缘跟随侧栏逐帧伸缩用。

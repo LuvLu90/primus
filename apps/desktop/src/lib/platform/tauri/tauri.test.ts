@@ -149,6 +149,13 @@ describe("Tauri 平台实现", () => {
     expect(invoke).toHaveBeenLastCalledWith("preview_file_bytes", { path: "C:\\a.docx" });
   });
 
+  it("文件夹预览按附录 B 调 preview_dir", async () => {
+    const listing = { entries: [], total: 0, truncated: false };
+    invoke.mockResolvedValueOnce(listing);
+    await expect(createTauriPlatform().previewDir("C:\\w")).resolves.toBe(listing);
+    expect(invoke).toHaveBeenLastCalledWith("preview_dir", { path: "C:\\w" });
+  });
+
   it("语音、附件图片与分支命令按附录 B 传参，语音事件经 Channel 推送", async () => {
     const p = createTauriPlatform();
     await p.attachmentImage("C:\\a.png", 2048);

@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-// 回复里文件引用胶囊的操作：点击文件在右栏预览（文件夹用系统文件管理器打开）；右键（或菜单键 / Shift+F10）弹出菜单：
+// 回复里文件引用胶囊的操作：点击在右栏预览（文件夹列出其中的文件）；右键（或菜单键 / Shift+F10）弹出菜单：
 // 预览、用默认程序打开、在文件夹中显示、复制路径。相对路径按会话工作区解析（FileRefBase），失败时在胶囊下方短暂提示。
 import {
   createContext,
@@ -135,12 +135,8 @@ export function useFileRefActions(): {
       }, fail(el));
   };
 
-  /** 文件在右栏预览；文件夹没有内容可预览，交给系统打开 */
+  /** 文件与文件夹都在右栏预览（文件夹列出其中的文件） */
   const preview = (el: HTMLElement) => {
-    if (el.dataset.dir !== undefined) {
-      open(el);
-      return;
-    }
     const path = resolve(el);
     if (!path) return;
     setNotice(null);
@@ -212,13 +208,11 @@ export function useFileRefActions(): {
                 menu.el.focus();
               }}
             >
-              {menu.el.dataset.dir === undefined && (
-                <GlassPopoverItem
-                  icon={<Icon name="sidebar-right" />}
-                  label={t.preview}
-                  onSelect={() => preview(menu.el)}
-                />
-              )}
+              <GlassPopoverItem
+                icon={<Icon name="sidebar-right" />}
+                label={t.preview}
+                onSelect={() => preview(menu.el)}
+              />
               <GlassPopoverItem
                 icon={<Icon name="external-link" />}
                 label={t.open}
