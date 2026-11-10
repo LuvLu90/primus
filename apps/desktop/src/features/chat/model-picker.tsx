@@ -183,10 +183,14 @@ export function ModelPicker({
       : current
         ? modelIdOf(current)
         : t.none;
-  // 按钮上显示实际生效的档位：支持思考的模型按它支持的档位夹取，不支持思考的模型显示“关闭”
+  // 按钮上显示实际生效的档位：支持思考的模型按它支持的档位夹取，不支持思考的模型按“off”处理
   const shownLevel =
     empty || !thinkingLevel ? undefined : showThinking ? clampLevel(thinkingLevel, levels) : "off";
-  const level = shownLevel ? (t.levels as Record<string, string>)[shownLevel] : undefined;
+  // 没开思考（off）时按钮上不显示“关闭”二字，只显示模型名
+  const level =
+    shownLevel && shownLevel !== "off"
+      ? (t.levels as Record<string, string>)[shownLevel]
+      : undefined;
   return (
     <GlassPopover onOpenChange={onOpenChange}>
       <GlassPopoverTrigger asChild disabled={disabled}>

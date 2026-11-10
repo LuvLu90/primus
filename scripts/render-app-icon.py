@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""由 assets/logo.png 生成桌面应用的全部图标：深色满版圆角底 + 白色标志，图形基本铺满画布。
+"""由 assets/logo.png 生成桌面应用的全部图标：白色满版圆角底 + 黑色标志，图形铺满画布。
 
-- 48 px 及以上：白色线稿标志占画布约 82%（参考 Windows 上 ChatGPT / Codex 的满版图标），
+- 48 px 及以上：黑色线稿标志占画布约 94%（铺满整个图标），
   48 / 64 px 先加粗线条再缩小，细线不至于糊掉。
-- 20–40 px：白色实心轮廓 + 加粗的深色内部线条（线稿在这个尺寸只剩灰点）。
+- 20–40 px：黑色实心轮廓 + 加粗的白色内部线条（线稿在这个尺寸只剩灰点）。
 - 16 px：按像素对齐画的简化立方体（六边形 + Y 形棱线），任务栏 / 标题栏小图标也清楚。
-深色底在浅色与深色桌面、任务栏上都有足够对比（以前的透明底黑线稿在深色桌面上看不见，白底小方块又显得很小）。
+白底满版（不留透明边），黑色标志放到最大，在浅色与深色桌面、任务栏上都清楚（以前的透明底黑线稿在深色桌面上看不见）。
 
 输出：src-tauri/icons 下的 icon.ico（编进 Primus.exe：窗口 / 任务栏 / 桌面快捷方式 / 开始菜单 / 安装程序）、
 各尺寸 PNG、icon.icns、app-icon.png，以及 src/app/icon.png（浏览器预览的标签页图标）。
@@ -18,8 +18,8 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter
 
 ROOT = Path(__file__).resolve().parent.parent
 ICONS = ROOT / "apps/desktop/src-tauri/icons"
-BG = (17, 17, 19, 255)
-FG = (255, 255, 255, 255)
+BG = (255, 255, 255, 255)
+FG = (0, 0, 0, 255)
 RADIUS = 0.225  # 圆角半径占边长的比例（与 Windows 11 应用图标的圆角接近）
 ICO_SIZES = [16, 20, 24, 32, 40, 48, 64, 128, 256]
 
@@ -61,20 +61,20 @@ def odd(n: float) -> int:
 
 
 def line_art(mark: Image.Image, n: int) -> Image.Image:
-    """48 px 及以上：白色线稿"""
+    """48 px 及以上：黑色线稿"""
     ss = 4
     img, _ = base(n * ss)
-    m = int(n * ss * 0.82)
+    m = int(n * ss * 0.94)
     src = mark.filter(ImageFilter.MaxFilter(odd(330 / n))) if n < 128 else mark
     paste_glyph(img, src.resize((m, m), Image.LANCZOS))
     return img.resize((n, n), Image.LANCZOS)
 
 
 def solid(mark: Image.Image, silhouette: Image.Image, n: int) -> Image.Image:
-    """20–40 px：白色实心轮廓，内部线条加粗后挖成深色"""
+    """20–40 px：黑色实心轮廓，内部线条加粗后挖成白色"""
     ss = 8
     img, _ = base(n * ss)
-    m = int(n * 0.86) * ss
+    m = int(n * 0.94) * ss
     sil = silhouette.resize((m, m), Image.LANCZOS)
     strokes = mark.filter(ImageFilter.MaxFilter(odd(740 / n))).resize((m, m), Image.LANCZOS)
     inner = silhouette.filter(ImageFilter.MinFilter(odd(mark.width * 0.07)))
@@ -88,7 +88,7 @@ def cube(n: int) -> Image.Image:
     ss = 16
     size = n * ss
     img, d = base(size)
-    cx, cy, r = size / 2 - ss / 2, size / 2, size * 0.45
+    cx, cy, r = size / 2 - ss / 2, size / 2, size * 0.48
     pts = [
         (cx + r * math.cos(math.radians(a)), cy + r * math.sin(math.radians(a)))
         for a in (-90, -30, 30, 90, 150, 210)
