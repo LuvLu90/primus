@@ -10,7 +10,8 @@
   1. 虚拟机未关机则直接断电（当前状态反正会被丢弃），还原检查点（默认 clean）
   2. 启动虚拟机，等待检测信号（Heartbeat）正常，再等待 PowerShell Direct 可连接
   3. 把 MSI（可多个，例如升级测试的新旧两个版本）、scripts/msi-smoke.ps1、scripts/smoke-core-rpc.mjs
-     （及其依赖的 scripts/core-dist.mjs、scripts/install-acl-fixtures.ps1）复制到来宾的 -GuestDir（默认 C:\PrimusTest）：
+     （及其依赖的 scripts/core-dist.mjs、scripts/install-acl-fixtures.ps1、scripts/update-service-checks.ps1），
+     以及更新服务冒烟 scripts/update-service-smoke.ps1 复制到来宾的 -GuestDir（默认 C:\PrimusTest）：
        -CopyMethod PowerShellDirect（默认）：Copy-Item -ToSession，不需要网络，也不需要来宾服务接口
        -CopyMethod GuestServices：Copy-VMFile（需在虚拟机设置中启用「来宾服务接口」）
   4. -RunSmoke 时在来宾内以 PowerShell 7 运行 msi-smoke.ps1（干净镜像通常没有 PowerShell 7：可用
@@ -107,7 +108,7 @@ if ($Msi.Count -gt 0) {
   $copyItems += $Msi | ForEach-Object { @{ Source = $_; Target = "$GuestDir\msi\$(Split-Path -Leaf $_)" } }
   $copyItems += @{ Source = $SmokeScript; Target = "$GuestDir\scripts\msi-smoke.ps1" }
   # MSI 冒烟的 ACL 夹具与 Core RPC 脚本依赖；缺少任一项都会直接失败
-  foreach ($name in @('smoke-core-rpc.mjs', 'core-dist.mjs', 'install-acl-fixtures.ps1')) {
+  foreach ($name in @('smoke-core-rpc.mjs', 'core-dist.mjs', 'install-acl-fixtures.ps1', 'update-service-checks.ps1', 'update-service-smoke.ps1')) {
     $path = Join-Path (Split-Path -Parent $SmokeScript) $name
     if (-not (Test-Path -LiteralPath $path)) { throw "未找到 $path（msi-smoke.ps1 冒烟需要它）。" }
     $copyItems += @{ Source = $path; Target = "$GuestDir\scripts\$name" }

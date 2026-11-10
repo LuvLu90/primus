@@ -12,7 +12,6 @@ target/
 *.msi.sha256
 # WebView2 引导程序由 scripts/build-msi.mjs 下载并校验微软签名，不入库
 apps/desktop/src-tauri/windows/webview2/*.exe
-*-setup.exe
 
 # dev data (第 4.1 节：开发模式数据目录)
 .dev-data/

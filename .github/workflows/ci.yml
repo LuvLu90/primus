@@ -1,6 +1,6 @@
 # 乾元 Primus CI（技术方案第 22 章）
 # - 每次推送 dev / main 与每个指向 main 的 PR 都在 Windows 上完整编译：x64（windows-2025）与 ARM64（windows-11-arm）
-#   两个架构都构建 MSI 与 NSIS 安装程序并做静默安装 / 卸载冒烟，arm64 的问题在 PR 阶段暴露，而不是发布时
+#   两个架构都构建 MSI 并做静默安装 / 卸载与更新服务静默升级冒烟，arm64 的问题在 PR 阶段暴露，而不是发布时
 # - 工具链版本全部来自仓库内的锁定文件：.node-version、packageManager（pnpm）、rust-toolchain.toml、
 #   以及下方 env 中的 WIX_VERSION；scripts/check-versions.mjs 保证它们与技术方案第 2.4 节一致
 name: CI
@@ -229,22 +229,18 @@ jobs:
       - name: 平台边界检查
         run: pnpm check:tauri-imports
 
-      # 第 3.3.1 节：tauri build --no-bundle 编译 Primus.exe → wix build（WiX 7，-culture zh-CN，
-      # bindpath app/core/runtime）生成 MSI；签名用上一步的演练证书与密钥（PRIMUS_REQUIRE_SIGNING=1，缺一不可）
-      # 第 3.3.4 节签名流程演练：临时生成一次性自签名代码签名证书与 updater 密钥（只在本运行器受信任），
-      # 让下一步完整执行 签 Primus.exe → 签 MSI → tauri signer 生成并校验 .sig → signtool verify /pa 三个文件
-      - name: 准备签名演练（一次性证书与 updater 密钥）
+      # 第 3.3.1 节：tauri build --no-bundle 编译 Primus.exe、cargo build 编译更新服务 PrimusUpdate.exe → wix build
+      # （WiX 7，-culture zh-CN，bindpath app/core/runtime）生成 MSI。不做 Authenticode 代码签名（ADR 0007）；
+      # updater 签名用一次性密钥（PRIMUS_REQUIRE_UPDATER_SIGNING=1）：tauri signer 生成并校验 .sig，
+      # 两个 exe 内置同一把公钥，后面的更新服务冒烟才能真的验签安装
+      - name: 生成一次性 updater 签名密钥
         shell: pwsh
-        run: ./scripts/ci-signing-drill.ps1
+        run: ./scripts/ci-updater-keys.ps1
 
       - name: 构建 MSI（tauri build --no-bundle → wix build -arch x64）
         run: node scripts/build-msi.mjs --arch x64
 
-      # 第 3.4 节：打包上一步编译的 Primus.exe（tauri bundle，不重新编译），简体中文、按机器安装
-      - name: 构建 NSIS 安装程序（tauri bundle --bundles nsis）
-        run: node scripts/build-nsis.mjs --arch x64
-
-      # 文件名与版本、< 120MB（第 16.5 节）、.sha256、MSI 平台（x64;2052）、Primus.exe 的 PE 架构；写入 PRIMUS_MSI / PRIMUS_NSIS
+      # 文件名与版本、< 120MB（第 16.5 节）、.sha256、MSI 平台（x64;2052）、ServiceInstall、两个 exe 的 PE 架构；写入 PRIMUS_MSI
       - name: 检查安装包
         shell: pwsh
         run: ./scripts/check-installers.ps1 -Arch x64
@@ -257,8 +253,6 @@ jobs:
             out/Primus_*_x64_zh-CN.msi
             out/Primus_*_x64_zh-CN.msi.sha256
             out/Primus_*_x64_zh-CN.msi.sig
-            out/Primus_*_x64-setup.exe
-            out/Primus_*_x64-setup.exe.sha256
           retention-days: 7
           if-no-files-found: error
 
@@ -290,12 +284,25 @@ jobs:
         timeout-minutes: 15
         run: ./scripts/msi-smoke.ps1 -Msi $env:PRIMUS_MSI
 
-      # NSIS 安装程序同样验收：/S 静默安装 → 布局与 Core 文件哈希、卸载信息、快捷方式 → data 的 ACL（hooks.nsh）
-      # 与中完整性级别写入 → 安装后的 node.exe 跑 RPC 冒烟 → uninstall.exe /S 卸载，data 保留
-      - name: NSIS 静默安装 / 卸载冒烟
+      # ADR 0007：同一批二进制换更高的版本号再出两个 MSI（同一把 updater 密钥签 .sig），以中完整性级别经命名管道请求
+      # 更新服务：拒绝错签与降级、程序仍在运行时放弃、等程序退出后静默升级、未运行时直接升级，最后卸载清理
+      - name: 构建升级测试 MSI
         shell: pwsh
-        timeout-minutes: 15
-        run: ./scripts/nsis-smoke.ps1 -Exe $env:PRIMUS_NSIS
+        run: |
+          $v = (Get-Content apps/desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version -replace '-.*$', ''
+          $p = $v.Split('.'); $dir = Join-Path $env:RUNNER_TEMP 'upgrade-test'
+          $v1 = "$($p[0]).$($p[1]).$([int]$p[2] + 1)"; $v2 = "$($p[0]).$($p[1]).$([int]$p[2] + 2)"
+          node scripts/build-upgrade-test-msi.mjs --arch x64 --version $v1 --out-dir $dir
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/build-upgrade-test-msi.mjs --arch x64 --version $v2 --out-dir $dir
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "PRIMUS_UPGRADE1=$(Join-Path $dir "Primus_${v1}_x64_zh-CN.msi")" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "PRIMUS_UPGRADE2=$(Join-Path $dir "Primus_${v2}_x64_zh-CN.msi")" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: 更新服务静默升级冒烟
+        shell: pwsh
+        timeout-minutes: 20
+        run: ./scripts/update-service-smoke.ps1 -Msi $env:PRIMUS_MSI -Upgrade1 $env:PRIMUS_UPGRADE1 -Upgrade2 $env:PRIMUS_UPGRADE2
 
       # 端到端冒烟（技术方案第 18 章）：tauri-driver 作 WebDriver 服务端，转接与 WebView2 运行时同版本的 msedgedriver
       - name: 安装 tauri-driver ${{ env.TAURI_DRIVER_VERSION }}
@@ -384,19 +391,14 @@ jobs:
       - name: 构建第一方扩展（primus-bundle.js）
         run: pnpm build:extensions
 
-      # 第 3.3.4 节签名流程演练：临时生成一次性自签名代码签名证书与 updater 密钥（只在本运行器受信任），
-      # 让下一步完整执行 签 Primus.exe → 签 MSI → tauri signer 生成并校验 .sig → signtool verify /pa 三个文件
-      - name: 准备签名演练（一次性证书与 updater 密钥）
+      - name: 生成一次性 updater 签名密钥
         shell: pwsh
-        run: ./scripts/ci-signing-drill.ps1
+        run: ./scripts/ci-updater-keys.ps1
 
       - name: 构建 MSI（tauri build --no-bundle → wix build -arch arm64）
         run: node scripts/build-msi.mjs --arch arm64
 
-      - name: 构建 NSIS 安装程序（tauri bundle --bundles nsis）
-        run: node scripts/build-nsis.mjs --arch arm64
-
-      - name: 检查安装包（MSI 平台 Arm64;2052、Primus.exe 为 ARM64）
+      - name: 检查安装包（MSI 平台 Arm64;2052、Primus.exe 与 PrimusUpdate.exe 为 ARM64）
         shell: pwsh
         run: ./scripts/check-installers.ps1 -Arch arm64
 
@@ -408,8 +410,6 @@ jobs:
             out/Primus_*_arm64_zh-CN.msi
             out/Primus_*_arm64_zh-CN.msi.sha256
             out/Primus_*_arm64_zh-CN.msi.sig
-            out/Primus_*_arm64-setup.exe
-            out/Primus_*_arm64-setup.exe.sha256
           retention-days: 7
           if-no-files-found: error
 
@@ -435,10 +435,23 @@ jobs:
         timeout-minutes: 15
         run: ./scripts/msi-smoke.ps1 -Msi $env:PRIMUS_MSI
 
-      - name: NSIS 静默安装 / 卸载冒烟
+      - name: 构建升级测试 MSI
         shell: pwsh
-        timeout-minutes: 15
-        run: ./scripts/nsis-smoke.ps1 -Exe $env:PRIMUS_NSIS
+        run: |
+          $v = (Get-Content apps/desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version -replace '-.*$', ''
+          $p = $v.Split('.'); $dir = Join-Path $env:RUNNER_TEMP 'upgrade-test'
+          $v1 = "$($p[0]).$($p[1]).$([int]$p[2] + 1)"; $v2 = "$($p[0]).$($p[1]).$([int]$p[2] + 2)"
+          node scripts/build-upgrade-test-msi.mjs --arch arm64 --version $v1 --out-dir $dir
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/build-upgrade-test-msi.mjs --arch arm64 --version $v2 --out-dir $dir
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "PRIMUS_UPGRADE1=$(Join-Path $dir "Primus_${v1}_arm64_zh-CN.msi")" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "PRIMUS_UPGRADE2=$(Join-Path $dir "Primus_${v2}_arm64_zh-CN.msi")" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: 更新服务静默升级冒烟
+        shell: pwsh
+        timeout-minutes: 20
+        run: ./scripts/update-service-smoke.ps1 -Msi $env:PRIMUS_MSI -Upgrade1 $env:PRIMUS_UPGRADE1 -Upgrade2 $env:PRIMUS_UPGRADE2
 
   # 安装矩阵（开发计划第 4 周 P0 安装测试）：两个架构 × 两个位置（Program Files、隔离非系统卷，优先 D），
   # 用上面两个作业刚构建的 MSI。每格：静默安装与布局检查（msi-smoke.ps1）→ 附加检查（install-matrix/matrix-checks.ps1：

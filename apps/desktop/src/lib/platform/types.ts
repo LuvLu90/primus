@@ -189,7 +189,6 @@ export interface UpdateStatus {
   currentVersion: string;
   /** 是否可以自动更新：发布构建编译进了更新公钥、Windows、架构受支持 */
   available: boolean;
-  installKind: "msi" | "nsis";
   settings: UpdateSettings;
   phase: UpdatePhase;
   /** 下载进度（字节）；不在下载时为 null */

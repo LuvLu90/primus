@@ -15,7 +15,6 @@ const tu = strings.settings.update;
 const base: UpdateStatus = {
   currentVersion: "0.0.6",
   available: true,
-  installKind: "msi",
   settings: { autoUpdate: true, channel: "stable" },
   phase: "idle",
   progress: null,

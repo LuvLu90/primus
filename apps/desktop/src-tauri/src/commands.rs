@@ -18,7 +18,9 @@ use crate::rpc_bridge::{BatchSink, BridgeError, CoreBatch};
 use crate::session_index::{SessionIndex, SessionPage, SessionSummary};
 use crate::sessions::{AppSessions, SessionError, Sessions};
 use crate::supervisor::Supervisor;
-use crate::updater::{LaunchOutcome, UpdateChannel, UpdateError, UpdateStatus, Updater};
+use crate::updater::{
+    InstallTrigger, LaunchOutcome, UpdateChannel, UpdateError, UpdateStatus, Updater,
+};
 use crate::workspaces::{TrustDetails, WorkspaceInfo, Workspaces};
 
 /// 可以打开的系统设置页（语音输入被系统隐私设置拒绝时，引导用户去开麦克风 / 联机语音识别）。只认这几个完整值。
@@ -596,8 +598,9 @@ pub(crate) fn update_settings_set(
 
 /// 立即重启并安装已下载的更新。有正在运行的 Agent 时返回 `busy`，前端确认后带 `force` 再调。
 /// 忙碌检查与“安装中”标记在会话表的同一次加锁内完成，之后新的 prompt 与会话拉起被拒绝，直到安装取消或失败。
-/// 安装包校验通过后经 UAC 拉起安装器；安装器已运行才结束全部 Core 并退出。用户取消 UAC 返回 `cancelled`、
-/// 拉起失败返回 `failed`：两种情况下 Core 都没有被停掉，会话照常可用，待装包保留（下次启动再装）。
+/// 安装包校验通过后交给更新服务（静默安装、装完重新打开），服务不可用时经 UAC 拉起安装器；服务接手或安装器已运行
+/// 才结束全部 Core 并退出。用户取消 UAC 返回 `cancelled`、失败返回 `failed` / `invalid`：这些情况下 Core 都没有被停掉，
+/// 会话照常可用，待装包（未被判为无效时）保留，下次启动或退出时再装。
 #[tauri::command(async)]
 pub(crate) fn update_install(
     app: tauri::AppHandle,
@@ -611,7 +614,7 @@ pub(crate) fn update_install(
         .ok_or_else(|| UpdateError::new("busy", "有正在运行的 Agent，更新会停止它们"))?;
     let package = updater.prepare_install()?;
     updater.set_installing(true);
-    match crate::updater::launch(&updater, package) {
+    match crate::updater::launch(&updater, package, InstallTrigger::RestartNow) {
         Ok(LaunchOutcome::Started) => {
             // 安装器会替换 resources 下的 node.exe 与 Core 文件：结束全部 Core（含工具子进程）后退出
             supervisor.shutdown();
@@ -619,7 +622,7 @@ pub(crate) fn update_install(
             std::mem::forget(hold);
             Ok(())
         }
-        Ok(LaunchOutcome::Cancelled) => {
+        Ok(LaunchOutcome::Cancelled | LaunchOutcome::Deferred) => {
             drop(hold);
             updater.set_installing(false);
             Err(UpdateError::new(

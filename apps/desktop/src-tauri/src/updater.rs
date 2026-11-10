@@ -6,13 +6,16 @@
 //!   没有公钥的构建（开发、PR）或非 Windows 平台整体禁用，状态报 `available: false`。
 //! - 更新源：GitHub Release `update-feed` 下的 `stable.json` / `beta.json`（Tauri 2 静态清单），按通道选择；
 //!   [`endpoints`] 返回列表，以后加镜像只需追加地址。调试构建可用 `PRIMUS_UPDATE_ENDPOINT` 覆盖。
-//! - 安装类型：exe 所在目录有 NSIS 卸载程序（`uninstall.exe`）即 nsis，否则 msi（MSI 版 exe 是 `--no-bundle`
-//!   编译的，没有经过 bundler 的 binary patching，插件自己判断不出来），用 `windows-<arch>-<msi|nsis>` 显式指定清单条目。
+//! - 只发 MSI（按机器安装在 Program Files）：MSI 版 exe 是 `--no-bundle` 编译的，插件自己判断不出安装方式，
+//!   用 `windows-<arch>-msi` 显式指定清单条目。
 //! - 待装包放在 `data/users/<SID>/updates/`（该目录只有当前用户与 SYSTEM 可写，追加 Administrators 只读，
 //!   供“过肩”提权的管理员账号读取）：安装包写入后再原子写 `pending.json`。
-//! - 安装（立即重启或下次启动共用 [`Updater::prepare_install`]）：从磁盘重读安装包，用编译进的公钥按插件同一套规则
-//!   再次校验 minisign 签名（含签名绑定的版本），核对 SHA-256 与版本；失败删除待装包。通过后由调用方停掉 Core，
-//!   经 UAC 启动安装器（`platform::launch_installer`），安装器结束后以当前（非提权）身份重新打开 Primus。
+//! - 安装（立即重启、下次启动、退出时共用 [`Updater::prepare_install`]）：从磁盘重读安装包，用编译进的公钥按插件
+//!   同一套规则再次校验 minisign 签名（含签名绑定的版本），核对 SHA-256 与版本；失败删除待装包。通过后交给 MSI 一起
+//!   安装的更新服务 PrimusUpdate（[`primus_update`]，LocalSystem）：服务以本用户身份读取安装包、复制到只有 SYSTEM 与
+//!   Administrators 可写的目录后再次验签、拒绝降级，等 Primus 退出后 `msiexec /quiet` 静默安装，按需以本用户身份
+//!   重新打开。服务不可用（旧版 MSI 没有服务、服务被禁用等）时，“立即重启更新”与启动时安装回退到 UAC 拉起安装器
+//!   （`platform::launch_installer`），退出时安装则留到下次启动。
 
 use std::fs::{self, File, OpenOptions};
 use std::future::Future;
@@ -34,8 +37,6 @@ const PUBKEY: Option<&str> = option_env!("TAURI_SIGNING_PUBLIC_KEY");
 const FEED_BASE: &str = "https://github.com/skaduv/primus/releases/download/update-feed";
 /// 调试构建覆盖更新源（完整的清单 URL），便于本地起静态服务器测试。
 const ENDPOINT_OVERRIDE_ENV: &str = "PRIMUS_UPDATE_ENDPOINT";
-/// NSIS 安装后写在安装目录的卸载程序（windows/nsis/installer.nsi 的 `WriteUninstaller`）。
-const NSIS_UNINSTALLER: &str = "uninstall.exe";
 /// 待装包描述文件与设置文件。
 const PENDING_FILE: &str = "pending.json";
 /// 多次安装仍未生效而放弃的版本（自动检查不再下载它，更高的版本照常更新）。
@@ -133,42 +134,9 @@ impl UpdateSettings {
     }
 }
 
-/// 安装方式（决定清单条目与安装器命令行）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum InstallKind {
-    Msi,
-    Nsis,
-}
-
-impl InstallKind {
-    /// exe 所在目录有 NSIS 卸载程序即 NSIS 安装，否则 MSI。
-    pub(crate) fn detect(exe_dir: &Path) -> Self {
-        if exe_dir.join(NSIS_UNINSTALLER).is_file() {
-            Self::Nsis
-        } else {
-            Self::Msi
-        }
-    }
-
-    fn name(self) -> &'static str {
-        match self {
-            Self::Msi => "msi",
-            Self::Nsis => "nsis",
-        }
-    }
-
-    fn extension(self) -> &'static str {
-        match self {
-            Self::Msi => "msi",
-            Self::Nsis => "exe",
-        }
-    }
-}
-
-/// 清单中的平台键 `windows-<x86_64|aarch64>-<msi|nsis>`；不支持的架构为 None。
-pub(crate) fn target_for(arch: &str, kind: InstallKind) -> Option<String> {
-    matches!(arch, "x86_64" | "aarch64").then(|| format!("windows-{arch}-{}", kind.name()))
+/// 清单中的平台键 `windows-<x86_64|aarch64>-msi`；不支持的架构为 None。
+pub(crate) fn target_for(arch: &str) -> Option<String> {
+    matches!(arch, "x86_64" | "aarch64").then(|| format!("windows-{arch}-msi"))
 }
 
 /// 当前构建的架构名（与插件的 `{{arch}}` 一致）。
@@ -182,16 +150,8 @@ fn current_arch() -> &'static str {
     }
 }
 
-/// 版本优先级严格高于当前（SemVer，含预发布：`1.3.0-beta.2` < `1.3.0`；只差构建元数据的不算更新）。
-/// 解析不了的版本一律不算更新。
-pub(crate) fn is_newer(candidate: &str, current: &Version) -> bool {
-    parse_version(candidate)
-        .is_some_and(|v| v.cmp_precedence(current) == std::cmp::Ordering::Greater)
-}
-
-fn parse_version(v: &str) -> Option<Version> {
-    Version::parse(v.trim().trim_start_matches('v')).ok()
-}
+// 版本比较与签名校验与更新服务共用同一份实现（服务复制安装包后按同一规则再验一次）
+pub(crate) use primus_update::verify::{is_newer, verify_signature};
 
 /// 已下载、校验过、等待安装的更新：`data/users/<SID>/updates/pending.json`。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -200,7 +160,6 @@ pub(crate) struct PendingUpdate {
     pub(crate) version: String,
     #[serde(default)]
     pub(crate) notes: Option<String>,
-    pub(crate) kind: InstallKind,
     /// 安装包文件名（只是文件名，位于 updates 目录下）
     pub(crate) file: String,
     pub(crate) sha256: String,
@@ -211,8 +170,8 @@ pub(crate) struct PendingUpdate {
     pub(crate) attempts: u32,
 }
 
-/// 安装包文件名：取下载地址最后一段，只允许 ASCII 字母数字与 `._-`，扩展名须与安装方式一致。
-pub(crate) fn package_file_name(url: &str, kind: InstallKind) -> Option<String> {
+/// 安装包文件名：取下载地址最后一段，只允许 ASCII 字母数字与 `._-`，扩展名须为 `.msi`。
+pub(crate) fn package_file_name(url: &str) -> Option<String> {
     let path = url.split(['?', '#']).next()?;
     let name = path.rsplit('/').next()?;
     let ok = !name.is_empty()
@@ -223,7 +182,7 @@ pub(crate) fn package_file_name(url: &str, kind: InstallKind) -> Option<String> 
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
         && name
             .rsplit_once('.')
-            .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case(kind.extension()))
+            .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("msi"))
         && !name.eq_ignore_ascii_case(PENDING_FILE);
     ok.then(|| name.to_owned())
 }
@@ -235,63 +194,17 @@ pub(crate) fn sha256_hex(data: &[u8]) -> String {
         .collect()
 }
 
-/// 按 tauri-plugin-updater 的规则校验 updater 签名：公钥与签名都是 minisign 文本整体再 base64；
-/// `verify(.., allow_legacy = true)` 与插件一致；签名的 trusted comment 必须绑定同一版本
-/// （插件的 `requireSignedVersion`，见 tauri.conf.json）。
-pub(crate) fn verify_signature(
-    data: &[u8],
-    signature: &str,
-    pubkey: &str,
-    version: &str,
-) -> Result<(), String> {
-    use base64::Engine as _;
-    let decode = |what: &str, value: &str| -> Result<String, String> {
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(value.trim())
-            .map_err(|e| format!("{what}不是 base64：{e}"))?;
-        String::from_utf8(bytes).map_err(|_| format!("{what}不是 UTF-8 文本"))
-    };
-    let key = minisign_verify::PublicKey::decode(&decode("公钥", pubkey)?)
-        .map_err(|e| format!("公钥格式不对：{e}"))?;
-    let sig = minisign_verify::Signature::decode(&decode("签名", signature)?)
-        .map_err(|e| format!("签名格式不对：{e}"))?;
-    key.verify(data, &sig, true)
-        .map_err(|e| format!("签名与安装包不符：{e}"))?;
-    // trusted comment 只有在上面的全局签名校验通过后才可信
-    let signed = sig
-        .trusted_comment()
-        .split('\t')
-        .find_map(|field| field.strip_prefix("version:"))
-        .ok_or("签名没有绑定版本")?;
-    match (parse_version(signed), parse_version(version)) {
-        (Some(a), Some(b)) if a == b => Ok(()),
-        _ => Err(format!(
-            "签名绑定的版本 {signed} 与待装版本 {version} 不一致"
-        )),
-    }
-}
-
-/// 安装器命令行：MSI 用系统目录下的 msiexec 被动安装、不自动重启；NSIS 安装程序被动 + 更新模式。
+/// 回退到 UAC 时的安装器命令行：系统目录下的 msiexec 被动安装、不自动重启。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InstallerCommand {
     pub(crate) program: PathBuf,
     pub(crate) params: String,
 }
 
-pub(crate) fn installer_command(
-    kind: InstallKind,
-    package: &Path,
-    system_dir: &Path,
-) -> InstallerCommand {
-    match kind {
-        InstallKind::Msi => InstallerCommand {
-            program: system_dir.join("msiexec.exe"),
-            params: format!("/i \"{}\" /passive /norestart", package.display()),
-        },
-        InstallKind::Nsis => InstallerCommand {
-            program: package.to_path_buf(),
-            params: "/P /UPDATE".to_owned(),
-        },
+pub(crate) fn installer_command(package: &Path, system_dir: &Path) -> InstallerCommand {
+    InstallerCommand {
+        program: system_dir.join("msiexec.exe"),
+        params: format!("/i \"{}\" /passive /norestart", package.display()),
     }
 }
 
@@ -306,23 +219,12 @@ pub(crate) enum StartupAction {
     Abandon(String),
 }
 
-pub(crate) fn startup_action(
-    pending: Option<&PendingUpdate>,
-    current: &Version,
-    kind: InstallKind,
-) -> StartupAction {
+pub(crate) fn startup_action(pending: Option<&PendingUpdate>, current: &Version) -> StartupAction {
     let Some(p) = pending else {
         return StartupAction::Nothing;
     };
     if !is_newer(&p.version, current) {
         return StartupAction::Discard(format!("待装版本 {} 不高于当前版本 {current}", p.version));
-    }
-    if p.kind != kind {
-        return StartupAction::Discard(format!(
-            "待装包是 {}，当前安装方式是 {}",
-            p.kind.name(),
-            kind.name()
-        ));
     }
     if p.attempts >= MAX_INSTALL_ATTEMPTS {
         return StartupAction::Abandon(format!(
@@ -400,7 +302,6 @@ pub(crate) struct UpdateStatus {
     pub(crate) current_version: String,
     /// 是否可以自动更新（发布构建编译进了公钥、Windows 平台、架构受支持）
     pub(crate) available: bool,
-    pub(crate) install_kind: InstallKind,
     pub(crate) settings: UpdateSettings,
     pub(crate) phase: UpdatePhase,
     pub(crate) progress: Option<DownloadProgress>,
@@ -416,8 +317,9 @@ pub(crate) struct UpdateStatus {
 /// 拉起安装器时把它的可继承副本交给等待安装器结束的 PowerShell，保证从验签到安装器读取结束，安装包都不能被替换。
 pub(crate) struct VerifiedPackage {
     pub(crate) path: PathBuf,
-    pub(crate) kind: InstallKind,
     pub(crate) version: String,
+    /// updater 签名（交给更新服务再验一次）
+    pub(crate) signature: String,
     lock: File,
 }
 
@@ -433,7 +335,6 @@ type Listener = Box<dyn Fn(UpdateStatus) + Send + Sync>;
 /// 更新状态（Tauri 托管为 `Arc<Updater>`）。
 pub(crate) struct Updater {
     current_version: Version,
-    kind: InstallKind,
     target: Option<String>,
     pubkey: Option<&'static str>,
     updates_dir: PathBuf,
@@ -445,6 +346,8 @@ pub(crate) struct Updater {
     listener: Mutex<Option<Listener>>,
     /// 检查 / 下载进行中（自动与手动共用，同一时刻只有一个）
     busy: AtomicBool,
+    /// 已把安装交给更新服务或安装器（本进程随即退出）：退出时不再尝试安装
+    handed_off: AtomicBool,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -454,17 +357,14 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 impl Updater {
     pub(crate) fn new(
         current_version: Version,
-        exe_dir: &Path,
         updates_dir: PathBuf,
         app_dir: &Path,
         pubkey: Option<&'static str>,
     ) -> Self {
-        let kind = InstallKind::detect(exe_dir);
         let settings_file = app_dir.join(SETTINGS_FILE);
         Self {
             current_version,
-            kind,
-            target: target_for(current_arch(), kind),
+            target: target_for(current_arch()),
             pubkey,
             updates_dir,
             relaunch_data_dir: None,
@@ -478,6 +378,7 @@ impl Updater {
             }),
             listener: Mutex::new(None),
             busy: AtomicBool::new(false),
+            handed_off: AtomicBool::new(false),
         }
     }
 
@@ -504,8 +405,7 @@ impl Updater {
     pub(crate) fn read_pending(&self) -> Option<PendingUpdate> {
         let bytes = fs::read(self.pending_path()).ok()?;
         let pending: PendingUpdate = serde_json::from_slice(&bytes).ok()?;
-        let name_ok = package_file_name(&pending.file, pending.kind).as_deref()
-            == Some(pending.file.as_str());
+        let name_ok = package_file_name(&pending.file).as_deref() == Some(pending.file.as_str());
         name_ok.then_some(pending)
     }
 
@@ -603,7 +503,6 @@ impl Updater {
         UpdateStatus {
             current_version: self.current_version.to_string(),
             available: self.available(),
-            install_kind: self.kind,
             settings: self.settings(),
             phase: runtime.phase,
             progress: runtime.progress.clone(),
@@ -770,7 +669,6 @@ impl Updater {
         }
         if let Some(pending) = self.read_pending()
             && pending.version == update.version
-            && pending.kind == self.kind
         {
             // 复用前确认磁盘上的安装包完好；损坏或缺失时删除并重新下载
             match self.verify_stored(&pending, pubkey) {
@@ -784,7 +682,7 @@ impl Updater {
                 )),
             }
         }
-        let file = package_file_name(update.download_url.as_str(), self.kind).ok_or_else(|| {
+        let file = package_file_name(update.download_url.as_str()).ok_or_else(|| {
             UpdateError::new("failed", format!("下载地址不合法：{}", update.download_url))
         })?;
         self.log(&format!("开始下载 {} → {file}", update.version));
@@ -839,7 +737,6 @@ impl Updater {
         let pending = PendingUpdate {
             version: update.version.clone(),
             notes: update.body.clone(),
-            kind: self.kind,
             file,
             sha256: sha256_hex(&bytes),
             signature: update.signature.clone(),
@@ -878,7 +775,7 @@ impl Updater {
         let pending = self
             .read_pending()
             .ok_or_else(|| UpdateError::new("noPending", "没有已下载的更新"))?;
-        let action = startup_action(Some(&pending), &self.current_version, self.kind);
+        let action = startup_action(Some(&pending), &self.current_version);
         if let Some(reason) = self.apply_discard(&action, Some(&pending)) {
             return Err(UpdateError::new("noPending", reason));
         }
@@ -900,8 +797,8 @@ impl Updater {
         }
         Ok(VerifiedPackage {
             path,
-            kind: pending.kind,
             version: pending.version,
+            signature: pending.signature,
             lock: lock_file,
         })
     }
@@ -929,8 +826,12 @@ impl Updater {
         &self.current_version
     }
 
-    pub(crate) fn install_kind(&self) -> InstallKind {
-        self.kind
+    /// 退出时是否要安装：可以自动更新、设置开启、有待装包，且还没有把安装交出去。
+    pub(crate) fn wants_install_on_exit(&self) -> bool {
+        self.available()
+            && self.settings().auto_update
+            && !self.handed_off.load(Ordering::Acquire)
+            && self.read_pending().is_some()
     }
 }
 
@@ -954,26 +855,153 @@ fn open_locked(path: &Path) -> io::Result<(File, Vec<u8>)> {
     Ok((file, bytes))
 }
 
-/// 拉起安装器的结果。
+/// 什么时候安装：决定安装后是否重新打开 Primus、服务不可用时能否回退到 UAC。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InstallTrigger {
+    /// 用户点了“立即重启更新”：装完重新打开；服务不可用时回退到 UAC
+    RestartNow,
+    /// 启动时发现待装包：装完重新打开；服务不可用时回退到 UAC
+    Startup,
+    /// 用户退出 Primus：装完不重新打开；服务不可用时不弹 UAC，留到下次启动
+    Exit,
+}
+
+impl InstallTrigger {
+    fn relaunch(self) -> bool {
+        self != Self::Exit
+    }
+}
+
+/// 拉起安装的结果。
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum LaunchOutcome {
-    /// 安装器已运行，调用方应退出（安装器结束后会以普通权限重新打开 Primus）
+    /// 更新服务已接手或安装器已运行，调用方应退出（安装结束后会以普通权限重新打开 Primus，退出时安装除外）
     Started,
     /// 用户取消了 UAC
     Cancelled,
+    /// 退出时安装但更新服务不可用：什么都没做，待装包留到下次启动
+    Deferred,
 }
 
-/// 经 UAC 拉起安装器（安装包已校验）；成功后记一次尝试。失败或取消时待装包保留。
+/// 服务看到的路径：去掉 `\\?\` 前缀与结尾的反斜杠，须是普通的本地绝对路径（否则当作服务不可用，回退到 UAC）。
+fn plain_path(path: &Path, ext: Option<&str>) -> Result<String, String> {
+    let text = path
+        .to_str()
+        .ok_or_else(|| format!("路径不是 Unicode：{}", path.display()))?;
+    let text = text.strip_prefix(r"\\?\").unwrap_or(text);
+    let text = if ext.is_none() {
+        text.trim_end_matches('\\')
+    } else {
+        text
+    };
+    primus_update::protocol::validate_local_path(text, ext)
+        .map_err(|e| format!("路径 {text} {e}"))?;
+    Ok(text.to_owned())
+}
+
+/// 更新服务的处理结果。
+enum ServiceOutcome {
+    Accepted,
+    /// 服务拒绝了请求（签名、版本、格式、正在安装）：不回退到 UAC
+    Rejected(UpdateError),
+    /// 服务不可用（没装、没启用、通信失败、路径不便交给服务）：可以回退到 UAC
+    Unavailable(String),
+}
+
+/// 把已校验的安装包交给更新服务。
+fn request_service(updater: &Updater, package: &VerifiedPackage, relaunch: bool) -> ServiceOutcome {
+    use primus_update::protocol::{InstallRequest, PROTOCOL_VERSION, ResponseCode};
+    let package_path = match plain_path(&package.path, Some("msi")) {
+        Ok(p) => p,
+        Err(e) => return ServiceOutcome::Unavailable(e),
+    };
+    let data_dir = match updater.relaunch_data_dir.as_deref().filter(|_| relaunch) {
+        Some(dir) => match plain_path(dir, None) {
+            Ok(d) => Some(d),
+            Err(e) => return ServiceOutcome::Unavailable(e),
+        },
+        None => None,
+    };
+    let request = InstallRequest {
+        protocol: PROTOCOL_VERSION,
+        package: package_path,
+        version: package.version.clone(),
+        signature: package.signature.trim().to_owned(),
+        relaunch,
+        data_dir,
+    };
+    #[cfg(windows)]
+    let response = primus_update::client::request_install(&request);
+    #[cfg(not(windows))]
+    let response: Result<primus_update::protocol::Response, String> = {
+        let _ = &request;
+        Err("更新服务只支持 Windows".to_owned())
+    };
+    let response = match response {
+        Ok(r) => r,
+        Err(e) => return ServiceOutcome::Unavailable(e),
+    };
+    updater.log(&format!(
+        "更新服务应答 {:?}：{}",
+        response.code, response.message
+    ));
+    match response.code {
+        ResponseCode::Accepted => ServiceOutcome::Accepted,
+        ResponseCode::Unavailable => ServiceOutcome::Unavailable(response.message),
+        // 上一次更新仍在安装，或其他 Windows 用户正开着 Primus：待装包保留，稍后（下次退出或启动）再试
+        ResponseCode::Busy => {
+            ServiceOutcome::Rejected(UpdateError::new("failed", response.message))
+        }
+        ResponseCode::Signature | ResponseCode::NotNewer | ResponseCode::Invalid => {
+            // 服务按同一规则复核不通过：这个待装包不能再用
+            updater.discard_pending(&format!("更新服务拒绝：{}", response.message));
+            ServiceOutcome::Rejected(UpdateError::new("invalid", response.message))
+        }
+        ResponseCode::Failed => {
+            ServiceOutcome::Rejected(UpdateError::new("failed", response.message))
+        }
+    }
+}
+
+/// 安装已校验的待装包：先交给更新服务（静默），服务不可用时按时机回退到 UAC 或留到下次启动。
+/// 交出成功记一次尝试（安装失败时下次启动据此放弃）；失败或取消时待装包保留。
 pub(crate) fn launch(
+    updater: &Updater,
+    package: VerifiedPackage,
+    trigger: InstallTrigger,
+) -> Result<LaunchOutcome, UpdateError> {
+    updater.log(&format!(
+        "安装版本 {}（{trigger:?}），交给更新服务",
+        package.version
+    ));
+    match request_service(updater, &package, trigger.relaunch()) {
+        ServiceOutcome::Accepted => {
+            updater.record_attempt();
+            updater.handed_off.store(true, Ordering::Release);
+            return Ok(LaunchOutcome::Started);
+        }
+        ServiceOutcome::Rejected(e) => return Err(e),
+        ServiceOutcome::Unavailable(reason) => {
+            updater.log(&format!("更新服务不可用：{reason}"));
+            if trigger == InstallTrigger::Exit {
+                return Ok(LaunchOutcome::Deferred);
+            }
+        }
+    }
+    launch_elevated(updater, package)
+}
+
+/// 回退：经 UAC 拉起 msiexec（安装包已校验），安装器结束后以普通权限重新打开 Primus。
+fn launch_elevated(
     updater: &Updater,
     package: VerifiedPackage,
 ) -> Result<LaunchOutcome, UpdateError> {
     let system_dir = crate::platform::system_dir();
-    let command = installer_command(package.kind, &package.path, &system_dir);
+    let command = installer_command(&package.path, &system_dir);
     let relaunch = std::env::current_exe()
         .map_err(|e| UpdateError::new("failed", format!("无法确定 Primus.exe 路径：{e}")))?;
     updater.log(&format!(
-        "拉起安装器：{} {}（版本 {}）",
+        "经 UAC 拉起安装器：{} {}（版本 {}）",
         command.program.display(),
         command.params,
         package.version
@@ -987,6 +1015,7 @@ pub(crate) fn launch(
     ) {
         Ok(Some(relaunch_scheduled)) => {
             updater.record_attempt();
+            updater.handed_off.store(true, Ordering::Release);
             let version = package.version.clone();
             if !relaunch_scheduled {
                 // 没有等待安装器的 PowerShell 接手安装包句柄：至少在模态提示框关闭前仍由本进程持有
@@ -1010,14 +1039,10 @@ pub(crate) fn launch(
 }
 
 /// 启动时（数据目录就绪、单实例确认之后，创建窗口与拉起 Core 之前）处理待装包：
-/// 版本更高 → 校验并拉起安装器，成功返回 true（调用方立即退出）；已装过或无效 → 清理。
+/// 版本更高 → 校验后交给更新服务（或经 UAC 拉起安装器），成功返回 true（调用方立即退出）；已装过或无效 → 清理。
 pub(crate) fn install_on_startup(updater: &Updater) -> bool {
     let pending = updater.read_pending();
-    match startup_action(
-        pending.as_ref(),
-        updater.current_version(),
-        updater.install_kind(),
-    ) {
+    match startup_action(pending.as_ref(), updater.current_version()) {
         StartupAction::Nothing => {
             // 没有描述但目录里残留安装包（例如写描述前被中断）：清掉
             if pending.is_none() {
@@ -1033,15 +1058,31 @@ pub(crate) fn install_on_startup(updater: &Updater) -> bool {
             if !updater.available() {
                 return false;
             }
-            match updater.prepare_install().and_then(|p| launch(updater, p)) {
+            match updater
+                .prepare_install()
+                .and_then(|p| launch(updater, p, InstallTrigger::Startup))
+            {
                 Ok(LaunchOutcome::Started) => true,
-                Ok(LaunchOutcome::Cancelled) => false,
+                Ok(LaunchOutcome::Cancelled | LaunchOutcome::Deferred) => false,
                 Err(e) => {
                     updater.log(&format!("启动时安装更新未完成：{}", e.message));
                     false
                 }
             }
         }
+    }
+}
+
+/// 退出时安装（`RunEvent::Exit`，调用方已确认没有运行中的 Agent 并结束了全部 Core）：只走更新服务，不弹 UAC，
+/// 装完不重新打开。失败只记日志，待装包留到下次启动。
+pub(crate) fn install_on_exit(updater: &Updater) {
+    match updater
+        .prepare_install()
+        .and_then(|p| launch(updater, p, InstallTrigger::Exit))
+    {
+        Ok(LaunchOutcome::Started) => updater.log("退出时已交给更新服务安装"),
+        Ok(_) => updater.log("退出时没有安装，留到下次启动"),
+        Err(e) => updater.log(&format!("退出时安装更新未完成：{}", e.message)),
     }
 }
 
@@ -1085,36 +1126,16 @@ mod tests {
         Version::parse(s).unwrap()
     }
 
+    // 验签与版本比较的完整用例在 update-service（primus_update::verify）；这里确认薄壳用的是同一份实现
     #[test]
-    fn verifies_real_tauri_signature_and_binds_version() {
+    fn shared_verify_and_version_rules() {
         assert_eq!(
             verify_signature(HELLO, TAURI_SIG, TAURI_PUBKEY, "1.2.3"),
             Ok(())
         );
-        assert_eq!(
-            verify_signature(HELLO, TAURI_SIG, TAURI_PUBKEY, "v1.2.3"),
-            Ok(())
-        );
-        assert!(verify_signature(b"hello!\n", TAURI_SIG, TAURI_PUBKEY, "1.2.3").is_err());
-        let err = verify_signature(HELLO, TAURI_SIG, TAURI_PUBKEY, "1.2.4").unwrap_err();
-        assert!(err.contains("1.2.3"), "{err}");
         assert!(verify_signature(HELLO, TAURI_SIG, OTHER_PUBKEY, "1.2.3").is_err());
-        assert!(verify_signature(HELLO, "not base64!", TAURI_PUBKEY, "1.2.3").is_err());
-        assert!(verify_signature(HELLO, TAURI_SIG, "", "1.2.3").is_err());
-    }
-
-    #[test]
-    fn newer_follows_semver_with_prerelease() {
-        let cur = v("1.3.0-beta.2");
-        assert!(is_newer("1.3.0-beta.3", &cur));
-        assert!(is_newer("1.3.0", &cur));
-        assert!(is_newer("v1.3.0", &cur));
-        assert!(!is_newer("1.3.0-beta.2", &cur));
-        assert!(!is_newer("1.3.0-beta.2+build.7", &cur));
-        assert!(!is_newer("1.3.0-alpha.9", &cur));
-        assert!(!is_newer("1.2.9", &cur));
-        assert!(!is_newer("garbage", &cur));
-        assert!(!is_newer("1.3.0", &v("1.3.0")));
+        assert!(is_newer("1.3.0", &v("1.3.0-beta.2")));
+        assert!(!is_newer("1.2.9", &v("1.3.0-beta.2")));
     }
 
     #[test]
@@ -1134,20 +1155,30 @@ mod tests {
     }
 
     #[test]
-    fn install_kind_from_nsis_uninstaller_and_target_names() {
-        let tmp = TempDir::new();
-        assert_eq!(InstallKind::detect(&tmp.0), InstallKind::Msi);
-        fs::write(tmp.0.join("uninstall.exe"), b"x").unwrap();
-        assert_eq!(InstallKind::detect(&tmp.0), InstallKind::Nsis);
+    fn msi_target_names() {
+        assert_eq!(target_for("x86_64").as_deref(), Some("windows-x86_64-msi"));
         assert_eq!(
-            target_for("x86_64", InstallKind::Msi).as_deref(),
-            Some("windows-x86_64-msi")
+            target_for("aarch64").as_deref(),
+            Some("windows-aarch64-msi")
+        );
+        assert_eq!(target_for("i686"), None);
+    }
+
+    #[test]
+    fn plain_paths_for_the_service() {
+        let msi = Path::new(
+            r"\\?\C:\Program Files\Primus\data\users\S-1\updates\Primus_1.0.0_x64_zh-CN.msi",
         );
         assert_eq!(
-            target_for("aarch64", InstallKind::Nsis).as_deref(),
-            Some("windows-aarch64-nsis")
+            plain_path(msi, Some("msi")).as_deref(),
+            Ok(r"C:\Program Files\Primus\data\users\S-1\updates\Primus_1.0.0_x64_zh-CN.msi")
         );
-        assert_eq!(target_for("i686", InstallKind::Msi), None);
+        assert_eq!(
+            plain_path(Path::new(r"D:\Primus Data\"), None).as_deref(),
+            Ok(r"D:\Primus Data")
+        );
+        assert!(plain_path(Path::new(r"\\server\share\a.msi"), Some("msi")).is_err());
+        assert!(plain_path(Path::new(r"C:\a.exe"), Some("msi")).is_err());
     }
 
     #[test]
@@ -1186,24 +1217,19 @@ mod tests {
 
     #[test]
     fn package_file_names_are_sanitized() {
-        let msi = InstallKind::Msi;
         assert_eq!(
             package_file_name(
-                "https://github.com/skaduv/primus/releases/download/v0.0.7/Primus_0.0.7_x64_zh-CN.msi",
-                msi
+                "https://github.com/skaduv/primus/releases/download/v0.0.7/Primus_0.0.7_x64_zh-CN.msi"
             )
             .as_deref(),
             Some("Primus_0.0.7_x64_zh-CN.msi")
         );
         assert_eq!(
-            package_file_name(
-                "https://x/Primus_0.0.7_arm64-setup.exe?x=1",
-                InstallKind::Nsis
-            )
-            .as_deref(),
-            Some("Primus_0.0.7_arm64-setup.exe")
+            package_file_name("https://x/Primus_0.0.7_arm64_zh-CN.msi?x=1").as_deref(),
+            Some("Primus_0.0.7_arm64_zh-CN.msi")
         );
         for bad in [
+            "https://x/Primus_0.0.7_arm64-setup.exe",
             "https://x/Primus.exe",
             "https://x/",
             "https://x/..msi",
@@ -1211,7 +1237,7 @@ mod tests {
             "https://x/.hidden.msi",
             "https://x/a b.msi",
         ] {
-            assert_eq!(package_file_name(bad, msi), None, "{bad}");
+            assert_eq!(package_file_name(bad), None, "{bad}");
         }
     }
 
@@ -1219,23 +1245,18 @@ mod tests {
     fn installer_command_lines() {
         let sys = Path::new("C:\\Windows\\System32");
         let pkg = Path::new("D:\\Primus\\data\\users\\S-1\\updates\\Primus_1.0.0_x64_zh-CN.msi");
-        let msi = installer_command(InstallKind::Msi, pkg, sys);
+        let msi = installer_command(pkg, sys);
         assert_eq!(msi.program, sys.join("msiexec.exe"));
         assert_eq!(
             msi.params,
             format!("/i \"{}\" /passive /norestart", pkg.display())
         );
-        let exe = Path::new("D:\\u\\Primus_1.0.0_x64-setup.exe");
-        let nsis = installer_command(InstallKind::Nsis, exe, sys);
-        assert_eq!(nsis.program, exe);
-        assert_eq!(nsis.params, "/P /UPDATE");
     }
 
     fn pending(version: &str) -> PendingUpdate {
         PendingUpdate {
             version: version.to_owned(),
             notes: Some("说明".to_owned()),
-            kind: InstallKind::Msi,
             file: "Primus_1.2.3_x64_zh-CN.msi".to_owned(),
             sha256: sha256_hex(HELLO),
             signature: TAURI_SIG.to_owned(),
@@ -1246,21 +1267,11 @@ mod tests {
     #[test]
     fn startup_actions() {
         let cur = v("1.2.2");
-        assert_eq!(
-            startup_action(None, &cur, InstallKind::Msi),
-            StartupAction::Nothing
-        );
+        assert_eq!(startup_action(None, &cur), StartupAction::Nothing);
         let p = pending("1.2.3");
-        assert_eq!(
-            startup_action(Some(&p), &cur, InstallKind::Msi),
-            StartupAction::Install
-        );
+        assert_eq!(startup_action(Some(&p), &cur), StartupAction::Install);
         assert!(matches!(
-            startup_action(Some(&p), &v("1.2.3"), InstallKind::Msi),
-            StartupAction::Discard(_)
-        ));
-        assert!(matches!(
-            startup_action(Some(&p), &cur, InstallKind::Nsis),
+            startup_action(Some(&p), &v("1.2.3")),
             StartupAction::Discard(_)
         ));
         let tried = PendingUpdate {
@@ -1268,17 +1279,15 @@ mod tests {
             ..p
         };
         assert!(matches!(
-            startup_action(Some(&tried), &cur, InstallKind::Msi),
+            startup_action(Some(&tried), &cur),
             StartupAction::Abandon(_)
         ));
     }
 
     fn updater(tmp: &TempDir, current: &str, pubkey: Option<&'static str>) -> Updater {
-        let exe = tmp.0.join("exe");
         let app = tmp.0.join("app");
-        fs::create_dir_all(&exe).unwrap();
         fs::create_dir_all(&app).unwrap();
-        Updater::new(v(current), &exe, tmp.0.join("updates"), &app, pubkey)
+        Updater::new(v(current), tmp.0.join("updates"), &app, pubkey)
     }
 
     #[test]

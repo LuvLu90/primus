@@ -6,7 +6,8 @@
       -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext
       -bindpath app=<target/release 或 target/<三元组>/release> -bindpath core=dist/agent-core -bindpath runtime=dist/runtime
       -d ProductVersion=<主.次.修订.构建> -d ShellDir=<apps/desktop/src-tauri>
-      -d WebView2Setup=<MicrosoftEdgeWebview2Setup.exe>
+      -d WebView2Setup=<MicrosoftEdgeWebview2Setup.exe> -d PrimusVersion=<SemVer>
+      -includepath <含 primus-scripts.wxi 的目录>
 
   同一份定义构建 x64 与 arm64 两个 MSI（第 3.1 节），平台只由 -arch 决定（Package 的 Platform 随之为 x64 / arm64）：
     ProgramFiles64Folder 在两种架构上都是 C:\Program Files；Bitness="always64" 的注册表项在 ARM64 上同样写入 64 位视图；
@@ -16,14 +17,20 @@
 
   安装布局：
     <INSTALLFOLDER>\Primus.exe
+    <INSTALLFOLDER>\PrimusUpdate.exe       更新服务 PrimusUpdate（按需启动、LocalSystem，ADR 0007）
     <INSTALLFOLDER>\resources\runtime\      node.exe + LICENSE（保留 OpenJS 官方签名）
     <INSTALLFOLDER>\resources\agent-core\   dist/agent-core 整目录（含 extensions\primus-bundle.js）
     <INSTALLFOLDER>\                        受保护的 DACL：SYSTEM、Administrators 完全控制，Users 只读和执行（装在其他盘也一样）
     <INSTALLFOLDER>\data\                   Users 组可修改，卸载与升级时保留
+    %ProgramData%\Primus\Update\          更新服务的暂存目录：只有 SYSTEM 与 Administrators 可写，完全卸载时删除
+    HKLM\Software\Primus                  InstallDir（下次升级沿用的安装目录）、Version（已安装的 SemVer，服务据此拒绝降级）
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
      xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <!-- 嵌入的 PowerShell 脚本（InstallAclScript、RemoveNsisScript）：build-msi.mjs 生成，经 -includepath 找到；
+       两段 Base64 加起来超过命令行长度上限，不能用 -d 传 -->
+  <?include primus-scripts.wxi ?>
   <!-- UpgradeCode 一经发布永不改变：MajorUpgrade 靠它识别旧版本（第 3.3.2 节）。 -->
   <Package Name="乾元 Primus" Manufacturer="乾元 Primus" Version="$(ProductVersion)"
            UpgradeCode="5B4199DD-C352-459A-AEB0-7119A884608F" Language="2052" Scope="perMachine">
@@ -51,6 +58,21 @@
     <SetProperty Id="INSTALLFOLDER" Value="[PREVIOUS_INSTALLFOLDER]" After="AppSearch" Sequence="both"
                  Condition="PREVIOUS_INSTALLFOLDER AND NOT INSTALLFOLDER" />
 
+    <!-- 从旧 NSIS 版迁移（ADR 0007：只发 MSI）：NSIS 版（Tauri 模板，按机器安装）在 Uninstall\Primus 记卸载程序，
+         在 HKLM\Software\<发布者>\<产品名> 的默认值记安装目录。两者都在、且没有 MSI 记下的安装目录时，装到 NSIS 版的目录
+         （沿用原来的 data），并在 CheckInstallDir 之前以 SYSTEM 身份静默卸载 NSIS 版（windows/remove-nsis.ps1：
+         先确认卸载程序与目录可信，/S _?= 就地卸载，data 保留，再删除 uninstall.exe 与上面的注册表项）。 -->
+    <Property Id="NSIS_UNINSTALLER" Secure="yes">
+      <RegistrySearch Id="NsisUninstallerSearch" Root="HKLM" Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\Primus"
+                      Name="UninstallString" Type="raw" Bitness="always64" />
+    </Property>
+    <Property Id="NSIS_INSTALLDIR" Secure="yes">
+      <RegistrySearch Id="NsisInstallDirSearch" Root="HKLM" Key="Software\乾元 Primus\Primus"
+                      Type="raw" Bitness="always64" />
+    </Property>
+    <SetProperty Id="INSTALLFOLDER" Action="SetInstallFolderFromNsis" Value="[NSIS_INSTALLDIR]" After="AppSearch"
+                 Sequence="both" Condition="NSIS_UNINSTALLER AND NSIS_INSTALLDIR AND NOT PREVIOUS_INSTALLFOLDER AND NOT INSTALLFOLDER" />
+
     <StandardDirectory Id="ProgramFiles64Folder">
       <Directory Id="INSTALLFOLDER" Name="Primus">
         <Component Id="MainExe">
@@ -60,6 +82,26 @@
         <Component Id="InstallDirRegistry" Bitness="always64">
           <RegistryValue Root="HKLM" Key="Software\Primus" Name="InstallDir" Type="string"
                          Value="[INSTALLFOLDER]" KeyPath="yes" />
+        </Component>
+        <!-- 已安装的版本（SemVer，与 Primus.exe 相同）：更新服务只安装比它新的版本（拒绝降级）。
+             MSI 的 ProductVersion 是四段数字，表达不了预发布，所以另写一份 -->
+        <Component Id="VersionRegistry" Bitness="always64">
+          <RegistryValue Root="HKLM" Key="Software\Primus" Name="Version" Type="string"
+                         Value="$(PrimusVersion)" KeyPath="yes" />
+        </Component>
+        <!-- 更新服务（ADR 0007）：按需启动、LocalSystem，只接受“安装某个已签名、版本更高的 MSI”的请求。
+             服务对象的 DACL：SYSTEM、Administrators 完全控制；交互用户（IU）只能查询状态与启动（CCLCSWLORPRC），
+             不能停止、改配置或删除。升级与卸载时先停服务（Stop="both"），卸载时删除服务。
+             安装进程从暂存目录里的副本运行，msiexec 停止并替换本文件不影响正在进行的安装。 -->
+        <Component Id="UpdateService">
+          <File Id="UpdateServiceExe" Source="!(bindpath.app)\PrimusUpdate.exe" KeyPath="yes" />
+          <ServiceInstall Id="PrimusUpdateService" Name="PrimusUpdate" DisplayName="乾元 Primus 更新服务"
+                          Description="静默安装已下载并校验签名的乾元 Primus 新版本。仅在更新时启动，空闲后自动停止。"
+                          Type="ownProcess" Start="demand" ErrorControl="normal" Account="LocalSystem"
+                          Arguments="--service" Vital="yes">
+            <PermissionEx Sddl="D:(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLORPRC;;;IU)" />
+          </ServiceInstall>
+          <ServiceControl Id="PrimusUpdateControl" Name="PrimusUpdate" Stop="both" Remove="uninstall" Wait="yes" />
         </Component>
         <!-- 安装目录本身的 ACL（约束 C2：可装到其他盘）：装在 D:\primus 这类自选目录时，目录会继承盘根的 ACL，
              而非系统盘根默认给 Authenticated Users “修改”，普通用户就能替换 Primus.exe 与 resources 中的程序。
@@ -95,6 +137,31 @@
       </Directory>
     </StandardDirectory>
 
+    <!-- 更新服务的暂存目录（ADR 0007）：服务把请求者的安装包复制到这里再验签，安装进程与日志也在这里。
+         MsiLockPermissionsEx 设为所有者 SYSTEM、受保护的 DACL（只有 SYSTEM 与 Administrators 完全控制），目录若由普通用户
+         预先建好，所有者与 DACL 都会被替换；服务每次使用前仍会复查（不是重解析点、没有其他主体可写），不安全就拒绝。
+         完全卸载（不是升级）时整目录删除。 -->
+    <StandardDirectory Id="CommonAppDataFolder">
+      <Directory Id="PROGRAMDATA_PRIMUS" Name="Primus">
+        <Component Id="ProgramDataDir" Guid="0E8C0B57-2F0B-4E39-9E3A-5F2E9C1D7A41">
+          <CreateFolder>
+            <PermissionEx Sddl="O:SYG:SYD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)" />
+          </CreateFolder>
+          <util:RemoveFolderEx On="uninstall" Property="PRIMUS_PROGRAMDATA_REMOVE"
+                               Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE" />
+        </Component>
+        <Directory Id="UPDATESTAGINGDIR" Name="Update">
+          <Component Id="UpdateStagingDir" Guid="7D1F4C2A-63B8-4D55-A0E2-9B6C2F8E3D17">
+            <CreateFolder>
+              <PermissionEx Sddl="O:SYG:SYD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)" />
+            </CreateFolder>
+          </Component>
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+    <!-- RemoveFolderEx 要在 CostInitialize 之前拿到路径（目录表此时还没解析），系统文件夹属性此时已可用 -->
+    <SetProperty Id="PRIMUS_PROGRAMDATA_REMOVE" Value="[CommonAppDataFolder]Primus\" After="AppSearch" Sequence="execute" />
+
     <!-- 开始菜单快捷方式。按机器安装时快捷方式进公共开始菜单；键路径放在 HKCU 以满足 ICE38/ICE43。
          AppUserModelID 与 tauri.conf.json 的 identifier 一致，系统通知（第 16.3 节）才能归属到本应用。 -->
     <StandardDirectory Id="ProgramMenuFolder">
@@ -123,6 +190,10 @@
     <Feature Id="Main" Title="乾元 Primus" AllowAbsent="no">
       <ComponentRef Id="MainExe" />
       <ComponentRef Id="InstallDirRegistry" />
+      <ComponentRef Id="VersionRegistry" />
+      <ComponentRef Id="UpdateService" />
+      <ComponentRef Id="ProgramDataDir" />
+      <ComponentRef Id="UpdateStagingDir" />
       <ComponentRef Id="InstallDirAcl" />
       <ComponentRef Id="DataDir" />
       <ComponentRef Id="StartMenuShortcut" />
@@ -147,13 +218,13 @@
     <CustomAction Id="InstallWebView2" BinaryRef="WebView2Setup" ExeCommand="/silent /install"
                   Execute="deferred" Impersonate="no" Return="check" />
     <!-- 安装目录可能由普通用户预先建好（约束 C2：可装到其他盘），两步处理，逻辑都在 windows/install-acl.ps1
-         （与 NSIS hooks.nsh 的 NSIS_HOOK_PREINSTALL 共用；build-msi.mjs 以 -d InstallAclScript 传入其 Base64），任一步失败即回滚：
+         （build-msi.mjs 把其 Base64 写进 primus-scripts.wxi 的 InstallAclScript），任一步失败即回滚：
          1. CheckInstallDir（CreateFolders 之前，install-acl.ps1 的 lock 模式）：安装目录及其每一级祖先、已有的直接子项都不能是
             重解析点（联接、符号链接），否则下面的 ACL 操作会顺着它改到别处；已存在的祖先须是普通用户不能改名、删除子项、
             改权限的；然后建好安装目录并设为与 InstallDirAcl 相同的受保护 DACL，再确认它不是重解析点且已锁好。
             此后普通用户不能再把安装目录或其祖先换成联接，CreateFolders 设同样的 DACL。
          2. ResetProgramAcl（CreateFolders 之后、安装文件之前）：再检查一遍并确认安装目录已锁好，然后自上而下处理预先存在的
-            Primus.exe 与 resources 树：所有者改为 Administrators、清掉显式授权、改为从已锁好的上级继承，锁好一层再看下一层，
+            Primus.exe、PrimusUpdate.exe 与 resources 树：所有者改为 Administrators、清掉显式授权、改为从已锁好的上级继承，锁好一层再看下一层，
             检查与修改之间普通用户不能插入联接；有多个硬链接的文件拒绝处理。覆盖安装时未列入 LockPermissions 的文件沿用原有安全描述符，所有者若仍是
             该用户，隐含 WRITE_DAC，可改回 DACL 后替换程序。data 不动：其中 users\<SID> 是受保护的，归各用户所有。
          不经 cmd.exe：PowerShell 从自身命令行末尾的注释标记 #|模式|安装目录| 读取路径，% 等字符按字面处理；
@@ -166,15 +237,20 @@
                  Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command &quot;&amp; ([\[]ScriptBlock[\]]::Create([\[]Text.Encoding[\]]::Unicode.GetString([\[]Convert[\]]::FromBase64String('$(InstallAclScript)')))) #|reset|[INSTALLFOLDER]|&quot;" />
     <CustomAction Id="ResetProgramAcl" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec"
                   Execute="deferred" Impersonate="no" Return="check" />
+    <SetProperty Id="RemoveNsis" Before="RemoveNsis" Sequence="execute"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command &quot;&amp; ([\[]ScriptBlock[\]]::Create([\[]Text.Encoding[\]]::Unicode.GetString([\[]Convert[\]]::FromBase64String('$(RemoveNsisScript)')))) #|[NSIS_INSTALLDIR]|&quot;" />
+    <CustomAction Id="RemoveNsis" BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)" DllEntry="WixQuietExec"
+                  Execute="deferred" Impersonate="no" Return="check" />
     <InstallExecuteSequence>
+      <Custom Action="RemoveNsis" Before="CheckInstallDir"
+              Condition="NSIS_UNINSTALLER AND NSIS_INSTALLDIR AND NOT PREVIOUS_INSTALLFOLDER AND NOT REMOVE" />
       <Custom Action="CheckInstallDir" Before="CreateFolders" Condition="NOT REMOVE" />
       <Custom Action="ResetProgramAcl" Before="InstallFiles" Condition="NOT REMOVE" />
       <Custom Action="InstallWebView2" Before="InstallFinalize" Condition="WEBVIEW2_MISSING AND NOT REMOVE" />
     </InstallExecuteSequence>
 
     <!-- 允许选择安装目录（约束 C2：可把整个应用连同数据装到其他盘），中文界面由 -culture zh-CN 提供。
-         界面与 NSIS 安装程序统一：同一份隐私政策（windows/Privacy.rtf）、同一套横幅与侧栏图（windows/art，
-         由应用图标生成，浅灰侧栏 + 强调色细条），完成页都带“立即启动”勾选框（默认勾选）。 -->
+         隐私政策 windows/Privacy.rtf，横幅与侧栏图 windows/art（由应用图标生成），完成页带“立即启动”勾选框（默认勾选）。 -->
     <WixVariable Id="WixUILicenseRtf" Value="$(ShellDir)\windows\Privacy.rtf" />
     <WixVariable Id="WixUIBannerBmp" Value="$(ShellDir)\windows\art\wix-banner.bmp" />
     <WixVariable Id="WixUIDialogBmp" Value="$(ShellDir)\windows\art\wix-dialog.bmp" />

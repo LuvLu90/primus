@@ -1,8 +1,8 @@
-﻿# 乾元 Primus 安装目录 ACL 处理：Primus.wxs 的 CheckInstallDir / ResetProgramAcl 与 nsis/hooks.nsh 的
-# NSIS_HOOK_PREINSTALL 共用这一份逻辑（技术方案第 3.3.2 节、第 4 章；约束 C2：可装到其他盘）。
+﻿# 乾元 Primus 安装目录 ACL 处理：Primus.wxs 的 CheckInstallDir / ResetProgramAcl
+# （技术方案第 3.3.2 节、第 4 章；约束 C2：可装到其他盘）。
 #
 # 背景：安装目录可能由普通用户预先建好（D:\primus 这类自选目录继承盘根 ACL，非系统盘根默认给 Authenticated Users
-# 修改权限），里面可能有同名的 Primus.exe、resources，所有者是该用户（隐含 WRITE_DAC），也可能放了联接或符号链接。
+# 修改权限），里面可能有同名的 Primus.exe、PrimusUpdate.exe（以 LocalSystem 运行的更新服务）、resources，所有者是该用户（隐含 WRITE_DAC），也可能放了联接或符号链接。
 # icacls 默认跟随重解析点，所以改权限之前先确认安装目录及其每一级祖先、直接子项都不是重解析点；
 # 祖先目录还必须是普通用户改不动的：所有者为 SYSTEM、Administrators 或 TrustedInstaller，其他主体没有
 # 删除（盘根除外）、删除子项、更改权限、取得所有权，否则普通用户可在检查之后把安装目录或某一级祖先改名，
@@ -17,11 +17,10 @@
 # 调用：命令行中带标记 #|<模式>|<安装目录>|，从 [Environment]::CommandLine 读取，不经 cmd.exe，
 # 路径中的 % $ 引号等都按字面处理：
 #   MSI：powershell.exe -Command "& ([ScriptBlock]::Create(<本脚本 Base64>)) #|lock|[INSTALLFOLDER]|"
-#        （build-msi.mjs 去掉整行注释与空行后按 UTF-16LE 编码，-d InstallAclScript 传给 wix）
-#   NSIS：powershell.exe -File <本脚本> "#|nsis|$INSTDIR|"
+#        （build-msi.mjs 去掉整行注释与空行后按 UTF-16LE 编码，写进 primus-scripts.wxi 的 InstallAclScript 交给 wix）
 # 模式：
-#   lock / nsis   检查安装路径，建目录，冻结安装目录，冻结并扫描程序树，最后修复程序文件 ACL
-#                 （MSI CreateFolders / NSIS 复制文件之前）；lock 也必须完成扫描，不能等 MSI 的 reset 阶段
+#   lock          检查安装路径，建目录，冻结安装目录，冻结并扫描程序树，最后修复程序文件 ACL
+#                 （MSI CreateFolders 之前）；lock 也必须完成扫描，不能等 MSI 的 reset 阶段
 #   reset         确认安装目录已锁好，再次冻结、扫描并修复程序树（MSI 安装文件之前）
 # 检查安装路径：安装目录及每一级祖先不是重解析点，已存在的祖先普通用户改不动，目录已存在时直接子项不是重解析点。
 # data 不动：其中 users\<SID> 是受保护的，归各用户所有。任何失败退出码 1，安装回滚或中止，已改的 ACL 不还原：
@@ -29,10 +28,10 @@
 # 只用 Windows PowerShell 5.1 与 .NET Framework 自带功能；代码中只用 ASCII 引号（PowerShell 把弯引号也当引号）。
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version 2
-# 错误写到标准输出：WixQuietExec 把它记进 MSI 日志，nsExec::ExecToLog 记进 NSIS 详细信息
+# 错误写到标准输出：WixQuietExec 把它记进 MSI 日志
 trap { [Console]::Out.WriteLine("primus-install-acl: error: $_"); exit 1 }
 
-$marks = [regex]::Matches([Environment]::CommandLine, '#\|(lock|reset|nsis)\|([^|"]+)\|')
+$marks = [regex]::Matches([Environment]::CommandLine, '#\|(lock|reset)\|([^|"]+)\|')
 if ($marks.Count -eq 0) { throw 'no #|mode|dir| marker on the command line' }
 $mode = $marks[$marks.Count - 1].Groups[1].Value
 $raw = $marks[$marks.Count - 1].Groups[2].Value.TrimEnd('\')
@@ -58,7 +57,7 @@ $script:held = New-Object 'System.Collections.Generic.List[System.IDisposable]'
 # SetKernelObjectSecurity 不进行 SetNamedSecurityInfo / icacls 的自动继承传播。
 # 用 OPEN_REPARSE_POINT 打开、拒绝共享数据写入与删除；这不是 ACL 锁，不阻止已有 WRITE_DAC 句柄。
 # C# 普通多行字符串（不能改为 here-string，MSI 构建会去掉整行注释与空行）。
-# NSIS 插件目录含原生 System.dll；绝不能让 C# 编译器按相对名称解析框架程序集。
+# 工作目录里可能有同名的原生 System.dll；绝不能让 C# 编译器按相对名称解析框架程序集。
 Add-Type -ReferencedAssemblies ([System.ComponentModel.Win32Exception].Assembly.Location) -TypeDefinition 'using System;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
@@ -188,7 +187,8 @@ function Get-LinkCount([string] $Path) {
 # 上级已锁好，普通用户不能在其中新建或替换项，检查之后路径指向的仍是同一文件
 function Repair-ProgramFiles {
   $stack = New-Object 'System.Collections.Generic.Stack[string]'
-  foreach ($name in 'Primus.exe', 'uninstall.exe', 'resources') {
+  # uninstall.exe：从旧 NSIS 版迁移时 RemoveNsis 删除它之前，同样按程序文件处理
+  foreach ($name in 'Primus.exe', 'PrimusUpdate.exe', 'uninstall.exe', 'resources') {
     $item = Join-Path $dir $name
     if (Test-Exists $item) { $stack.Push($item) }
   }
@@ -213,7 +213,7 @@ function Freeze-ProgramTree {
   $stack = New-Object 'System.Collections.Generic.Stack[string]'
   foreach ($child in [IO.Directory]::GetFileSystemEntries($dir)) {
     if (Test-Link $child) { throw "program files contain a junction or symbolic link: $child" }
-    if (-not [IO.Directory]::Exists($child) -or [IO.Path]::GetFileName($child) -in @('Primus.exe', 'uninstall.exe', 'resources')) { $stack.Push($child) }
+    if (-not [IO.Directory]::Exists($child) -or [IO.Path]::GetFileName($child) -in @('Primus.exe', 'PrimusUpdate.exe', 'uninstall.exe', 'resources')) { $stack.Push($child) }
   }
   while ($stack.Count -gt 0) {
     $item = $stack.Pop()

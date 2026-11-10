@@ -467,7 +467,6 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
   let update: UpdateStatus = {
     currentVersion: "0.0.0-mock",
     available: true,
-    installKind: "msi",
     settings: { autoUpdate: true, channel: "stable" },
     phase: "idle",
     progress: null,

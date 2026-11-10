@@ -1,0 +1,45 @@
+[package]
+name = "primus-update"
+version = "0.0.8"
+edition = "2024"
+rust-version = "1.99"
+description = "乾元（Primus）更新服务：以 LocalSystem 静默安装已验签的新版 MSI（ADR 0007）"
+publish = false
+
+# 纯逻辑（请求协议、验签、版本比较、路径校验、msiexec 参数）在库里，薄壳与服务共用，可在任意平台单测；
+# Windows 专用的命名管道客户端也在库里（client 模块），服务本体只在 bin。
+[lib]
+name = "primus_update"
+path = "src/lib.rs"
+
+[[bin]]
+name = "PrimusUpdate"
+path = "src/main.rs"
+
+[dependencies]
+# 版本均与薄壳（../Cargo.toml）一致，不在依赖树里引入第二个版本
+minisign-verify = "=0.3.0"
+base64 = "=0.23.1"
+semver = "=1.0.28"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_Environment",
+  "Win32_System_IO",
+  "Win32_System_Pipes",
+  "Win32_System_Registry",
+  "Win32_System_RemoteDesktop",
+  "Win32_System_Services",
+  "Win32_System_SystemInformation",
+  "Win32_System_SystemServices",
+  "Win32_System_Threading",
+  "Win32_UI_Shell",
+  "Win32_System_Com",
+] }
