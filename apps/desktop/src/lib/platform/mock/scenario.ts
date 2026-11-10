@@ -100,13 +100,18 @@ const REFERENCES_ANSWER = [
 ].join("\n");
 
 /** 为一次 prompt 生成完整事件序列 */
+/** 消息里带 `#写入` 时，工具调用换成 write（相对路径 notes.md），用于检查一轮结束后的自动预览 */
+export const WRITE_TAG = "#写入";
+
 export function promptScenario(prompt: string, now: number): ScenarioResult {
   const records: CoreRecord[] = [];
   const messages: AgentMessage[] = [];
   const toolCallId = `call_mock_${now}`;
   const thinking = "用户发来了一条消息。先看看工作区里有什么，再回答。";
   const firstText = "我先查看一下工作区的文件。";
-  const toolArgs = { path: "README.md" };
+  const writes = prompt.includes(WRITE_TAG);
+  const toolName = writes ? "write" : "read";
+  const toolArgs = writes ? { path: "notes.md", content: "# 笔记" } : { path: "README.md" };
   const toolOutput = "# 示例工作区\n\n这是 mock 平台返回的假文件内容。";
   const answer = prompt.includes(TYPOGRAPHY_TAG)
     ? TYPOGRAPHY_ANSWER
@@ -126,7 +131,7 @@ export function promptScenario(prompt: string, now: number): ScenarioResult {
     content: [
       { type: "thinking", thinking },
       { type: "text", text: firstText },
-      { type: "toolCall", id: toolCallId, name: "read", arguments: toolArgs },
+      { type: "toolCall", id: toolCallId, name: toolName, arguments: toolArgs },
     ],
     stopReason: "toolUse",
     usage: u1,
@@ -146,7 +151,7 @@ export function promptScenario(prompt: string, now: number): ScenarioResult {
       type: "toolcall_start",
       contentIndex: 2,
       id: toolCallId,
-      toolName: "read",
+      toolName,
     },
   });
   for (const delta of chunk(JSON.stringify(toolArgs), 8)) {
@@ -162,7 +167,7 @@ export function promptScenario(prompt: string, now: number): ScenarioResult {
     assistantMessageEvent: {
       type: "toolcall_end",
       contentIndex: 2,
-      toolCall: { type: "toolCall", id: toolCallId, name: "read", arguments: toolArgs },
+      toolCall: { type: "toolCall", id: toolCallId, name: toolName, arguments: toolArgs },
     },
   });
   records.push({ type: "message_end", message: first });
@@ -170,25 +175,25 @@ export function promptScenario(prompt: string, now: number): ScenarioResult {
 
   // 工具执行
   const result = { content: [{ type: "text" as const, text: toolOutput }], details: {} };
-  records.push({ type: "tool_execution_start", toolCallId, toolName: "read", args: toolArgs });
+  records.push({ type: "tool_execution_start", toolCallId, toolName, args: toolArgs });
   records.push({
     type: "tool_execution_update",
     toolCallId,
-    toolName: "read",
+    toolName,
     args: toolArgs,
     partialResult: { content: [{ type: "text", text: "# 示例工作区" }], details: {} },
   });
   records.push({
     type: "tool_execution_end",
     toolCallId,
-    toolName: "read",
+    toolName,
     result,
     isError: false,
   });
   const toolResult: AgentMessage = {
     role: "toolResult",
     toolCallId,
-    toolName: "read",
+    toolName,
     content: result.content,
     isError: false,
     timestamp: now + 2,

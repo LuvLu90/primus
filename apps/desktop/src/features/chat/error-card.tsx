@@ -217,7 +217,10 @@ export function ErrorCard({
           <div className="absolute top-1 right-1">
             <CopyButton text={report} label={t.copyDetails} size="sm" />
           </div>
-          <p className="px-2.5 pt-2 pr-9 text-2xs text-fg/80">{copy.hint}</p>
+          <p className="px-2.5 pt-2 pr-9 text-2xs text-fg/80">
+            {copy.hint}
+            {copy.action}
+          </p>
           <dl className="flex flex-wrap gap-x-3 gap-y-0.5 px-2.5 pt-1 text-2xs text-muted">
             {message.provider && <Meta label={t.provider}>{providerName || message.provider}</Meta>}
             {message.model && (

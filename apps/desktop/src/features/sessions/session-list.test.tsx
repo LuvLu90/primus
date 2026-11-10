@@ -138,6 +138,9 @@ describe("会话列表", () => {
     await waitFor(() => expect(pages()).toEqual(["c1", "c2"]));
     await new Promise((r) => setTimeout(r, 50));
     expect(pages()).toEqual(["c1", "c2"]);
+    // 列表不够长、没法滚动：手动“加载更多”继续翻页
+    fireEvent.click(await screen.findByRole("button", { name: t.loadMore }));
+    await waitFor(() => expect(pages()).toContain("c3"));
   });
 
   it("没有会话时列表区留空；加载失败时显示错误并可重试", async () => {

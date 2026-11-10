@@ -24,6 +24,7 @@ import { GlassButton } from "@/components/ui/glass-button";
 import { showPreview } from "@/features/files/preview-store";
 import { lastWrittenFile } from "@/features/files/written-file";
 import { type ChatTab, useSessionsStore } from "@/features/sessions/sessions-store";
+import { useSessionDefaultWorkspace } from "@/features/sessions/use-default-workspace";
 import { getFileDrop, getPlatform, isTauriRuntime } from "@/lib/platform";
 import type { SpeechSettingsPage, WorkspaceInfo } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
@@ -410,6 +411,9 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
         ? { path: lockedPath, name: baseName(lockedPath), trusted: false, needsTrust: false }
         : null;
   const workspaceLocked = started || lockedPath !== null;
+  // 未选工作区时 Agent 在默认会话目录里工作：相对路径（文件引用、写入预览）按它解析
+  const defaultWorkspace = useSessionDefaultWorkspace();
+  const fileRefBase = shownWorkspace?.path ?? defaultWorkspace ?? null;
   const canPickFiles = useCanPickFiles();
   const canUseWorkspaces = useCanUseWorkspaces();
   useEffect(() => {
@@ -591,7 +595,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     if (!pendingPreview.current || (tabId !== undefined && tabId !== activeTabId)) return;
     pendingPreview.current = false;
     const written = lastWrittenFile(state.messages);
-    const path = written && resolveFileRefPath(written, shownWorkspace?.path ?? null);
+    const path = written && resolveFileRefPath(written, fileRefBase);
     if (path) showPreview(path);
   }, [state.running, activeTabId]);
 
@@ -615,7 +619,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
 
   return (
     // 回复里文件引用的相对路径按会话工作区解析（file-ref-actions.tsx）
-    <FileRefBase.Provider value={shownWorkspace?.path ?? null}>
+    <FileRefBase.Provider value={fileRefBase}>
       <div className="relative flex min-h-0 flex-1 flex-col">
         <MessageIndex items={indexItems} scrollRef={scrollRef} />
         {/* 顶部渐隐：滚上去的内容在左右栏开关下方淡出，不和按钮叠在一起 */}

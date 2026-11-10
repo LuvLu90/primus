@@ -54,7 +54,10 @@ describe("错误卡片", () => {
     expect(screen.queryByText("ioply 网关")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: t.details }));
     // 提示在详情里也能看到（触屏、键盘用户无需悬停）
-    expect(screen.getByText(t.categories.connection.hint)).toBeTruthy();
+    // 详情里同时给出原因与按类别区分的处理建议
+    expect(
+      screen.getByText(`${t.categories.connection.hint}${t.categories.connection.action}`),
+    ).toBeTruthy();
     expect(screen.getByText("ioply 网关")).toBeTruthy();
     expect(screen.getByText("mock-large")).toBeTruthy();
     expect(screen.getByText("10.4s")).toBeTruthy();
@@ -94,6 +97,11 @@ describe("错误卡片", () => {
     expect(screen.queryByRole("button", { name: t.probe })).toBeNull();
     // 没有重试回调（历史轮次或运行中）时不显示重试
     expect(screen.queryByRole("button", { name: t.retry })).toBeNull();
+    // 详细信息里保留按类别区分的处理建议
+    fireEvent.click(screen.getByRole("button", { name: t.details }));
+    expect(
+      screen.getByText(`${t.categories.rateLimit.hint}${t.categories.rateLimit.action}`),
+    ).toBeTruthy();
   });
 
   it("详细信息可折叠，含完整错误文本与诊断，可复制", async () => {

@@ -513,6 +513,7 @@ export const strings = {
     searching: "正在搜索…",
     searchResults: "搜索结果",
     loading: "正在加载…",
+    loadMore: "加载更多",
     loadFailed: "会话列表加载失败",
     searchFailed: "搜索失败",
     tabsFull: "标签已满，请关闭一个标签，或等任一会话结束运行",

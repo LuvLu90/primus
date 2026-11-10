@@ -10,6 +10,7 @@ import {
 } from "@testing-library/react";
 import { useRouter } from "next/navigation";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { usePreviewStore } from "@/features/files/preview-store";
 import {
   CORE_NOT_RUNNING,
   type ModelsInfo,
@@ -17,6 +18,7 @@ import {
   setPlatformForTesting,
 } from "@/lib/platform";
 import { createMockPlatform } from "@/lib/platform/mock";
+import { WRITE_TAG } from "@/lib/platform/mock/scenario";
 import { strings } from "@/lib/strings";
 import { initialAppState, useAppStore } from "@/stores/app-store";
 import { ChatPanel } from "./chat-panel";
@@ -71,6 +73,23 @@ describe("对话区（mock 事件流）", () => {
     );
     await waitFor(() => expect(screen.getByRole("button", { name: t.send })).toBeTruthy());
   });
+
+  it("未选工作区时，一轮结束按默认会话目录解析相对写入路径并打开预览", async () => {
+    usePreviewStore.setState({ path: null, seq: 0 });
+    // 记录分多帧到达：界面能看到“运行中 → 空闲”的变化
+    setPlatformForTesting(createMockPlatform({ intervalMs: 16, batchSize: 4 }));
+    render(<ChatPanel />);
+    const input = screen.getByRole("textbox", { name: t.inputLabel });
+    fireEvent.change(input, { target: { value: `${WRITE_TAG} 记一下` } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(
+      () =>
+        expect(usePreviewStore.getState().path).toBe(
+          "C:\\Users\\mock\\AppData\\Roaming\\Primus\\users\\mock\\chat\\notes.md",
+        ),
+      { timeout: 8000 },
+    );
+  }, 10_000);
 
   it("没有可用的模型时禁止发送，可去设置添加渠道，推送新配置后恢复", async () => {
     const base = createMockPlatform({ intervalMs: 1, batchSize: 50 });
@@ -831,6 +850,52 @@ describe("对话区（mock 事件流）", () => {
     });
     expect(ok).toBe(true);
     expect(result.current.pendingModel).toEqual({ thinkingLevel: "high" });
+  });
+
+  it("历史会话：get_messages 已返回但历史尚未写入 store 时仍锁定模型，写入后保持锁定", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    setPlatformForTesting(platform);
+    const first = renderHook(() => useChatSession());
+    await act(async () => {
+      await first.result.current.send("你好");
+    });
+    await waitFor(() => {
+      expect(first.result.current.state.running).toBe(false);
+      expect(first.result.current.state.messages.length).toBeGreaterThan(1);
+    });
+    first.unmount();
+    const path = (await platform.sessionList(null)).items[0]?.path ?? "";
+    expect(path).not.toBe("");
+
+    // 接管帧队列：重建的 response 已到达、但还没在帧里写入 store
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => frames.push(cb));
+    try {
+      const records: { type: string }[] = [];
+      const coreSend = platform.coreSend.bind(platform);
+      vi.spyOn(platform, "coreSend").mockImplementation((key, record) => {
+        records.push(record as { type: string });
+        return coreSend(key, record);
+      });
+      const { result } = renderHook(() => useChatSession({ sessionPath: path }));
+      // 一帧是排队的记录合并，另一帧是重建成功后的收尾
+      await waitFor(() => expect(frames.length).toBeGreaterThanOrEqual(2));
+      expect(result.current.state.messages).toHaveLength(0);
+      expect(result.current.modelLocked).toBe(true);
+      let ok: boolean | undefined;
+      await act(async () => {
+        ok = await result.current.selectModel({ model: "ioply/mock-fast" });
+      });
+      expect(ok).toBe(false);
+      expect(records.some((r) => r.type === "set_model")).toBe(false);
+      await act(async () => {
+        for (const cb of frames.splice(0)) cb(0);
+      });
+      expect(result.current.state.messages.length).toBeGreaterThan(1);
+      expect(result.current.modelLocked).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("扩展的操作确认显示在输入框上方，选择后回复 Core 并消失", async () => {

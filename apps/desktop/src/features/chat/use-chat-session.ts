@@ -270,7 +270,9 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
   // 历史会话的历史已显示：任意一次重建（首次加载、缺口重建、重启后重建）成功即为 true；
   // 打开或重建失败时保持 false，下次发送前再加载
   const historyLoaded = useRef(false);
-  // 同上，供界面渲染（锁定模型选择）
+  // 历史消息已写入 store：重建的 response 排在帧队列里，下一帧 applyChunks 之后才算数。
+  // 模型锁定只看它，避免“已加载但 store 仍为空”的间隙里切换模型（ref 供 selectModel，state 供界面渲染）
+  const historyShown = useRef(false);
   const [historyReady, setHistoryReady] = useState(false);
 
   const ensureOpen = useCallback((): Promise<void> => {
@@ -323,11 +325,12 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
         // 重建成功即解除“重启后重建失败”造成的锁定；超时命令造成的锁定仍等其迟到响应
         onResynced: () => {
           historyLoaded.current = true;
-          setHistoryReady(true);
           lock.current.restart = false;
           syncUnresponsive();
           const failures = resyncFailures.current;
           nextFrame(() => {
+            historyShown.current = true;
+            setHistoryReady(true);
             if (resyncFailures.current === failures) clearError("resync");
           });
         },
@@ -467,7 +470,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
       // 同时请求模型与强度时强度照常应用，但返回 false，表示请求没有全部生效。
       const locked =
         store.getState().messages.length > 0 ||
-        (Boolean(optionsRef.current.sessionPath) && !historyLoaded.current);
+        (Boolean(optionsRef.current.sessionPath) && !historyShown.current);
       const modelRejected = Boolean(choice.model) && locked;
       if (modelRejected) {
         if (!choice.thinkingLevel) return false;

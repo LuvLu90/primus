@@ -25,6 +25,7 @@ import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
 import { buildRows, type ListRow, workspaceKey } from "./session-groups";
 import { findTab, tabsForDeletion, useSessionsStore } from "./sessions-store";
+import { useSessionDefaultWorkspace } from "./use-default-workspace";
 import { useSessionIndex, useSessionSearch } from "./use-session-index";
 
 // 左栏会话列表（第 10.2、16.2 节，ADR 0006）：搜索框 + 虚拟滚动的会话列表，滚到底加载下一页；
@@ -44,20 +45,8 @@ const MAX_IDLE_PAGES = 2;
 
 /** 当前用户未选工作区时的默认目录键：读取中为 undefined，读取失败为 null（只有空工作区算“最近”） */
 function useDefaultWorkspaceKey(): string | null | undefined {
-  const [key, setKey] = useState<string | null>();
-  useEffect(() => {
-    let alive = true;
-    getPlatform()
-      .then((p) => p.sessionDefaultWorkspace())
-      .then(
-        (path) => alive && setKey(workspaceKey(path)),
-        () => alive && setKey(null),
-      );
-    return () => {
-      alive = false;
-    };
-  }, []);
-  return key;
+  const path = useSessionDefaultWorkspace();
+  return path ? workspaceKey(path) : path;
 }
 
 /** 相对时间（刚刚 / n 分钟前 / n 小时前 / n 天前，超过 30 天显示日期） */
@@ -142,6 +131,8 @@ export function SessionList() {
   const { hasMore, loading, loadMore, error: indexError } = index;
   // 自动加载的上一页加载前的行数，与此后连续未增长的页数：连续几页都没让列表变长时停下，等用户滚动
   const autoLoad = useRef({ rows: -1, idle: 0 });
+  // 自动分页已暂停且列表无法滚动（手动“加载更多”入口）
+  const [stalled, setStalled] = useState(false);
   // 加载失败后不自动重试（否则 loading 复位即再次触发，连续请求）：等用户点“重试”
   useEffect(() => {
     if (
@@ -156,18 +147,28 @@ export function SessionList() {
     const auto = autoLoad.current;
     auto.idle = rows.length > auto.rows ? 0 : auto.idle + 1;
     auto.rows = rows.length;
-    if (auto.idle >= MAX_IDLE_PAGES) return;
+    if (auto.idle >= MAX_IDLE_PAGES) {
+      // 暂停自动分页；列表不够长、没法滚动触发时，给一个手动“加载更多”
+      const el = scrollRef.current;
+      setStalled(!el || el.scrollHeight <= el.clientHeight + 1);
+      return;
+    }
     loadMore();
   }, [searching, grouping, indexError, hasMore, loading, lastIndex, rows.length, loadMore]);
-  /** 用户滚到底部附近：解除“连续未增长”的限制，继续分页 */
-  const onScroll = () => {
-    const el = scrollRef.current;
+  /** 解除“连续未增长”的限制，继续分页 */
+  const resumePaging = () => {
     const auto = autoLoad.current;
-    if (!el || auto.idle < MAX_IDLE_PAGES) return;
-    if (el.scrollTop + el.clientHeight < el.scrollHeight - ROW_HEIGHT * 2) return;
     auto.idle = 0;
     auto.rows = -1;
+    setStalled(false);
     if (hasMore && !loading && !indexError && !searching) loadMore();
+  };
+  /** 用户滚到底部附近：继续分页 */
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (!el || autoLoad.current.idle < MAX_IDLE_PAGES) return;
+    if (el.scrollTop + el.clientHeight < el.scrollHeight - ROW_HEIGHT * 2) return;
+    resumePaging();
   };
 
   /** 在项目中新建会话：输入框上方的工作区切到该项目，再开一个空标签 */
@@ -332,6 +333,15 @@ export function SessionList() {
               );
             })}
           </ul>
+        )}
+        {stalled && hasMore && !searching && !indexError && (
+          <button
+            type="button"
+            onClick={resumePaging}
+            className="mx-auto mt-1 block rounded-md px-2 py-1 text-xs text-muted outline-none transition-colors hover:bg-hover hover:text-fg focus-visible:bg-hover"
+          >
+            {t.loadMore}
+          </button>
         )}
       </div>
 

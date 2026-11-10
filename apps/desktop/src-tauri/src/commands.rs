@@ -640,6 +640,20 @@ mod tests {
     use super::check_external_url;
 
     #[test]
+    fn attachment_image_rejects_remote_and_relative_paths() {
+        for bad in [
+            r"\\server\share\a.png",
+            "//server/share/a.png",
+            r"\\?\C:\a.png",
+            "file:///C:/a.png",
+            "a.png",
+            "C:\\a\u{7}.png",
+        ] {
+            assert!(super::attachment_image(bad.into(), 512).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
     fn external_url_only_http_https() {
         assert!(check_external_url("https://example.com/a?b=1").is_ok());
         assert!(check_external_url("HTTP://example.com").is_ok());
@@ -941,17 +955,16 @@ pub(crate) fn git_branch(workspace: String) -> Option<crate::git::GitBranch> {
     crate::git::branch(path)
 }
 
-/// 输入框图片附件：读取本地图片，在内存中按最长边 `max_edge` 缩小并编码为 base64，附带缩略图（不写任何文件）。
+/// 输入框图片附件与右栏图片预览：读取本地图片，在内存中按最长边 `max_edge` 缩小并编码为 base64，附带缩略图（不写任何文件）。
+/// 预览的路径来自助手回复（不可信）：读取前做与 `open_path` 相同的本机路径校验，拒绝网址、UNC / 设备路径
+/// （读取 UNC 路径的元数据就会向对方服务器发起 SMB 认证）与控制字符。
 #[tauri::command(async)]
 pub(crate) fn attachment_image(
     path: String,
     max_edge: u32,
 ) -> Result<crate::attachments::AttachmentImage, String> {
-    let path = Path::new(&path);
-    if !path.is_absolute() {
-        return Err("附件路径必须是绝对路径".into());
-    }
-    crate::attachments::read_image(path, max_edge)
+    let checked = crate::open_path::check_path(&path)?;
+    crate::attachments::read_image(&checked.path, max_edge)
 }
 
 /// 语音输入是否可用（Windows 有系统语音语言时为 true）。
