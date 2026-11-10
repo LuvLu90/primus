@@ -6,7 +6,7 @@
 #
 # - NSIS 卸载程序以 /S（静默）与 _?=<目录>（就地运行并等待结束）运行；静默时不勾选“删除应用数据”，data 保留
 #   （hooks.nsh 的卸载只删自己安装的文件）。就地运行的卸载程序删不掉自身，结束后由本脚本删除 uninstall.exe。
-# - 以 SYSTEM 身份运行目录里的 exe 之前先确认它是可信的：卸载程序与其所在目录都不是重解析点，所有者为 SYSTEM 或
+# - 以 SYSTEM 身份运行目录里的 exe 之前先持有从盘根起每一级目录与卸载程序的句柄（不共享删除，防止检查后被替换），再确认它是可信的：卸载程序与其所在目录都不是重解析点，所有者为 SYSTEM 或
 #   Administrators，SYSTEM、Administrators、TrustedInstaller 以外的主体没有写入、删除、改权限、取得所有权的权限
 #   （NSIS 版安装时 hooks.nsh 已按 install-acl.ps1 锁好安装目录）。不可信就失败（安装回滚），不运行它：
 #   否则普通用户可在自选目录里放一个 uninstall.exe，借安装程序以 SYSTEM 身份运行。
@@ -50,12 +50,40 @@ function Assert-Trusted([string] $Path) {
     }
   }
 }
+# 路径在检查后到卸载程序启动前不能被替换：从盘根到安装目录的每一级目录与卸载程序本身都先以不共享删除的方式打开
+# （FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT），持有到卸载程序结束，任何一级都不能被改名、移走或删除；
+# 祖先目录是重解析点（联接可被改指向）就拒绝。之后再检查目录与卸载程序是否可信
+Add-Type -ReferencedAssemblies ([System.ComponentModel.Win32Exception].Assembly.Location) -TypeDefinition '
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+public static class PrimusRemoveNsisHandle {
+[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+static extern SafeFileHandle CreateFile(string n, uint a, uint s, IntPtr sa, uint c, uint f, IntPtr t);
+public static SafeFileHandle Open(string p) {
+var h = CreateFile(p, 0x80, 3, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero);
+if (h.IsInvalid) { int e = Marshal.GetLastWin32Error(); h.Dispose(); throw new Win32Exception(e); }
+return h;
+}
+}'
+$held = New-Object System.Collections.Generic.List[System.IDisposable]
+$chain = New-Object System.Collections.Generic.List[string]
+for ($p = $dir; $p; $p = [IO.Path]::GetDirectoryName($p)) { $chain.Insert(0, $p) }
+foreach ($p in $chain) {
+  $held.Add([PrimusRemoveNsisHandle]::Open($p))
+  if ([IO.Path]::GetDirectoryName($p) -and ([IO.File]::GetAttributes($p) -band [IO.FileAttributes]::ReparsePoint)) {
+    throw "not removing NSIS install: $p is a reparse point"
+  }
+}
+$held.Add([PrimusRemoveNsisHandle]::Open($uninstaller))
 Assert-Trusted $dir
 Assert-Trusted $uninstaller
 
 [Console]::Out.WriteLine("primus-remove-nsis: uninstalling NSIS version in $dir")
-$p = Start-Process -FilePath $uninstaller -ArgumentList @('/S', "_?=$dir") -Wait -PassThru -WindowStyle Hidden
-if ($p.ExitCode -ne 0) { throw "NSIS uninstaller exited with $($p.ExitCode)" }
+$proc = Start-Process -FilePath $uninstaller -ArgumentList @('/S', "_?=$dir") -Wait -PassThru -WindowStyle Hidden
+if ($proc.ExitCode -ne 0) { throw "NSIS uninstaller exited with $($proc.ExitCode)" }
+foreach ($h in $held) { $h.Dispose() }
 Remove-Item -LiteralPath $uninstaller -Force
 
 $key = 'HKLM:\Software\乾元 Primus'

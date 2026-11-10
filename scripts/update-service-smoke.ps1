@@ -68,7 +68,12 @@ function Invoke-Msiexec([string[]] $Arguments, [string] $LogName) {
   $log = Join-Path $LogDir $LogName
   $line = ($Arguments + @('/qn', '/norestart', '/l*v', "`"$log`"")) -join ' '
   Write-Host "  msiexec $line"
-  $p = Start-Process -FilePath 'msiexec.exe' -ArgumentList $line -PassThru -Wait
+  $p = Start-Process -FilePath 'msiexec.exe' -ArgumentList $line -PassThru
+  if (-not $p.WaitForExit($TimeoutSeconds * 1000)) {
+    $p.Kill()
+    if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log -Tail 60 | ForEach-Object { Write-Host "    $_" } }
+    throw "✗ msiexec 超过 $TimeoutSeconds 秒未结束（日志 $log）"
+  }
   if ($p.ExitCode -ne 0) {
     if (Test-Path -LiteralPath $log) { Get-Content -LiteralPath $log -Tail 60 | ForEach-Object { Write-Host "    $_" } }
     throw "✗ msiexec 失败，退出码 $($p.ExitCode)（日志 $log）"

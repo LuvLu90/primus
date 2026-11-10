@@ -114,8 +114,10 @@ impl InstallRequest {
         if bytes.len() > MAX_REQUEST_BYTES {
             return Err("请求过长".to_owned());
         }
-        let request: Self =
+        let mut request: Self =
             serde_json::from_slice(bytes).map_err(|e| format!("请求格式不对：{e}"))?;
+        // parse_version 容许首尾空白；服务写日志、传给 worker 的一律是去掉空白后的版本
+        request.version = request.version.trim().to_owned();
         request.validate()?;
         Ok(request)
     }
@@ -272,6 +274,12 @@ mod tests {
             InstallRequest::decode(&with_dir.encode().unwrap()).unwrap(),
             with_dir
         );
+        let padded = InstallRequest {
+            version: format!(" {}\r\n", request().version),
+            ..request()
+        };
+        let bytes = serde_json::to_vec(&padded).unwrap();
+        assert_eq!(InstallRequest::decode(&bytes).unwrap(), request());
     }
 
     #[test]
