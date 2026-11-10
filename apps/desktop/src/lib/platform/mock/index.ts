@@ -1144,10 +1144,11 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
           : `// ${absolute}\nexport const answer = 42;\n`;
       return { kind: "text", text, truncated: false, size: text.length };
     },
-    // 与薄壳一致：只接受 docx / pptx / pdf；浏览器预览读不到本机文件的字节
+    // 与薄壳一致：只接受 docx / pptx / xlsx / xlsm / pdf；浏览器预览读不到本机文件的字节
     previewFileBytes: async (path) => {
       const absolute = mockAbsolutePath(path);
-      if (!/\.(docx|pptx|pdf)$/i.test(absolute)) throw new Error("该类型的文件不能按文档预览");
+      if (!/\.(docx|pptx|xlsx|xlsm|pdf)$/i.test(absolute))
+        throw new Error("该类型的文件不能按文档预览");
       return notAvailable("读取本机文档");
     },
     storageUsage: async () => ({ sessions: 0, logs: 0, cache: 0 }),

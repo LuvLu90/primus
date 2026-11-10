@@ -5,8 +5,11 @@
 //   外链脚本、远程图片与相对路径资源不会加载（样式与内联图片正常）。
 // - Word：docx-preview；PowerPoint：@aiden0z/pptx-renderer。两者体积大，按需动态加载，不进启动包。
 // - PDF：blob URL 交给 WebView2 自带的 PDF 查看器（CSP 的 frame-src 放行 blob:）。
+// - Excel（.xlsx / .xlsm）：@cj-tech-master/excelts 解析（按需动态加载），sheet-view 显示为带行列号的网格与工作表标签。
 import { useEffect, useRef, useState } from "react";
 import { strings } from "@/lib/strings";
+import { readWorkbook, type Sheet } from "./sheet-model";
+import { SheetBook } from "./sheet-view";
 
 const t = strings.preview;
 
@@ -170,4 +173,27 @@ export function PptxView({ data }: { data: ArrayBuffer }) {
       <div ref={host} data-testid="pptx-host" />
     </div>
   );
+}
+
+/** Excel：解析工作簿后像在 Excel 中打开一样显示（工作表标签、列字母与行号） */
+export function XlsxView({ data }: { data: ArrayBuffer }) {
+  const [status, setStatus] = useState<RenderState>({ state: "rendering" });
+  const [sheets, setSheets] = useState<Sheet[]>([]);
+  useEffect(() => {
+    let alive = true;
+    setStatus({ state: "rendering" });
+    readWorkbook(data).then(
+      (next) => {
+        if (!alive) return;
+        setSheets(next);
+        setStatus({ state: "done" });
+      },
+      (e: unknown) => alive && setStatus({ state: "error", reason: reasonOf(e) }),
+    );
+    return () => {
+      alive = false;
+    };
+  }, [data]);
+  if (status.state !== "done") return <RenderStatus status={status} />;
+  return <SheetBook sheets={sheets} />;
 }

@@ -1,4 +1,5 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { Workbook } from "@cj-tech-master/excelts";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setPlatformForTesting } from "@/lib/platform";
 import { createMockPlatform } from "@/lib/platform/mock";
@@ -51,7 +52,14 @@ describe("右栏文件预览：显示打开后的样子", () => {
     pptx.PptxViewer.open.mockClear();
     pptx.destroy.mockClear();
   });
-  afterEach(() => setPlatformForTesting(undefined));
+  afterEach(() => {
+    setPlatformForTesting(undefined);
+    vi.restoreAllMocks();
+  });
+
+  /** 表格按行虚拟滚动：jsdom 没有布局，给滚动容器一屏高度 */
+  const withViewport = () =>
+    vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(640);
 
   it("网页在无权限的沙箱 iframe 中渲染，而不是显示源码", async () => {
     const { previewFile } = setup();
@@ -144,12 +152,77 @@ describe("右栏文件预览：显示打开后的样子", () => {
     );
   });
 
+  it("Excel 像打开后一样显示：列字母、行号、格式化后的值，底部标签切换工作表", async () => {
+    const { previewFileBytes } = setup();
+    withViewport();
+    const wb = new Workbook();
+    const ws = wb.addWorksheet("销售");
+    ws.addRow(["产品", "金额"]);
+    ws.addRow(["苹果", 1234.5]);
+    ws.getCell("B2").numFmt = "#,##0.00";
+    ws.mergeCells("A3:B3");
+    ws.getCell("A3").value = "合计";
+    wb.addWorksheet("第二页").getCell("A1").value = "你好";
+    const buf = (await wb.xlsx.writeBuffer()) as Uint8Array;
+    previewFileBytes.mockResolvedValue(
+      buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer,
+    );
+    render(<FilePreview />);
+    act(() => showPreview("/w/报表.xlsm"));
+    const grid = await screen.findByRole("region", { name: t.spreadsheet });
+    expect(previewFileBytes).toHaveBeenCalledWith("/w/报表.xlsm");
+    for (const label of ["A", "B", "1", "2", "3", "产品", "1,234.50", "合计"])
+      expect(within(grid).getByText(label)).toBeTruthy();
+    const tabs = screen.getByRole("tablist", { name: t.sheets });
+    const first = within(tabs).getByRole("tab", { name: "销售" });
+    expect(first.getAttribute("aria-selected")).toBe("true");
+    fireEvent.click(within(tabs).getByRole("tab", { name: "第二页" }));
+    expect(await screen.findByText("你好")).toBeTruthy();
+    expect(screen.queryByText("产品")).toBeNull();
+    expect(first.getAttribute("aria-selected")).toBe("false");
+  });
+
+  it("CSV 显示为表格（不显示工作表标签），只读了开头时提示", async () => {
+    const { previewFile, previewFileBytes } = setup();
+    withViewport();
+    previewFile.mockResolvedValue({
+      kind: "text",
+      text: '名称,数量\n"苹果, 红",3\n半',
+      truncated: true,
+      size: 2e6,
+    });
+    render(<FilePreview />);
+    act(() => showPreview("/w/清单.csv"));
+    const grid = await screen.findByRole("region", { name: t.spreadsheet });
+    expect(within(grid).getByText("苹果, 红")).toBeTruthy();
+    expect(within(grid).getByText("A")).toBeTruthy();
+    expect(within(grid).queryByText("半")).toBeNull();
+    expect(screen.queryByRole("tablist")).toBeNull();
+    expect(screen.getByText(t.truncated)).toBeTruthy();
+    expect(previewFileBytes).not.toHaveBeenCalled();
+  });
+
+  it("工作簿解析失败时显示原因", async () => {
+    const { previewFileBytes } = setup();
+    previewFileBytes.mockResolvedValue(new Uint8Array([1, 2, 3]).buffer);
+    render(<FilePreview />);
+    act(() => showPreview("/w/坏.xlsx"));
+    expect((await screen.findByRole("alert")).textContent).toMatch(
+      new RegExp(`^${t.renderFailed}.+`),
+    );
+  });
+
   it("旧版 Office 等其他二进制文件提示用默认程序打开", async () => {
     const { previewFile, previewFileBytes, openPath } = setup();
     previewFile.mockResolvedValue({ kind: "binary", size: 10 });
     render(<FilePreview />);
     act(() => showPreview("/w/旧.doc"));
     expect(await screen.findByText(t.binary)).toBeTruthy();
+    act(() => showPreview("/w/旧表.xls"));
+    await waitFor(() => expect(previewFile).toHaveBeenCalledWith("/w/旧表.xls"));
+    expect(await screen.findByText(t.binary)).toBeTruthy();
+    act(() => showPreview("/w/旧.doc"));
+    await screen.findByText(t.binary);
     expect(previewFileBytes).not.toHaveBeenCalled();
     const buttons = screen.getAllByRole("button", { name: t.openExternal });
     fireEvent.click(buttons[buttons.length - 1] as HTMLElement);

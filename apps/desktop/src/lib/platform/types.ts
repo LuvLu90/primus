@@ -341,7 +341,8 @@ export interface Platform {
   /** 右栏预览本机文件：校验同 `openPath`，只读，最多 1 MiB；二进制文件不返回内容（图片走 `attachmentImage`） */
   previewFile(path: string): Promise<FilePreview>;
   /**
-   * 右栏按“打开后的样子”预览 Word / PowerPoint / PDF：读取整份文件字节（校验同 `openPath`，只接受 docx / pptx / pdf，
+   * 右栏按“打开后的样子”预览 Word / PowerPoint / Excel / PDF：读取整份文件字节（校验同 `openPath`，只接受
+   * docx / pptx / xlsx / xlsm / pdf，
    * 最多 30 MiB，超过时报错，错误文案可直接显示）
    */
   previewFileBytes(path: string): Promise<ArrayBuffer>;

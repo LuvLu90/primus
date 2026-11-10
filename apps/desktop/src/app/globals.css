@@ -16,6 +16,11 @@
   --color-ink: #0d0d0e;
   /* 右栏渲染出的网页 / 文档纸面：深浅色外观下都是白纸（与在浏览器、Word 中打开一致），.dark 不覆盖 */
   --color-page: #ffffff;
+  /* 纸面上的界面元素（右栏表格的文字、网格线与行列号）：随纸面在深浅色外观下都不变，.dark 不覆盖 */
+  --color-on-page: #1d1d1f;
+  --color-page-muted: #6e6e73;
+  --color-page-line: #e1e1e3;
+  --color-page-header: #f3f3f5;
   --color-muted: #6e6e73;
   --color-border: rgb(0 0 0 / 0.08);
   --color-hover: rgb(0 0 0 / 0.05);

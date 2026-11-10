@@ -184,6 +184,9 @@ importers:
       '@aiden0z/pptx-renderer':
         specifier: 1.4.0
         version: 1.4.0
+      '@cj-tech-master/excelts':
+        specifier: 10.2.0
+        version: 10.2.0
       '@codemirror/merge':
         specifier: 6.12.3
         version: 6.12.3
@@ -416,6 +419,11 @@ packages:
   '@bramus/specificity@2.4.3':
     resolution: {integrity: sha512-0GEz8qJWokkUVYQYRukmkSHIFNoBH8QTreeHrAFbvz1XFYc3Y+puhMs8PQ5x8GNugiC2l5jvDBXKLbBIByeSBw==}
     hasBin: true
+
+  '@cj-tech-master/excelts@10.2.0':
+    resolution: {integrity: sha512-pjvxf+o2CoNU/38fAOUuqFeIhEnUwy4IKsUulmXLv3sLiU3agAvpIV5dzWb2yj3f06u23Ai0XGvLvYjs9JpqRA==}
+    engines: {node: '>=22.0.0'}
+    deprecated: 'excelts is no longer actively developed; existing versions keep working. New features and fixes go to its successor, documonster (same author). Migration guide: https://github.com/documonster/documonster/blob/main/MIGRATION_EXCELTS_TO_DOCUMONSTER.md'
 
   '@codemirror/language@6.13.1':
     resolution: {integrity: sha512-zfvU2r3TyylQLMj/te+5CnQ0rSqZi8B1oTCBbQkagcLW4Xc6imab6qN+pEJhsuNOLaJqiRyBXp9UhWA1DhVvDw==}
@@ -4217,6 +4225,8 @@ snapshots:
   '@bramus/specificity@2.4.3':
     dependencies:
       css-tree: 3.2.1
+
+  '@cj-tech-master/excelts@10.2.0': {}
 
   '@codemirror/language@6.13.1':
     dependencies:

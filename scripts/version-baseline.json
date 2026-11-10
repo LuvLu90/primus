@@ -28,6 +28,7 @@
     "@xterm/xterm": "6.0.0",
     "docx-preview": "0.4.1",
     "@aiden0z/pptx-renderer": "1.4.0",
+    "@cj-tech-master/excelts": "10.2.0",
     "vitest": "5.0.5",
     "@testing-library/react": "16.3.3",
     "webdriverio": "10.1.0",

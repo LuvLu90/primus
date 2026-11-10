@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@aiden0z/pptx-renderer": "1.4.0",
+    "@cj-tech-master/excelts": "10.2.0",
     "@codemirror/merge": "6.12.3",
     "@codemirror/view": "6.43.15",
     "@primus/protocol": "workspace:*",

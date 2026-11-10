@@ -1,10 +1,10 @@
 "use client";
 
 // 右栏文件预览（只读），显示文件“打开后的样子”：网页渲染成页面、Word 显示为文档、PowerPoint 显示为幻灯片、
-// PDF 用 WebView2 的 PDF 查看器、Markdown 渲染、图片显示（SVG 也按图片显示）；其余文本按等宽原样显示；
-// 其他二进制文件（含旧版 .doc / .ppt、.xlsx）只给“用默认程序打开”。
-// 文本与网页走薄壳 preview_file（最多 1 MiB），图片走 attachment_image（内存中缩小，不写文件），
-// Word / PowerPoint / PDF 走 preview_file_bytes（整份字节，最多 30 MiB）。
+// Excel 与 CSV 显示为带行列号的表格、PDF 用 WebView2 的 PDF 查看器、Markdown 渲染、图片显示（SVG 也按图片显示）；
+// 其余文本按等宽原样显示；其他二进制文件（含旧版 .doc / .ppt / .xls）只给“用默认程序打开”。
+// 文本、网页与 CSV 走薄壳 preview_file（最多 1 MiB），图片走 attachment_image（内存中缩小，不写文件），
+// Word / PowerPoint / Excel / PDF 走 preview_file_bytes（整份字节，最多 30 MiB）。
 import { useEffect, useState } from "react";
 import { FileIcon, Icon } from "@/components/icons";
 import { Tooltip } from "@/components/ui/tooltip";
@@ -14,7 +14,9 @@ import { MarkdownText } from "@/features/chat/message-content";
 import { getPlatform } from "@/lib/platform";
 import { strings } from "@/lib/strings";
 import { usePreviewStore } from "./preview-store";
-import { DocxView, HtmlView, PdfView, PptxView } from "./rendered-views";
+import { DocxView, HtmlView, PdfView, PptxView, XlsxView } from "./rendered-views";
+import { type Sheet, sheetFromCsv } from "./sheet-model";
+import { SheetBook } from "./sheet-view";
 
 const t = strings.preview;
 
@@ -24,22 +26,25 @@ const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp)$/i;
 const MARKDOWN_EXT = /\.(md|markdown|mdx)$/i;
 const HTML_EXT = /\.(html?|xhtml)$/i;
 const SVG_EXT = /\.svg$/i;
-/** 需要整份字节在前端渲染的文档 */
-const DOCUMENT_EXT = /\.(docx|pptx|pdf)$/i;
+const CSV_EXT = /\.(csv|tsv)$/i;
+/** 需要整份字节在前端渲染的文档（.xlsm 与 .xlsx 同格式，宏不运行） */
+const DOCUMENT_EXT = /\.(docx|pptx|xlsx|xlsm|pdf)$/i;
 
-type DocumentKind = "docx" | "pptx" | "pdf";
+type DocumentKind = "docx" | "pptx" | "xlsx" | "pdf";
 
 type Loaded =
   | { state: "loading" }
   | { state: "text"; text: string; truncated: boolean }
   | { state: "html"; html: string; truncated: boolean }
+  | { state: "table"; sheet: Sheet; truncated: boolean }
   | { state: "image"; src: string }
   | { state: "document"; kind: DocumentKind; data: ArrayBuffer }
   | { state: "binary" }
   | { state: "error"; reason: string };
 
 /** 渲染为“打开后的样子”的结果占满预览区、自己滚动；其余在带内边距的滚动区里显示 */
-const isRendered = (l: Loaded) => l.state === "html" || l.state === "document";
+const isRendered = (l: Loaded) =>
+  l.state === "html" || l.state === "document" || l.state === "table";
 
 const baseName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 const dirName = (path: string) => path.replace(/[\\/][^\\/]*$/, "") || path;
@@ -70,12 +75,22 @@ function useLoaded(path: string, seq: number): Loaded {
         }
         const match = DOCUMENT_EXT.exec(path);
         if (match?.[1]) {
-          const kind = match[1].toLowerCase() as DocumentKind;
+          const ext = match[1].toLowerCase();
+          const kind = (ext === "xlsm" ? "xlsx" : ext) as DocumentKind;
           return { state: "document", kind, data: await p.previewFileBytes(path) };
         }
         const r = await p.previewFile(path);
         if (r.kind !== "text") return { state: "binary" };
         if (HTML_EXT.test(path)) return { state: "html", html: r.text, truncated: r.truncated };
+        if (CSV_EXT.test(path))
+          return {
+            state: "table",
+            sheet: sheetFromCsv(r.text, baseName(path), {
+              tsv: /\.tsv$/i.test(path),
+              truncated: r.truncated,
+            }),
+            truncated: r.truncated,
+          };
         // SVG 按图片显示（<img> 里不运行脚本、不加载外部资源）；被截断的只能按源码显示
         if (SVG_EXT.test(path) && !r.truncated)
           return {
@@ -169,8 +184,19 @@ function PreviewBody({ path, seq, onClose }: { path: string; seq: number; onClos
           <div className="min-h-0 flex-1">
             {loaded.kind === "docx" && <DocxView data={loaded.data} />}
             {loaded.kind === "pptx" && <PptxView data={loaded.data} />}
+            {loaded.kind === "xlsx" && <XlsxView data={loaded.data} />}
             {loaded.kind === "pdf" && <PdfView data={loaded.data} />}
           </div>
+        )}
+        {loaded.state === "table" && (
+          <>
+            <div className="min-h-0 flex-1">
+              <SheetBook sheets={[loaded.sheet]} tabs={false} />
+            </div>
+            {loaded.truncated && (
+              <p className="border-border border-t px-3 py-1 text-2xs text-muted">{t.truncated}</p>
+            )}
+          </>
         )}
         {loaded.state === "text" &&
           (MARKDOWN_EXT.test(path) ? (

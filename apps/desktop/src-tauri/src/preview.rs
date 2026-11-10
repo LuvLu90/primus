@@ -3,7 +3,7 @@
 //! 路径校验与 `open_path` 相同（open_path::check_path：只接受本机已存在的绝对路径，拒绝网址、网络与设备路径）。
 //! 只读不写，最多读 [`MAX_BYTES`]；含 NUL 字节的按二进制处理，不返回内容。图片由前端走 `attachment_image`。
 //!
-//! Word / PowerPoint / PDF 要在前端渲染成“打开后的样子”，需要整份字节：`preview_file_bytes` 只接受
+//! Word / PowerPoint / Excel / PDF 要在前端渲染成“打开后的样子”，需要整份字节：`preview_file_bytes` 只接受
 //! [`DOCUMENT_EXTENSIONS`] 里的扩展名，最多 [`MAX_DOCUMENT_BYTES`]，超过直接报错（截断的压缩包无法渲染）。
 
 use std::io::Read;
@@ -18,7 +18,7 @@ pub(crate) const MAX_BYTES: u64 = 1024 * 1024;
 pub(crate) const MAX_DOCUMENT_BYTES: u64 = 30 * 1024 * 1024;
 
 /// 允许按整份字节读取的文档扩展名（小写）：前端能渲染的格式
-pub(crate) const DOCUMENT_EXTENSIONS: &[&str] = &["docx", "pptx", "pdf"];
+pub(crate) const DOCUMENT_EXTENSIONS: &[&str] = &["docx", "pptx", "xlsx", "xlsm", "pdf"];
 
 /// 预览结果
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -53,7 +53,7 @@ pub(crate) fn read_preview(path: &Path) -> Result<Preview, String> {
     Ok(decode(buf, size))
 }
 
-/// 读取整份文档字节供前端渲染（Word / PowerPoint / PDF）。错误文案可直接显示给用户。
+/// 读取整份文档字节供前端渲染（Word / PowerPoint / Excel / PDF）。错误文案可直接显示给用户。
 pub(crate) fn read_document(path: &Path) -> Result<Vec<u8>, String> {
     if !is_document(path) {
         return Err("该类型的文件不能按文档预览".into());
@@ -206,7 +206,12 @@ mod tests {
     fn document_extensions() {
         assert!(is_document(Path::new("a.pptx")));
         assert!(is_document(Path::new("C:/x/b.Pdf")));
+        assert!(is_document(Path::new("报表.XLSX")));
+        assert!(is_document(Path::new("/w/宏.xlsm")));
         assert!(!is_document(Path::new("a.doc")));
+        // 旧版二进制 .xls 与文本 .csv 不按整份字节读取（.csv 走 preview_file）
+        assert!(!is_document(Path::new("a.xls")));
+        assert!(!is_document(Path::new("a.csv")));
         assert!(!is_document(Path::new("docx")));
     }
 

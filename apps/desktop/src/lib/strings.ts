@@ -52,6 +52,16 @@ export const strings = {
     webPage: "网页预览",
     /** PDF 预览（iframe 的可访问名称） */
     pdf: "PDF 预览",
+    /** 表格预览（网格的可访问名称） */
+    spreadsheet: "表格预览",
+    /** 底部工作表标签栏的可访问名称 */
+    sheets: "工作表",
+    /** 工作表超出显示上限 */
+    sheetClipped: "仅显示前 1000 行、100 列",
+    /** 没有内容的工作表 */
+    sheetEmpty: "空工作表",
+    /** 工作簿里没有可显示的工作表（全部隐藏） */
+    noSheets: "没有可显示的工作表",
   },
   drawerTabs: {
     terminal: "终端",
