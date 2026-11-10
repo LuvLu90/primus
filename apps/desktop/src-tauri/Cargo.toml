@@ -4,6 +4,8 @@ version = "0.0.9"
 edition = "2024"
 rust-version = "1.99"
 description = "乾元（Primus）薄壳"
+# 工作区里还有更新服务的 PrimusUpdate 可执行文件；tauri dev 调用不带 --bin 的 cargo run，需指明默认运行薄壳
+default-run = "primus"
 
 # 薄壳与更新服务（update-service，ADR 0007）同一个工作区：共用 Cargo.lock 与 target；
 # default-members 含两者，src-tauri 下的 cargo test / clippy / fmt 同时覆盖服务
