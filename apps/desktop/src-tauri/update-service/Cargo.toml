@@ -1,6 +1,6 @@
 [package]
 name = "primus-update"
-version = "0.0.8"
+version = "0.0.9"
 edition = "2024"
 rust-version = "1.99"
 description = "乾元（Primus）更新服务：以 LocalSystem 静默安装已验签的新版 MSI（ADR 0007）"
