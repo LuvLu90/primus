@@ -43,6 +43,8 @@ export const ICONS = {
   refresh: { source: "Refresh" },
   retry: { source: "Restart" },
   archive: { source: "Archive" },
+  // 置顶（左栏项目）
+  pin: { source: "Thumbtack" },
   "archive-restore": { source: "ArchiveUp" },
   mic: { source: "Microphone" },
   link: { source: "Link" },

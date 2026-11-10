@@ -64,4 +64,37 @@ describe("会话分组", () => {
       buildRows([s(1, DEFAULT)], { projectsOpen: true, toggled: {}, defaultKey: KEY }),
     ).toEqual([{ kind: "session", key: "/s/1.jsonl", session: s(1, DEFAULT), nested: false }]);
   });
+
+  it("置顶的项目排在最前（按置顶顺序）并默认展开第一个；显示名称可改", () => {
+    const list = [s(1, "D:\\a"), s(2, "D:\\b"), s(3, "D:\\c")];
+    const rows = buildRows(list, {
+      projectsOpen: true,
+      toggled: {},
+      pinned: ["d:/c", "d:/gone", "d:/b"],
+      names: { "d:/b": "后端" },
+    });
+    const projects = rows.filter((r) => r.kind === "project");
+    expect(projects.map((r) => [r.name, r.pinned, r.expanded])).toEqual([
+      ["c", true, true],
+      ["后端", true, false],
+      ["a", false, false],
+    ]);
+  });
+
+  it("移除的项目在没有新活动前不显示，之后有更新的会话时重新出现", () => {
+    const list = [s(1, "D:\\a"), s(2, "D:\\b")];
+    // s(2) 的 updatedAt 为 98
+    const hidden = buildRows(list, { projectsOpen: true, toggled: {}, removed: { "d:/b": 98 } });
+    expect(hidden.filter((r) => r.kind === "project").map((r) => r.key)).toEqual(["p:d:/a"]);
+    expect(hidden.some((r) => r.key === "/s/2.jsonl")).toBe(false);
+    const back = buildRows(list, { projectsOpen: true, toggled: {}, removed: { "d:/b": 97 } });
+    expect(back.filter((r) => r.kind === "project").map((r) => r.key)).toEqual([
+      "p:d:/a",
+      "p:d:/b",
+    ]);
+    // 只剩被移除的项目、也没有“最近”时没有分组标题
+    expect(
+      buildRows([s(2, "D:\\b")], { projectsOpen: true, toggled: {}, removed: { "d:/b": 98 } }),
+    ).toEqual([]);
+  });
 });

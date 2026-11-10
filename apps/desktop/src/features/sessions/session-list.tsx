@@ -24,21 +24,25 @@ import type { SessionSummary } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
-import { buildRows, type ListRow, workspaceKey } from "./session-groups";
+import { buildRows, type ListRow, workspaceKey, workspaceName } from "./session-groups";
+import { PROJECT_NAME_MAX, useSessionListPrefs } from "./session-list-prefs";
 import { findTab, tabsForDeletion, useSessionsStore } from "./sessions-store";
 import { useSessionDefaultWorkspace } from "./use-default-workspace";
 import { useSessionIndex, useSessionSearch } from "./use-session-index";
 
 // 左栏会话列表（第 10.2、16.2 节，ADR 0006）：搜索框 + 虚拟滚动的会话列表，滚到底加载下一页；
-// 有项目的会话归到可折叠的项目文件夹下，未选工作区的会话在“最近”（session-groups.ts）；
-// 点击打开（已在某个标签中则切过去），菜单里可归档、删除（删除前确认，永久删除、不可恢复）。
+// 有项目的会话归到可折叠的项目文件夹下（会话缩进到文件夹名处），未选工作区的会话在“最近”
+// （session-groups.ts）；展开状态、置顶、显示名称与移除的项目存在本地（session-list-prefs.ts）。
+// 项目菜单：置顶、编辑（改显示名称）、在资源管理器中打开、归档聊天（归档该项目全部会话，先确认）、
+// 移除项目（只从左栏隐藏，之后在该文件夹里有新对话时重新出现）。
+// 会话行点击打开（已在某个标签中则切过去），菜单里可归档、删除（删除前确认，永久删除、不可恢复）。
 // 打开中的会话也可以直接删除：先关掉它的标签，薄壳删除时一并结束它的 Core。
 
 const t = strings.sessions;
 /** 行高（px），与样式一致，供虚拟列表估算 */
 export const ROW_HEIGHT = 34;
-/** 分组标题（项目 / 最近）的行高 */
-const HEADER_HEIGHT = 32;
+/** 分组标题的行高：“项目”在列表顶部；“最近”上方多留一段，与项目分开 */
+const HEADER_HEIGHT = { projects: 30, recent: 46 } as const;
 /** 距底部还剩这么多行时加载下一页 */
 const LOAD_MORE_THRESHOLD = 10;
 /** 连续自动加载但可见行没有增长（如“项目”已折叠、新页全是项目会话）最多这么多页，之后等用户滚动 */
@@ -76,7 +80,10 @@ export function SessionList() {
   // 主界面切到设置等页面时只隐藏不卸载，Portal 里的浮层要主动关掉，否则会盖在目标页面上
   const shellHidden = useShellHidden();
   useEffect(() => {
-    if (shellHidden) setPendingDelete(null);
+    if (!shellHidden) return;
+    setPendingDelete(null);
+    setPendingRename(null);
+    setPendingArchive(null);
   }, [shellHidden]);
   // 正在删除的会话路径：删除完成前不允许再打开（否则会留下指向已删除文件的标签）
   const [deleting, setDeleting] = useState<ReadonlySet<string>>(() => new Set());
@@ -86,8 +93,18 @@ export function SessionList() {
   const closeTab = useSessionsStore((s) => s.closeTab);
   const tabsFull = useSessionsStore((s) => s.tabsFull);
   const newTab = useSessionsStore((s) => s.newTab);
-  const [projectsOpen, setProjectsOpen] = useState(true);
-  const [toggled, setToggled] = useState<Record<string, boolean>>({});
+  const prefs = useSessionListPrefs();
+  // 本地保存的展开状态、置顶等在挂载后恢复（静态预渲染时没有 localStorage）
+  useEffect(() => {
+    void useSessionListPrefs.persist.rehydrate();
+  }, []);
+  const { projectsOpen, expanded: toggled, pinned, names, removed } = prefs;
+  const [pendingRename, setPendingRename] = useState<{ key: string; workspace: string } | null>(
+    null,
+  );
+  const [pendingArchive, setPendingArchive] = useState<{ workspace: string; name: string } | null>(
+    null,
+  );
   const activeWorkspace = tabs.find((x) => x.id === activeTabId)?.workspace;
   const defaultKey = useDefaultWorkspaceKey();
   // 默认目录读到之前不分组，避免默认目录的会话先显示成项目再挪到“最近”
@@ -105,9 +122,23 @@ export function SessionList() {
               toggled,
               activeKey: activeWorkspace ? workspaceKey(activeWorkspace) : null,
               defaultKey,
+              pinned,
+              names,
+              removed,
             })
           : [],
-    [searching, grouping, sessions, projectsOpen, toggled, activeWorkspace, defaultKey],
+    [
+      searching,
+      grouping,
+      sessions,
+      projectsOpen,
+      toggled,
+      activeWorkspace,
+      defaultKey,
+      pinned,
+      names,
+      removed,
+    ],
   );
   const listError = searching ? search.error : index.error;
   // 相对时间每分钟刷新一次
@@ -121,7 +152,10 @@ export function SessionList() {
   const virtualizer = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
-    estimateSize: (i) => (rows[i]?.kind === "header" ? HEADER_HEIGHT : ROW_HEIGHT),
+    estimateSize: (i) => {
+      const row = rows[i];
+      return row?.kind === "header" ? HEADER_HEIGHT[row.section] : ROW_HEIGHT;
+    },
     getItemKey: (i) => rows[i]?.key ?? i,
     overscan: 8,
     // 测量前（含测试环境）按一屏估算，首帧就能渲染出可见行
@@ -188,6 +222,36 @@ export function SessionList() {
     getPlatform()
       .then((p) => p.revealPath(workspace))
       .catch((e) => setActionError(errorText(e)));
+  };
+
+  /** 归档项目的全部会话：按工作区分页取出（不只是已加载的），逐个归档；失败的计数报出 */
+  const confirmArchiveProject = () => {
+    const target = pendingArchive;
+    setPendingArchive(null);
+    if (!target) return;
+    setActionError(undefined);
+    void (async () => {
+      try {
+        const p = await getPlatform();
+        const paths: string[] = [];
+        let cursor: string | undefined;
+        do {
+          const page = await p.sessionList(target.workspace, cursor);
+          for (const s of page.items) paths.push(s.path);
+          cursor = page.nextCursor;
+        } while (cursor);
+        const results = await Promise.allSettled(paths.map((path) => p.sessionArchive(path, true)));
+        const failed = results.filter((r) => r.status === "rejected");
+        if (failed[0])
+          setActionError(
+            t.archiveProjectFailed
+              .replace("{n}", String(failed.length))
+              .replace("{reason}", errorText(failed[0].reason)),
+          );
+      } catch (e) {
+        setActionError(errorText(e));
+      }
+    })();
   };
 
   const archive = (s: SessionSummary) => {
@@ -288,14 +352,18 @@ export function SessionList() {
                   <SectionHeader
                     key={row.key}
                     top={item.start}
+                    height={HEADER_HEIGHT[row.section]}
                     label={row.section === "projects" ? t.projects : t.recent}
                     open={row.section === "projects" ? projectsOpen : undefined}
                     onToggle={
-                      row.section === "projects" ? () => setProjectsOpen((o) => !o) : undefined
+                      row.section === "projects"
+                        ? () => prefs.setProjectsOpen(!projectsOpen)
+                        : undefined
                     }
                   />
                 );
-              if (row.kind === "project")
+              if (row.kind === "project") {
+                const key = workspaceKey(row.workspace);
                 return (
                   <ProjectRow
                     key={row.key}
@@ -303,16 +371,19 @@ export function SessionList() {
                     name={row.name}
                     path={row.workspace}
                     expanded={row.expanded}
-                    onToggle={() =>
-                      setToggled((prev) => ({
-                        ...prev,
-                        [workspaceKey(row.workspace)]: !row.expanded,
-                      }))
-                    }
+                    pinned={row.pinned}
+                    onToggle={() => prefs.setExpanded(key, !row.expanded)}
                     onNewSession={() => newInProject(row.workspace)}
+                    onTogglePin={() => prefs.togglePinned(key)}
+                    onEdit={() => setPendingRename({ key, workspace: row.workspace })}
                     onReveal={() => reveal(row.workspace)}
+                    onArchiveAll={() =>
+                      setPendingArchive({ workspace: row.workspace, name: row.name })
+                    }
+                    onRemove={() => prefs.remove(key, Date.now())}
                   />
                 );
+              }
               const s = row.session;
               const tab = findTab(tabs, s);
               return (
@@ -371,7 +442,103 @@ export function SessionList() {
           </div>
         </GlassDialogContent>
       </GlassDialog>
+
+      <GlassDialog
+        open={pendingArchive !== null}
+        onOpenChange={(open) => !open && setPendingArchive(null)}
+      >
+        <GlassDialogContent>
+          <GlassDialogTitle>
+            {t.archiveProjectTitle.replace("{name}", pendingArchive?.name ?? "")}
+          </GlassDialogTitle>
+          <GlassDialogDescription>{t.archiveProjectDescription}</GlassDialogDescription>
+          <div className="mt-5 flex justify-end gap-2 text-sm">
+            <GlassDialogClose asChild>
+              <button type="button" className="rounded-full bg-hover px-4 py-1.5">
+                {t.cancel}
+              </button>
+            </GlassDialogClose>
+            <button
+              type="button"
+              onClick={confirmArchiveProject}
+              className="rounded-full bg-hover px-4 py-1.5 font-medium ring-1 ring-border"
+            >
+              {t.archiveProjectConfirm}
+            </button>
+          </div>
+        </GlassDialogContent>
+      </GlassDialog>
+
+      <RenameProjectDialog
+        target={pendingRename}
+        currentName={pendingRename ? (names[pendingRename.key] ?? "") : ""}
+        onClose={() => setPendingRename(null)}
+        onSave={(name) => {
+          if (pendingRename) prefs.rename(pendingRename.key, name);
+          setPendingRename(null);
+        }}
+      />
     </div>
+  );
+}
+
+/** 编辑项目：改左栏显示的名称（只存在本地，不改文件夹）；留空恢复为文件夹名 */
+function RenameProjectDialog({
+  target,
+  currentName,
+  onClose,
+  onSave,
+}: {
+  target: { key: string; workspace: string } | null;
+  currentName: string;
+  onClose: () => void;
+  onSave: (name: string) => void;
+}) {
+  const [value, setValue] = useState("");
+  // 每次打开时填入当前名称
+  useEffect(() => {
+    if (target) setValue(currentName);
+  }, [target, currentName]);
+  const folder = target ? workspaceName(target.workspace) : "";
+  return (
+    <GlassDialog open={target !== null} onOpenChange={(open) => !open && onClose()}>
+      <GlassDialogContent>
+        <GlassDialogTitle>{t.editTitle}</GlassDialogTitle>
+        <GlassDialogDescription>{t.editDescription}</GlassDialogDescription>
+        <form
+          noValidate
+          onSubmit={(e) => {
+            e.preventDefault();
+            onSave(value);
+          }}
+          className="mt-4 flex flex-col gap-3"
+        >
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-muted">{t.editName}</span>
+            <input
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              placeholder={folder}
+              maxLength={PROJECT_NAME_MAX * 2}
+              className="w-full rounded-xl bg-hover px-3 py-2 text-sm text-fg outline-none ring-1 ring-border placeholder:text-muted focus:ring-2 focus:ring-accent/50"
+            />
+          </label>
+          <div className="mt-2 flex justify-end gap-2 text-sm">
+            <GlassDialogClose asChild>
+              <button type="button" className="rounded-full bg-hover px-4 py-1.5">
+                {t.cancel}
+              </button>
+            </GlassDialogClose>
+            <button
+              type="submit"
+              className="rounded-full bg-hover px-4 py-1.5 font-medium ring-1 ring-border"
+            >
+              {t.save}
+            </button>
+          </div>
+        </form>
+      </GlassDialogContent>
+    </GlassDialog>
   );
 }
 
@@ -384,11 +551,13 @@ function useShellHidden(): boolean {
 /** 分组标题：“项目”可折叠（带箭头），“最近”只是标题 */
 function SectionHeader({
   top,
+  height,
   label,
   open,
   onToggle,
 }: {
   top: number;
+  height: number;
   label: string;
   open?: boolean;
   onToggle?: () => void;
@@ -406,40 +575,50 @@ function SectionHeader({
     </>
   );
   return (
-    <li className="absolute inset-x-0 flex items-end pb-1" style={{ top, height: HEADER_HEIGHT }}>
+    <li className="absolute inset-x-0 flex items-end pb-1.5" style={{ top, height }}>
       {onToggle ? (
         <button
           type="button"
           aria-expanded={open}
           onClick={onToggle}
-          className="flex items-center gap-1 rounded-md px-2 text-xs text-muted outline-none hover:text-fg focus-visible:text-fg"
+          className="flex items-center gap-1 rounded-md px-2 text-sm text-muted outline-none hover:text-fg focus-visible:text-fg"
         >
           {content}
         </button>
       ) : (
-        <span className="flex items-center gap-1 px-2 text-xs text-muted">{content}</span>
+        <span className="flex items-center gap-1 px-2 text-sm text-muted">{content}</span>
       )}
     </li>
   );
 }
 
-/** 项目行：文件夹图标 + 名称，点击展开 / 折叠；悬停显示“更多操作”与“新建会话” */
+/** 项目行：文件夹图标 + 名称，点击展开 / 折叠；悬停显示“项目操作”菜单与“新建会话” */
 function ProjectRow({
   top,
   name,
   path,
   expanded,
+  pinned,
   onToggle,
   onNewSession,
+  onTogglePin,
+  onEdit,
   onReveal,
+  onArchiveAll,
+  onRemove,
 }: {
   top: number;
   name: string;
   path: string;
   expanded: boolean;
+  pinned: boolean;
   onToggle: () => void;
   onNewSession: () => void;
+  onTogglePin: () => void;
+  onEdit: () => void;
   onReveal: () => void;
+  onArchiveAll: () => void;
+  onRemove: () => void;
 }) {
   const [moreOpen, setMoreOpen] = useState(false);
   const shellHidden = useShellHidden();
@@ -453,10 +632,18 @@ function ProjectRow({
           type="button"
           aria-expanded={expanded}
           onClick={onToggle}
-          className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-[10px] pr-16 pl-2 text-left text-sm outline-none hover:bg-hover focus-visible:bg-hover"
+          className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-[10px] pr-16 pl-2 text-left text-sm outline-none group-hover:bg-hover focus-visible:bg-hover group-has-[[data-state=open]]:bg-hover"
         >
           <Icon name={expanded ? "folder-open" : "folder"} size="md" className="shrink-0" />
           <span className="truncate">{name}</span>
+          {pinned && (
+            <Icon
+              name="pin"
+              size="xs"
+              label={t.pinned}
+              className="shrink-0 text-muted group-hover:invisible"
+            />
+          )}
         </button>
       </Tooltip>
       <span className="absolute right-1.5 flex items-center gap-0.5">
@@ -470,16 +657,36 @@ function ProjectRow({
               <Icon name="more" size="sm" />
             </button>
           </GlassPopoverTrigger>
-          <GlassPopoverContent side="right" align="start" sideOffset={6} tint={0.75} minWidth={168}>
+          <GlassPopoverContent
+            side="bottom"
+            align="start"
+            sideOffset={4}
+            tint={0.75}
+            minWidth={188}
+          >
             <GlassPopoverItem
-              icon={<Icon name="compose" />}
-              label={t.newInProject}
-              onSelect={onNewSession}
+              icon={<Icon name="pin" />}
+              label={pinned ? t.unpinProject : t.pinProject}
+              onSelect={onTogglePin}
             />
+            <GlassPopoverItem icon={<Icon name="pen" />} label={t.editProject} onSelect={onEdit} />
+            <GlassPopoverSeparator />
             <GlassPopoverItem
               icon={<Icon name="folder-open" />}
               label={t.revealProject}
               onSelect={onReveal}
+            />
+            <GlassPopoverSeparator />
+            <GlassPopoverItem
+              icon={<Icon name="archive" />}
+              label={t.archiveProject}
+              onSelect={onArchiveAll}
+            />
+            <GlassPopoverSeparator />
+            <GlassPopoverItem
+              icon={<Icon name="x" />}
+              label={t.removeProject}
+              onSelect={onRemove}
             />
           </GlassPopoverContent>
         </GlassPopover>
@@ -499,7 +706,7 @@ function ProjectRow({
 }
 
 const hoverButtonClass =
-  "flex aspect-square size-6 shrink-0 items-center justify-center rounded-md text-muted opacity-0 outline-none hover:bg-hover hover:text-fg focus-visible:opacity-100 group-hover:opacity-100 data-[state=open]:opacity-100";
+  "flex aspect-square size-6 shrink-0 items-center justify-center rounded-md text-muted opacity-0 outline-none hover:bg-hover hover:text-fg focus-visible:opacity-100 group-hover:opacity-100 group-has-[[data-state=open]]:opacity-100";
 
 interface SessionRowProps {
   session: SessionSummary;
@@ -566,7 +773,7 @@ function SessionRow({
         setMenuAt({ x: e.clientX - box.left, y: e.clientY - box.top });
       }}
     >
-      <Tooltip content={title}>
+      <Tooltip content={`${title} · ${relativeTime(session.updatedAt, now)}`}>
         <button
           type="button"
           onClick={onOpen}
@@ -574,7 +781,8 @@ function SessionRow({
           aria-busy={deleting ? "true" : undefined}
           aria-current={active ? "true" : undefined}
           className={cn(
-            "flex h-8 min-w-0 flex-1 items-center gap-1.5 rounded-[10px] pr-2 text-left outline-none hover:bg-hover focus-visible:bg-hover",
+            "flex h-8 min-w-0 flex-1 items-center gap-1.5 rounded-[10px] pr-2 text-left outline-none hover:bg-hover focus-visible:bg-hover group-hover:pr-9 group-has-[[data-state=open]]:bg-hover group-has-[[data-state=open]]:pr-9",
+            // 项目下的会话与文件夹名对齐：pl-2 + 图标 16px + 间距 8px
             nested ? "pl-8" : "pl-2",
             active && "bg-hover",
             deleting && "pointer-events-none opacity-50",
@@ -588,10 +796,9 @@ function SessionRow({
             />
           )}
           <span className="min-w-0 flex-1 truncate text-sm">{title}</span>
-          <span className="shrink-0 text-2xs text-muted tabular-nums group-hover:invisible">
-            {session.archived ? `${t.archived} · ` : ""}
-            {relativeTime(session.updatedAt, now)}
-          </span>
+          {session.archived && (
+            <span className="shrink-0 text-2xs text-muted group-hover:invisible">{t.archived}</span>
+          )}
         </button>
       </Tooltip>
       <GlassPopover open={moreOpen} onOpenChange={setMoreOpen}>

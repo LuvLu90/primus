@@ -42,6 +42,7 @@ Reicon 官网许可页说明其基础图形来自：
 | retry | Restart | Solar `restart-outline` |
 | archive | Archive | 未能对应（Reicon 未注明来源） |
 | archive-restore | ArchiveUp | 未能对应（Reicon 未注明来源） |
+| pin | Thumbtack | Solar `pin-outline` |
 | mic | Microphone | 未能对应（Reicon 未注明来源） |
 | link | Link | 未能对应（Reicon 未注明来源） |
 | external-link | ArrowUpRightSquare | 未能对应（Reicon 未注明来源） |

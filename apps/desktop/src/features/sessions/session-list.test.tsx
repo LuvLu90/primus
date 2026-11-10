@@ -6,6 +6,7 @@ import { createMockPlatform } from "@/lib/platform/mock";
 import { strings } from "@/lib/strings";
 import { useAppStore } from "@/stores/app-store";
 import { relativeTime, SessionList } from "./session-list";
+import { initialSessionListPrefs, useSessionListPrefs } from "./session-list-prefs";
 import { createInitialSessionsState, MAX_TABS, useSessionsStore } from "./sessions-store";
 
 const t = strings.sessions;
@@ -38,6 +39,8 @@ describe("会话列表", () => {
     vi.spyOn(Element.prototype, "clientHeight", "get").mockReturnValue(640);
     vi.spyOn(Element.prototype, "clientWidth", "get").mockReturnValue(232);
     useSessionsStore.setState(createInitialSessionsState());
+    localStorage.clear();
+    useSessionListPrefs.setState(initialSessionListPrefs);
   });
   afterEach(() => {
     vi.restoreAllMocks();
@@ -54,7 +57,8 @@ describe("会话列表", () => {
     expect(await screen.findByRole("button", { name: /^登录排查/ })).toBeTruthy();
     expect(screen.getByRole("button", { name: /^第 2 个会话/ })).toBeTruthy();
     expect(screen.getByRole("button", { name: new RegExp(`^${t.untitled}`) })).toBeTruthy();
-    expect(screen.getByText("1 分钟前")).toBeTruthy();
+    // 行内不显示时间（与参考设计一致），相对时间放在悬停提示里
+    expect(screen.queryByText("1 分钟前")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: /^第 2 个会话/ }));
     const { tabs, activeTabId } = useSessionsStore.getState();
@@ -199,7 +203,7 @@ describe("会话列表", () => {
     const box = screen.getByRole("searchbox", { name: strings.layout.searchSessions });
     fireEvent.change(box, { target: { value: "迁移" } });
     expect(await screen.findByRole("button", { name: /^数据库迁移/ })).toBeTruthy();
-    expect(screen.getByText(new RegExp(`^${t.archived} · `))).toBeTruthy();
+    expect(screen.getByText(t.archived)).toBeTruthy();
     expect(sessionSearch).toHaveBeenCalledWith(null, "迁移");
     expect(screen.getByRole("list", { name: t.searchResults })).toBeTruthy();
 
