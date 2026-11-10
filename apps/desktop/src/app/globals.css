@@ -14,6 +14,8 @@
   --color-fg: #1d1d1f;
   /* 阅读墨色：助手回复正文，比界面文字更黑，长文更锐利 */
   --color-ink: #0d0d0e;
+  /* 右栏渲染出的网页 / 文档纸面：深浅色外观下都是白纸（与在浏览器、Word 中打开一致），.dark 不覆盖 */
+  --color-page: #ffffff;
   --color-muted: #6e6e73;
   --color-border: rgb(0 0 0 / 0.08);
   --color-hover: rgb(0 0 0 / 0.05);

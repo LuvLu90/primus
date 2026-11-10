@@ -244,6 +244,7 @@ pub fn run() {
             commands::open_path,
             commands::reveal_path,
             commands::preview_file,
+            commands::preview_file_bytes,
             commands::workspace_open,
             commands::workspace_list,
             commands::workspace_inspect,

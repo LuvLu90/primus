@@ -1,7 +1,10 @@
 "use client";
 
-// 右栏文件预览（只读）：Markdown 渲染、图片显示、其余文本按等宽原样显示；二进制文件只给“用默认程序打开”。
-// 文本走薄壳 preview_file（最多 1 MiB），图片走 attachment_image（内存中缩小，不写文件）。
+// 右栏文件预览（只读），显示文件“打开后的样子”：网页渲染成页面、Word 显示为文档、PowerPoint 显示为幻灯片、
+// PDF 用 WebView2 的 PDF 查看器、Markdown 渲染、图片显示（SVG 也按图片显示）；其余文本按等宽原样显示；
+// 其他二进制文件（含旧版 .doc / .ppt、.xlsx）只给“用默认程序打开”。
+// 文本与网页走薄壳 preview_file（最多 1 MiB），图片走 attachment_image（内存中缩小，不写文件），
+// Word / PowerPoint / PDF 走 preview_file_bytes（整份字节，最多 30 MiB）。
 import { useEffect, useState } from "react";
 import { FileIcon, Icon } from "@/components/icons";
 import { Tooltip } from "@/components/ui/tooltip";
@@ -11,6 +14,7 @@ import { MarkdownText } from "@/features/chat/message-content";
 import { getPlatform } from "@/lib/platform";
 import { strings } from "@/lib/strings";
 import { usePreviewStore } from "./preview-store";
+import { DocxView, HtmlView, PdfView, PptxView } from "./rendered-views";
 
 const t = strings.preview;
 
@@ -18,13 +22,24 @@ const t = strings.preview;
 const IMAGE_EDGE = 2048;
 const IMAGE_EXT = /\.(png|jpe?g|gif|webp|bmp)$/i;
 const MARKDOWN_EXT = /\.(md|markdown|mdx)$/i;
+const HTML_EXT = /\.(html?|xhtml)$/i;
+const SVG_EXT = /\.svg$/i;
+/** 需要整份字节在前端渲染的文档 */
+const DOCUMENT_EXT = /\.(docx|pptx|pdf)$/i;
+
+type DocumentKind = "docx" | "pptx" | "pdf";
 
 type Loaded =
   | { state: "loading" }
   | { state: "text"; text: string; truncated: boolean }
+  | { state: "html"; html: string; truncated: boolean }
   | { state: "image"; src: string }
+  | { state: "document"; kind: DocumentKind; data: ArrayBuffer }
   | { state: "binary" }
   | { state: "error"; reason: string };
+
+/** 渲染为“打开后的样子”的结果占满预览区、自己滚动；其余在带内边距的滚动区里显示 */
+const isRendered = (l: Loaded) => l.state === "html" || l.state === "document";
 
 const baseName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
 const dirName = (path: string) => path.replace(/[\\/][^\\/]*$/, "") || path;
@@ -53,10 +68,21 @@ function useLoaded(path: string, seq: number): Loaded {
           });
           return { state: "image", src: `data:${img.mimeType};base64,${img.data}` };
         }
+        const match = DOCUMENT_EXT.exec(path);
+        if (match?.[1]) {
+          const kind = match[1].toLowerCase() as DocumentKind;
+          return { state: "document", kind, data: await p.previewFileBytes(path) };
+        }
         const r = await p.previewFile(path);
-        return r.kind === "text"
-          ? { state: "text", text: r.text, truncated: r.truncated }
-          : { state: "binary" };
+        if (r.kind !== "text") return { state: "binary" };
+        if (HTML_EXT.test(path)) return { state: "html", html: r.text, truncated: r.truncated };
+        // SVG 按图片显示（<img> 里不运行脚本、不加载外部资源）；被截断的只能按源码显示
+        if (SVG_EXT.test(path) && !r.truncated)
+          return {
+            state: "image",
+            src: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(r.text)}`,
+          };
+        return { state: "text", text: r.text, truncated: r.truncated };
       })
       .then(set, (e: unknown) => set({ state: "error", reason: reasonOf(e) }));
     return () => {
@@ -125,8 +151,27 @@ function PreviewBody({ path, seq, onClose }: { path: string; seq: number; onClos
       <section
         aria-label={name}
         aria-busy={loaded.state === "loading"}
-        className="scroll-thin min-h-0 flex-1 overflow-auto rounded-xl bg-surface px-4 py-3 ring-1 ring-border"
+        className={
+          isRendered(loaded)
+            ? "flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl bg-surface ring-1 ring-border"
+            : "scroll-thin min-h-0 flex-1 overflow-auto rounded-xl bg-surface px-4 py-3 ring-1 ring-border"
+        }
       >
+        {loaded.state === "html" && (
+          <>
+            <div className="min-h-0 flex-1">
+              <HtmlView html={loaded.html} />
+            </div>
+            {loaded.truncated && <p className="px-4 py-1.5 text-2xs text-muted">{t.truncated}</p>}
+          </>
+        )}
+        {loaded.state === "document" && (
+          <div className="min-h-0 flex-1">
+            {loaded.kind === "docx" && <DocxView data={loaded.data} />}
+            {loaded.kind === "pptx" && <PptxView data={loaded.data} />}
+            {loaded.kind === "pdf" && <PdfView data={loaded.data} />}
+          </div>
+        )}
         {loaded.state === "text" &&
           (MARKDOWN_EXT.test(path) ? (
             // 文档里的相对路径从文件所在文件夹算起
@@ -145,7 +190,18 @@ function PreviewBody({ path, seq, onClose }: { path: string; seq: number; onClos
           // biome-ignore lint/performance/noImgElement: 静态导出、本地 data URL，不需要 next/image
           <img src={loaded.src} alt={name} className="mx-auto max-w-full" />
         )}
-        {loaded.state === "binary" && <p className="text-sm text-muted">{t.binary}</p>}
+        {loaded.state === "binary" && (
+          <div className="flex flex-col items-start gap-2">
+            <p className="text-sm text-muted">{t.binary}</p>
+            <button
+              type="button"
+              onClick={() => run((p) => p.openPath(path))}
+              className="rounded-lg px-2.5 py-1 text-sm ring-1 ring-border outline-none transition-colors hover:bg-hover focus-visible:bg-hover"
+            >
+              {t.openExternal}
+            </button>
+          </div>
+        )}
         {loaded.state === "error" && (
           <p role="alert" className="text-sm text-danger">
             {loaded.reason}

@@ -84,6 +84,14 @@ pub(crate) fn preview_file(path: String) -> Result<crate::preview::Preview, Stri
     crate::preview::read_preview(&checked.path)
 }
 
+/// 右栏按“打开后的样子”预览 Word / PowerPoint / PDF（附录 B `preview_file_bytes`）：校验同 `open_path`，
+/// 只读，只接受 docx / pptx / pdf，最多 30 MiB；以原始字节返回（前端得到 ArrayBuffer，不走 JSON / base64）。
+#[tauri::command(async)]
+pub(crate) fn preview_file_bytes(path: String) -> Result<tauri::ipc::Response, String> {
+    let checked = crate::open_path::check_path(&path)?;
+    crate::preview::read_document(&checked.path).map(tauri::ipc::Response::new)
+}
+
 /// 原子设置主窗口外框（物理像素），侧栏开关时窗口边缘跟随侧栏逐帧伸缩用。
 #[tauri::command]
 pub fn window_set_bounds(

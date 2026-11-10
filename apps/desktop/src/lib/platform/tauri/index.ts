@@ -129,6 +129,8 @@ export function createTauriPlatform(): Platform {
     openPath: (path) => call("openPath", { path }),
     revealPath: (path) => call("revealPath", { path }),
     previewFile: (path) => call("previewFile", { path }),
+    // 薄壳以原始字节返回（tauri::ipc::Response），invoke 得到 ArrayBuffer
+    previewFileBytes: (path) => call("previewFileBytes", { path }),
     storageUsage: () => call("storageUsage"),
     storageClean: (category) => call("storageClean", { category }),
     diagnosticsExport: (options) => call("diagnosticsExport", { options }),

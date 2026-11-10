@@ -44,6 +44,14 @@ export const strings = {
     binary: "无法预览此文件",
     truncated: "仅显示前 1 MB",
     imageTooLarge: "图片过大，无法预览",
+    /** 渲染 Word / PowerPoint / PDF 期间 */
+    rendering: "正在打开…",
+    /** 文档渲染失败（文件损坏或含不支持的内容）；后接原因 */
+    renderFailed: "无法显示此文件：",
+    /** 网页预览（iframe 的可访问名称） */
+    webPage: "网页预览",
+    /** PDF 预览（iframe 的可访问名称） */
+    pdf: "PDF 预览",
   },
   drawerTabs: {
     terminal: "终端",

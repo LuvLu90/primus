@@ -1134,13 +1134,21 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
     revealPath: async (path) => {
       console.info("[mock] 在文件夹中显示", mockAbsolutePath(path));
     },
-    // 浏览器预览读不到本机文件：Markdown 返回示例内容，其余按扩展名给出示例代码
+    // 浏览器预览读不到本机文件：Markdown、网页返回示例内容，其余按扩展名给出示例代码
     previewFile: async (path) => {
       const absolute = mockAbsolutePath(path);
       const text = /\.(md|markdown)$/i.test(absolute)
         ? "# 示例文档\n\nmock 平台返回的**假内容**，用于预览 `Markdown` 渲染。\n"
-        : `// ${absolute}\nexport const answer = 42;\n`;
+        : /\.html?$/i.test(absolute)
+          ? '<!doctype html><meta charset="utf-8"><title>示例</title><h1 style="font-family:sans-serif">示例网页</h1><p>mock 平台返回的假内容，用于预览网页渲染。</p>'
+          : `// ${absolute}\nexport const answer = 42;\n`;
       return { kind: "text", text, truncated: false, size: text.length };
+    },
+    // 与薄壳一致：只接受 docx / pptx / pdf；浏览器预览读不到本机文件的字节
+    previewFileBytes: async (path) => {
+      const absolute = mockAbsolutePath(path);
+      if (!/\.(docx|pptx|pdf)$/i.test(absolute)) throw new Error("该类型的文件不能按文档预览");
+      return notAvailable("读取本机文档");
     },
     storageUsage: async () => ({ sessions: 0, logs: 0, cache: 0 }),
     storageClean: async () => {},
