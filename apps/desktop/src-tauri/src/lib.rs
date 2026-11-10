@@ -168,7 +168,7 @@ pub fn run() {
                     .cloned()
                     .ok_or("tauri.conf.json 缺少 main 窗口配置")?;
                 // 先隐藏创建，摆好位置与大小再显示（window_placement）：有上次保存的位置就恢复，
-                // 否则在光标所在显示器上居中、宽高各取工作区的 70%。不用配置里的 center
+                // 否则在光标所在显示器上居中、宽取工作区的 70%、高取 82%。不用配置里的 center
                 // （只按主显示器、按逻辑像素居中，窗口大于工作区时会出屏）
                 let min = (
                     config.min_width.unwrap_or(0.0),
@@ -363,7 +363,7 @@ fn set_bounds_twice(window: &tauri::WebviewWindow, bounds: window_placement::Bou
     true
 }
 
-/// 主窗口首次摆放：光标所在显示器（取不到时为主显示器）的工作区内居中，宽高各为工作区的 70%（window_placement）。
+/// 主窗口首次摆放：光标所在显示器（取不到时为主显示器）的工作区内居中，宽为工作区的 70%、高为 82%（window_placement）。
 fn place_main_window(app: &tauri::AppHandle, window: &tauri::WebviewWindow, min: (f64, f64)) {
     let monitor = app
         .cursor_position()

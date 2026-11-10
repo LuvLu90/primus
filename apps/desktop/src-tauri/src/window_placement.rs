@@ -3,7 +3,7 @@
 //! 不用 tauri.conf.json 的 `center: true`：它总是按主显示器居中，且按逻辑像素给出位置，混合缩放的多显示器上
 //! 会落到错误的显示器；窗口默认尺寸大于工作区时（如 1920×1080 @150% 只有约 1280×690 逻辑像素）居中位置为负，
 //! 标题栏跑到屏幕外，看起来就“没居中”。这里在光标所在的显示器（取不到时为主显示器）的工作区内，
-//! 按物理像素计算：首次打开时宽高各取工作区的 70%（不小于窗口最小尺寸），再居中。
+//! 按物理像素计算：首次打开时宽取工作区的 70%、高取 82%（不小于窗口最小尺寸，四周至少留 24 逻辑像素），再居中。
 //! 之后记住用户调整后的位置、大小与最大化状态（`window-state.json`），下次启动原样恢复；
 //! 保存的位置已不在任何显示器上（拔掉外接屏、改了分辨率）时才回到首次打开的摆法。
 
@@ -33,8 +33,10 @@ pub(crate) struct Bounds {
     pub height: u32,
 }
 
-/// 首次打开时窗口占工作区的比例：宽、高各 70%。
-const FIRST_RUN_FRACTION: f64 = 0.7;
+/// 首次打开时窗口宽占工作区的比例：70%。
+const FIRST_RUN_WIDTH_FRACTION: f64 = 0.7;
+/// 首次打开时窗口高占工作区的比例：82%（比宽高一些，对话区一屏能看到更多内容）。
+const FIRST_RUN_HEIGHT_FRACTION: f64 = 0.82;
 /// 判断保存的位置是否还看得见：标题栏这一条（逻辑像素高）至少要有这么宽、这么高落在某个工作区里。
 const TITLE_STRIP: f64 = 32.0;
 const VISIBLE_TITLE_W: f64 = 96.0;
@@ -48,12 +50,12 @@ fn valid_scale(scale: f64) -> f64 {
     }
 }
 
-/// 首次打开：宽、高各为工作区的 70%（不小于最小尺寸），在工作区内居中。
+/// 首次打开：宽为工作区的 70%、高为 82%（不小于最小尺寸，放不下时缩到工作区内留边），在工作区内居中。
 pub(crate) fn first_run_bounds(area: WorkArea, scale: f64, min: (f64, f64)) -> Bounds {
     let scale = valid_scale(scale);
     let size = (
-        f64::from(area.width) / scale * FIRST_RUN_FRACTION,
-        f64::from(area.height) / scale * FIRST_RUN_FRACTION,
+        f64::from(area.width) / scale * FIRST_RUN_WIDTH_FRACTION,
+        f64::from(area.height) / scale * FIRST_RUN_HEIGHT_FRACTION,
     );
     centered_bounds(area, scale, size, min)
 }
@@ -295,7 +297,7 @@ mod tests {
     }
 
     #[test]
-    fn first_run_is_70_percent_of_work_area_centered() {
+    fn first_run_is_70_percent_wide_82_percent_tall_centered() {
         let area = WorkArea {
             x: 0,
             y: 0,
@@ -304,10 +306,10 @@ mod tests {
         };
         let b = first_run_bounds(area, 1.0, MIN);
         assert_eq!(b.width, 1792);
-        // 70% 高度 980 大于最小高度 640
-        assert_eq!(b.height, 980);
-        assert_eq!((b.x, b.y), (384, 210));
-        // 缩放 2：物理像素仍是工作区的 70%
+        // 82% 高度 1148 大于最小高度 640，也放得下（1400 − 2×24 = 1352）
+        assert_eq!(b.height, 1148);
+        assert_eq!((b.x, b.y), (384, 126));
+        // 缩放 2：物理像素仍是工作区的 70% × 82%
         let hi = first_run_bounds(
             WorkArea {
                 x: 0,
@@ -318,7 +320,26 @@ mod tests {
             2.0,
             MIN,
         );
-        assert_eq!((hi.width, hi.height), (2688, 1470));
+        assert_eq!((hi.width, hi.height), (2688, 1722));
+        // 常见的 1920×1040 工作区
+        let fhd = first_run_bounds(MAIN, 1.0, MIN);
+        assert_eq!((fhd.width, fhd.height), (1344, 853));
+        assert_eq!((fhd.x, fhd.y), (288, 93));
+    }
+
+    #[test]
+    fn first_run_height_on_short_work_area_uses_min_and_stays_on_screen() {
+        // 1920×1080 @150%，任务栏 72 物理像素：逻辑高 672，82% 为 551 小于最小高 640；
+        // 最小高 960 物理像素大于留边后的 1008 − 2×36 = 936，以最小尺寸为准、贴住上边不出屏
+        let area = WorkArea {
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1008,
+        };
+        let b = first_run_bounds(area, 1.5, MIN);
+        assert_eq!((b.width, b.height), (1344, 960));
+        assert_eq!(b.y, 24);
     }
 
     #[test]
@@ -330,7 +351,7 @@ mod tests {
             height: 728,
         };
         let b = first_run_bounds(area, 1.0, (960.0, 640.0));
-        // 70% 宽 956 小于最小宽 960，70% 高 510 小于最小高 640
+        // 70% 宽 956 小于最小宽 960，82% 高 597 小于最小高 640
         assert_eq!((b.width, b.height), (960, 640));
         assert_eq!(b.y, 44);
     }
