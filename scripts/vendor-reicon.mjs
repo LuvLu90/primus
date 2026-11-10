@@ -19,6 +19,8 @@ export const REICON_VERSION = "1.2.6";
  * 应用内图标名 → Reicon 图标。weight 默认 Outline（O）；只有"停止"这种实心语义用 Filled（F）。
  * mirror：水平镜像（Reicon 只有一侧的图标）。
  * extra：在源图标上追加的元素（同样只能用 currentColor、线宽 1.5），用于 Reicon 缺少的图形。
+ * fade：允许元素上的 opacity（0–1 的数值），只给"加载中"这类靠逐段渐隐表达方向的图形；
+ * 渐隐属于图形本身，颜色仍只继承 currentColor。
  */
 export const ICONS = {
   // 通用操作
@@ -90,6 +92,9 @@ export const ICONS = {
   // 文件夹（工作区）
   folder: { source: "Folder2" },
   "folder-open": { source: "FolderOpen" },
+  // 加载中（左栏运行中的会话）：8 段逐段渐隐，CSS 按 8 步顺时针旋转；
+  // 源图形的渐隐朝顺时针方向，水平镜像后拖尾在最亮一段的后方
+  loader: { source: "Loader", fade: true, mirror: true },
   // Windows 标题栏按钮
   "window-maximize": { source: "Stop3" },
   "window-restore": { source: "Copy3" },
@@ -180,7 +185,7 @@ function isFullClip(defs, id) {
 }
 
 /** 校验并规范化为 [标签, React 属性, 子节点?] */
-export function normalize(nodes, iconName) {
+export function normalize(nodes, iconName, opts = {}) {
   const defs = nodes.filter((n) => n.tag === "defs");
   const out = [];
   for (const n of nodes) {
@@ -198,11 +203,18 @@ export function normalize(nodes, iconName) {
         throw new Error(`${iconName}: 颜色只能是 currentColor / none，发现 ${k}="${v}"`);
       if (k === "stroke-width" && v !== "1.5")
         throw new Error(`${iconName}: 线宽必须是 1.5，发现 ${v}`);
+      if (k === "opacity" && opts.fade && n.tag !== "g") {
+        const o = Number(v);
+        if (!(v.trim() !== "" && o >= 0 && o <= 1))
+          throw new Error(`${iconName}: opacity 必须是 0–1 的数值，发现 ${v}`);
+        attrs.opacity = v;
+        continue;
+      }
       if (["opacity", "fill-opacity", "stroke-opacity", "style", "class"].includes(k))
         throw new Error(`${iconName}: 不允许 ${k} 属性`);
       attrs[REACT_ATTR[k] ?? k] = v;
     }
-    const children = normalize(n.children, iconName);
+    const children = normalize(n.children, iconName, opts);
     // 整幅 clipPath 去掉后，无属性的 <g> 直接展开
     if (n.tag === "g" && Object.keys(attrs).length === 0) out.push(...children);
     else out.push(children.length ? [n.tag, attrs, children] : [n.tag, attrs]);
@@ -214,9 +226,9 @@ export function build(pkgDir) {
   const lines = [];
   for (const [name, spec] of Object.entries(ICONS)) {
     const svg = readSource(pkgDir, spec.source, spec.weight) + (spec.extra ?? "");
-    let nodes = normalize(parseSvg(svg), name);
+    let nodes = normalize(parseSvg(svg), name, { fade: spec.fade });
     if (spec.mirror) nodes = [["g", { transform: MIRROR }, nodes]];
-    const from = `${spec.source}${spec.weight === "F" ? "（Filled）" : ""}${spec.mirror ? "（水平镜像）" : ""}${spec.extra ? " + 追加图形" : ""}`;
+    const from = `${spec.source}${spec.weight === "F" ? "（Filled）" : ""}${spec.mirror ? "（水平镜像）" : ""}${spec.extra ? " + 追加图形" : ""}${spec.fade ? "（保留逐段渐隐）" : ""}`;
     lines.push(`  // ${from}`);
     lines.push(`  ${JSON.stringify(name)}: ${JSON.stringify(nodes)},`);
   }

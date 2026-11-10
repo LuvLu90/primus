@@ -1687,3 +1687,20 @@ html.window-effects.glass-clear body {
     animation: att-fade-in 160ms ease both;
   }
 }
+
+/* 左栏运行中的会话 / 项目：loader 图标按 8 段一步一步顺时针转（只动 rotate）；减少动态效果时静止 */
+@keyframes session-spin {
+  to {
+    rotate: 360deg;
+  }
+}
+
+.session-spinner {
+  animation: session-spin 0.8s steps(8) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .session-spinner {
+    animation: none;
+  }
+}

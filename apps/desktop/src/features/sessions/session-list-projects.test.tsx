@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type Platform, type SessionSummary, setPlatformForTesting } from "@/lib/platform";
 import { createMockPlatform } from "@/lib/platform/mock";
@@ -217,5 +217,37 @@ describe("项目操作", () => {
       ),
     );
     expect(screen.queryByRole("button", { name: "alpha" })).toBeNull();
+  });
+
+  it("运行中：会话行显示转圈图标；项目折叠时项目行也显示，展开后只在会话行", async () => {
+    twoProjects();
+    useSessionsStore.setState({
+      tabs: [
+        {
+          id: "tab-run",
+          sessionPath: "/data/sessions/3.jsonl",
+          sessionId: "id-3",
+          workspace: A,
+          running: true,
+          opening: false,
+        },
+      ],
+      activeTabId: "tab-run",
+    });
+    render(<SessionList />);
+    const alpha = await screen.findByRole("button", { name: /^alpha/ });
+    // 当前标签所在的项目默认展开：转圈在会话行上
+    await waitFor(() => expect(alpha.getAttribute("aria-expanded")).toBe("true"));
+    // 只有运行中的那个会话行有转圈（别的会话、项目行都没有）
+    const spinners = () => screen.queryAllByRole("img", { name: t.running });
+    expect(spinners().map((x) => x.closest("button")?.textContent)).toEqual(["第 3 个会话"]);
+
+    fireEvent.click(alpha);
+    await waitFor(() => expect(alpha.getAttribute("aria-expanded")).toBe("false"));
+    expect(spinners().map((x) => x.closest("button"))).toEqual([alpha]);
+    // 转圈只是图标：带动画类，减少动态效果时由样式停住
+    expect(within(alpha).getByRole("img", { name: t.running }).getAttribute("class")).toContain(
+      "session-spinner",
+    );
   });
 });

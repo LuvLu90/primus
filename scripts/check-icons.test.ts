@@ -214,4 +214,14 @@ describe("vendor-reicon", () => {
       expect(() => normalize(parseSvg(`<path d="M1 1" ${attr}="0.5"/>`), "x")).toThrow(attr);
     }
   });
+
+  it("opacity 默认拒绝；fade 图标只接受 0–1 的数值", () => {
+    const line = (o: string) => parseSvg(`<line x1="1" y1="1" x2="2" y2="2" opacity="${o}"/>`);
+    expect(() => normalize(line(".5"), "x")).toThrow("opacity");
+    expect(normalize(line(".5"), "x", { fade: true })).toEqual([
+      ["line", { x1: "1", y1: "1", x2: "2", y2: "2", opacity: ".5" }],
+    ]);
+    expect(() => normalize(line("2"), "x", { fade: true })).toThrow("0–1");
+    expect(() => normalize(line(""), "x", { fade: true })).toThrow("0–1");
+  });
 });

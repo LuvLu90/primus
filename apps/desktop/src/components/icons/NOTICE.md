@@ -6,7 +6,7 @@
 
 - 收录版本：npm 包 `reicon-react` 1.2.6 的 Outline 字重（24px 网格），只取 SVG 图形数据；**没有把 Reicon 作为依赖**。
 - 生成方式：`scripts/vendor-reicon.mjs` 读取解压后的 tarball，校验颜色只为 `currentColor` / `none`、线宽 1.5，生成 `icons.generated.ts`（提交生成结果，不提交下载的包）。
-- 本项目的改动：去掉整幅 24×24 的 clipPath；`sidebar-right` 为 `Sidebar2` 的水平镜像；`<Icon>` 在小尺寸下按尺寸给线条加粗，使各尺寸渲染线宽一致（约 1.25px）。
+- 本项目的改动：去掉整幅 24×24 的 clipPath；`sidebar-right` 为 `Sidebar2` 的水平镜像；`loader` 为 `Loader` 的水平镜像（保留源图形各段的 opacity 渐隐，使顺时针旋转时拖尾在后）；`<Icon>` 在小尺寸下按尺寸给线条加粗，使各尺寸渲染线宽一致（约 1.25px）。
 - Reicon 官网于 2026 年 10 月底公告可能在一两个月内停止运营（https://reicon.dev/notice）；已发布的 npm 包仍以 MIT 提供。图形已收录在仓库中，不依赖其网站或 CDN。
 
 ## 第三方署名
@@ -79,6 +79,7 @@ Reicon 官网许可页说明其基础图形来自：
 | file-text | FileText | Solar `file-text-outline` |
 | folder | Folder2 | 未能对应（Reicon 未注明来源） |
 | folder-open | FolderOpen | Solar `folder-open-outline` |
+| loader | Loader（水平镜像，保留逐段渐隐） | 未能对应（Reicon 未注明来源） |
 | window-maximize | Stop3 | 未能对应（Reicon 未注明来源） |
 | window-restore | Copy3 | 未能对应（Reicon 未注明来源） |
 

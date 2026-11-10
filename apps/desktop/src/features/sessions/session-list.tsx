@@ -106,6 +106,12 @@ export function SessionList() {
     null,
   );
   const activeWorkspace = tabs.find((x) => x.id === activeTabId)?.workspace;
+  // 有会话正在运行的工作区：折叠的项目行用它显示转圈（展开时由会话行自己显示）
+  const runningKeys = useMemo(
+    () =>
+      new Set(tabs.flatMap((x) => (x.running && x.workspace ? [workspaceKey(x.workspace)] : []))),
+    [tabs],
+  );
   const defaultKey = useDefaultWorkspaceKey();
   // 默认目录读到之前不分组，避免默认目录的会话先显示成项目再挪到“最近”
   const grouping = defaultKey !== undefined;
@@ -372,6 +378,7 @@ export function SessionList() {
                     path={row.workspace}
                     expanded={row.expanded}
                     pinned={row.pinned}
+                    running={!row.expanded && runningKeys.has(key)}
                     onToggle={() => prefs.setExpanded(key, !row.expanded)}
                     onNewSession={() => newInProject(row.workspace)}
                     onTogglePin={() => prefs.togglePinned(key)}
@@ -599,6 +606,7 @@ function ProjectRow({
   path,
   expanded,
   pinned,
+  running,
   onToggle,
   onNewSession,
   onTogglePin,
@@ -612,6 +620,8 @@ function ProjectRow({
   path: string;
   expanded: boolean;
   pinned: boolean;
+  /** 折叠时其中有会话正在运行 */
+  running: boolean;
   onToggle: () => void;
   onNewSession: () => void;
   onTogglePin: () => void;
@@ -636,6 +646,9 @@ function ProjectRow({
         >
           <Icon name={expanded ? "folder-open" : "folder"} size="md" className="shrink-0" />
           <span className="truncate">{name}</span>
+          {running && (
+            <Icon name="loader" size="sm" label={t.running} className="session-spinner shrink-0" />
+          )}
           {pinned && (
             <Icon
               name="pin"
@@ -789,11 +802,7 @@ function SessionRow({
           )}
         >
           {running && (
-            <span
-              role="img"
-              aria-label={t.running}
-              className="size-1.5 shrink-0 rounded-full bg-accent"
-            />
+            <Icon name="loader" size="sm" label={t.running} className="session-spinner shrink-0" />
           )}
           <span className="min-w-0 flex-1 truncate text-sm">{title}</span>
           {session.archived && (
