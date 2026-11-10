@@ -9,8 +9,8 @@
 
 ```sh
 python3 -m pip install -r scripts/requirements.txt   # Pillow==13.0.0
-python3 scripts/render-app-icon.py   # 生成全部图标：白色满版圆角底 + 黑色标志（小尺寸单独绘制）
+python3 scripts/render-app-icon.py   # 生成全部图标：白色方形底铺满 + 黑色线稿标志（小尺寸加粗线条）
 ```
 
-- `apps/desktop/src-tauri/icons/`：全部由 `scripts/render-app-icon.py` 生成（白色满版圆角底 + 黑色标志，图形铺满画布；16 px 为像素对齐的简化立方体，20–40 px 为实心轮廓）。`icon.ico`（16–256 px 各尺寸单独绘制）编进 `Primus.exe`，同时是 MSI（`Primus.wxs` 的 `ARPPRODUCTICON`，“应用和功能”里的图标）的图标；其余 PNG / `icon.icns` 供 Tauri 打包与后续 macOS 使用。目前只发 Windows，不保留 Android / iOS 图标。
+- `apps/desktop/src-tauri/icons/`：全部由 `scripts/render-app-icon.py` 生成（白色方形底铺满整个画布、无圆角无透明边，各尺寸都是黑色线稿标志，小尺寸加粗线条）。`icon.ico`（16–256 px 各尺寸单独绘制）编进 `Primus.exe`，同时是 MSI（`Primus.wxs` 的 `ARPPRODUCTICON`，“应用和功能”里的图标）的图标；其余 PNG / `icon.icns` 供 Tauri 打包与后续 macOS 使用。目前只发 Windows，不保留 Android / iOS 图标。
 - `apps/desktop/src/app/icon.png`：Next.js 图标约定文件，静态导出时生成 `<link rel="icon">`（浏览器预览 `pnpm dev:web` 的标签页图标）。
