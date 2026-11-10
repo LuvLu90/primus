@@ -16,5 +16,5 @@ cp assets/logo.png apps/desktop/src-tauri/icons/app-icon.png
 cp apps/desktop/src-tauri/icons/128x128@2x.png apps/desktop/src/app/icon.png
 ```
 
-- `apps/desktop/src-tauri/icons/`：`icon.ico`（白色圆角底，由 `scripts/render-app-icon.py` 生成；其余图标为透明底线稿）编进 `Primus.exe`，同时是 MSI（`Primus.wxs` 的 `ARPPRODUCTICON`，“应用和功能”里的图标）与 NSIS 安装程序（`installerIcon`）的图标；其余 PNG / `icon.icns` 供 Tauri 打包与后续 macOS 使用。目前只发 Windows，不保留 Android / iOS 图标。
+- `apps/desktop/src-tauri/icons/`：`icon.ico`（白色圆角底，由 `scripts/render-app-icon.py` 生成；其余图标为透明底线稿）编进 `Primus.exe`，同时是 MSI（`Primus.wxs` 的 `ARPPRODUCTICON`，“应用和功能”里的图标）的图标；其余 PNG / `icon.icns` 供 Tauri 打包与后续 macOS 使用。目前只发 Windows，不保留 Android / iOS 图标。
 - `apps/desktop/src/app/icon.png`：Next.js 图标约定文件，静态导出时生成 `<link rel="icon">`（浏览器预览 `pnpm dev:web` 的标签页图标）。

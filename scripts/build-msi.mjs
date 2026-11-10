@@ -2,11 +2,15 @@
 // 构建 MSI（技术方案第 3.3.1、3.3.3、3.3.4 节，第 22.1 节第 6 步）：
 //
 //   1. pnpm --filter @primus/desktop tauri build --no-bundle [--target <三元组>] -- --locked
-//      编译 Primus.exe（前端静态导出后嵌入）；目标架构与 rustc 主机不同时才加 --target（交叉编译）
-//   2. signtool 签名 Primus.exe（配置了证书时；node.exe 保留 OpenJS 官方签名，不重签）
+//      编译 Primus.exe（前端静态导出后嵌入）；目标架构与 rustc 主机不同时才加 --target（交叉编译）；
+//      再 cargo build --release --locked -p primus-update 编译更新服务 PrimusUpdate.exe（同一 target 目录，
+//      同样从 TAURI_SIGNING_PUBLIC_KEY 内置 updater 公钥，ADR 0007）
+//   2. signtool 签名 Primus.exe 与 PrimusUpdate.exe（配置了证书时；node.exe 保留 OpenJS 官方签名，不重签）
 //   3. wix build Primus.wxs（WiX 7：-arch x64|arm64 -culture zh-CN -acceptEula wix7，
 //      -bindpath app / core / runtime，-d ProductVersion=<主.次.修订.构建>，
-//      -d ShellDir=<src-tauri>（图标与许可 RTF），-d WebView2Setup=<WebView2 引导程序>）
+//      -d ShellDir=<src-tauri>（图标与许可 RTF），-d WebView2Setup=<WebView2 引导程序>，
+//      -d PrimusVersion=<SemVer>（写入 HKLM\Software\Primus\Version，更新服务据此拒绝降级），
+//      -d InstallAclScript / RemoveNsisScript=<嵌入的 PowerShell 脚本 Base64>）
 //   4. signtool 签名 MSI（配置了证书时），写 SHA-256 校验文件
 //   5. tauri signer sign --app-version <版本> 生成 updater 签名 .sig（配置了 updater 私钥时），
 //      随即按 tauri-plugin-updater 的规则用 TAURI_SIGNING_PUBLIC_KEY 校验（scripts/updater-signature.mjs）
@@ -41,7 +45,7 @@
 //                              updater 签名私钥（前者为私钥内容，后者为私钥文件路径；tauri signer sign 读取）
 //   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  updater 私钥口令
 //   TAURI_SIGNING_PUBLIC_KEY   updater 公钥（与 tauri.conf.json plugins.updater.pubkey 同格式），校验 .sig 用
-//   PRIMUS_REQUIRE_SIGNING=1   证书与 updater 密钥必须都配置齐，否则拒绝构建（CI 签名演练与正式证书发布用）
+//   PRIMUS_REQUIRE_SIGNING=1   证书与 updater 密钥必须都配置齐，否则拒绝构建（以后配置正式代码签名证书时用；目前不做 Authenticode）
 //   PRIMUS_REQUIRE_UPDATER_SIGNING=1  updater 密钥必须配置齐（每次发布都要 .sig 供自动更新，ADR 0007；release.yml 设置）
 // 证书指纹与时间戳服务器须成对配置、updater 私钥须配公钥，配一半拒绝构建；都不配时跳过签名并提示（开发与 PR 构建）。
 import { spawnSync } from "node:child_process";
@@ -67,11 +71,13 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const tauriDir = join(root, "apps/desktop/src-tauri");
 export const WXS = join(tauriDir, "windows/Primus.wxs");
 export const CULTURE = "zh-CN";
-// 安装目录 ACL 处理脚本（与 NSIS 安装钩子共用），以 -d InstallAclScript 嵌入 Primus.wxs 的 CheckInstallDir / ResetProgramAcl
+// 安装目录 ACL 处理脚本，以 -d InstallAclScript 嵌入 Primus.wxs 的 CheckInstallDir / ResetProgramAcl
 export const INSTALL_ACL_PS1 = join(tauriDir, "windows/install-acl.ps1");
+// 从旧 NSIS 版迁移时静默卸载 NSIS 版，以 -d RemoveNsisScript 嵌入 Primus.wxs 的 RemoveNsis
+export const REMOVE_NSIS_PS1 = join(tauriDir, "windows/remove-nsis.ps1");
 
 /**
- * install-acl.ps1 → powershell -Command 用的 Base64：去掉 BOM、整行注释与空行（缩短命令行），按 UTF-16LE 编码。
+ * install-acl.ps1 / remove-nsis.ps1 → powershell -Command 用的 Base64：去掉 BOM、整行注释与空行（缩短命令行），按 UTF-16LE 编码。
  * 脚本中不用块注释与 here-string，整行注释可以安全去掉。
  */
 export function encodeInstallAclScript(source) {
@@ -208,8 +214,10 @@ export function wixBuildArgs({
   shellDir = tauriDir,
   webview2Setup = WEBVIEW2_BOOTSTRAPPER,
   productVersion,
+  primusVersion,
   out,
   installAclScript = encodeInstallAclScript(readFileSync(INSTALL_ACL_PS1, "utf8")),
+  removeNsisScript = encodeInstallAclScript(readFileSync(REMOVE_NSIS_PS1, "utf8")),
 }) {
   archInfo(arch);
   return [
@@ -235,7 +243,11 @@ export function wixBuildArgs({
     "-d",
     `WebView2Setup=${webview2Setup}`,
     "-d",
+    `PrimusVersion=${primusVersion}`,
+    "-d",
     `InstallAclScript=${installAclScript}`,
+    "-d",
+    `RemoveNsisScript=${removeNsisScript}`,
     "-o",
     out,
   ];
@@ -587,6 +599,20 @@ async function main() {
     }
     runPnpm([...tauriArgs, "--", "--locked"]);
   }
+  // 1b. 更新服务（与 Primus.exe 同一 target 目录、同一架构）。--skip-tauri 时也编译：cargo 增量，未变化时几乎不耗时；
+  // 它内置的公钥同样来自这次的 TAURI_SIGNING_PUBLIC_KEY（与复用的 Primus.exe 一致已由下面的构建记录核对）
+  run("cargo", [
+    "build",
+    "--release",
+    "--locked",
+    "-p",
+    "primus-update",
+    "--manifest-path",
+    join(tauriDir, "Cargo.toml"),
+    ...target.args,
+  ]);
+  const serviceExe = join(appDir, "PrimusUpdate.exe");
+  if (!dryRun && !existsSync(serviceExe)) fail(`未找到 ${serviceExe}`);
   const exe = join(appDir, "Primus.exe");
   const stampFile = join(appDir, EXE_STAMP);
   if (!dryRun && !existsSync(exe)) fail(`未找到 ${exe}`);
@@ -602,9 +628,11 @@ async function main() {
     if (problem) fail(problem);
   }
 
-  // 2. 签名 Primus.exe
+  // 2. 签名 Primus.exe 与 PrimusUpdate.exe
   const signExe = signtoolArgs(exe);
   if (signExe) run(signtool, signExe, { attempts: 3 });
+  const signService = signtoolArgs(serviceExe);
+  if (signService) run(signtool, signService, { attempts: 3 });
   else
     console.log(
       "\n· 未配置 PRIMUS_SIGN_CERT_SHA1 / PRIMUS_SIGN_TIMESTAMP_URL，跳过 Primus.exe 签名",
@@ -627,7 +655,16 @@ async function main() {
   }
   run(
     "wix",
-    wixBuildArgs({ arch, appDir, coreDir, runtimeDir, webview2Setup, productVersion, out: msi }),
+    wixBuildArgs({
+      arch,
+      appDir,
+      coreDir,
+      runtimeDir,
+      webview2Setup,
+      productVersion,
+      primusVersion: version,
+      out: msi,
+    }),
   );
 
   // 4. 签名 MSI，写 SHA-256 校验文件
@@ -668,8 +705,9 @@ async function main() {
 
   // 6. signtool verify /pa 校验三个文件（第 3.3.4 节第 4 步）
   if (signing.authenticode) {
-    for (const file of [exe, nodeExe, msi]) run(signtool, signtoolVerifyArgs(file));
-    if (!dryRun) console.log("✓ signtool verify /pa：Primus.exe、node.exe、MSI 均通过");
+    for (const file of [exe, serviceExe, nodeExe, msi]) run(signtool, signtoolVerifyArgs(file));
+    if (!dryRun)
+      console.log("✓ signtool verify /pa：Primus.exe、PrimusUpdate.exe、node.exe、MSI 均通过");
   }
 
   console.log(`\n✓ ${dryRun ? "（演练）" : ""}MSI：${msi}`);

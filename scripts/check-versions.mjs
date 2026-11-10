@@ -52,6 +52,15 @@ const rustVersion = cargoToml.match(/^rust-version\s*=\s*"([^"]+)"/m)?.[1];
 const expectedRustVersion = baseline.toolchain.rust.split(".").slice(0, 2).join(".");
 if (rustVersion !== expectedRustVersion)
   fail(`Cargo.toml rust-version 为 ${rustVersion}，应为 ${expectedRustVersion}`);
+// 更新服务（ADR 0007）与薄壳同一工作区：版本与 rust-version 保持一致，依赖同样精确锁定（见下方 Cargo 依赖检查）
+const serviceToml = read("apps/desktop/src-tauri/update-service/Cargo.toml");
+const packageVersion = (toml) => toml.match(/^version\s*=\s*"([^"]+)"/m)?.[1];
+if (packageVersion(serviceToml) !== packageVersion(cargoToml))
+  fail(
+    `update-service/Cargo.toml version 为 ${packageVersion(serviceToml)}，应与 Cargo.toml 的 ${packageVersion(cargoToml)} 一致`,
+  );
+if (serviceToml.match(/^rust-version\s*=\s*"([^"]+)"/m)?.[1] !== expectedRustVersion)
+  fail(`update-service/Cargo.toml rust-version 应为 ${expectedRustVersion}`);
 
 const ci = read(".github/workflows/ci.yml");
 const wix = ci.match(/WIX_VERSION:\s*"([^"]+)"/)?.[1];
@@ -102,7 +111,9 @@ for (const file of findPackageJsons(root)) {
 // ---- Cargo 依赖 ----
 const depSection =
   /^\[((?:target\.[^\]]+\.)?(?:build-|dev-)?dependencies)\]\s*$([\s\S]*?)(?=^\[|$(?![\s\S]))/gm;
-for (const [, section, body] of cargoToml.matchAll(depSection)) {
+for (const [, section, body] of [cargoToml, serviceToml].flatMap((toml) => [
+  ...toml.matchAll(depSection),
+])) {
   for (const line of body.split("\n")) {
     const m = line.match(/^([A-Za-z0-9_-]+)\s*=\s*(?:"([^"]+)"|\{.*?version\s*=\s*"([^"]+)")/);
     if (!m) continue;

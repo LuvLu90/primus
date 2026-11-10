@@ -41,9 +41,7 @@
   },
   "bundle": {
     "active": false,
-    "targets": ["nsis"],
     "publisher": "乾元 Primus",
-    "licenseFile": "windows/Privacy.rtf",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -51,22 +49,6 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "windows": {
-      "webviewInstallMode": {
-        "type": "embedBootstrapper",
-        "silent": true
-      },
-      "nsis": {
-        "languages": ["SimpChinese"],
-        "displayLanguageSelector": false,
-        "installMode": "perMachine",
-        "installerIcon": "icons/icon.ico",
-        "headerImage": "windows/art/nsis-header.bmp",
-        "sidebarImage": "windows/art/nsis-sidebar.bmp",
-        "installerHooks": "windows/nsis/hooks.nsh",
-        "template": "windows/nsis/installer.nsi"
-      }
-    },
     "copyright": "© 2026 乾元 Primus",
     "shortDescription": "乾元 Primus 桌面 Agent"
   }

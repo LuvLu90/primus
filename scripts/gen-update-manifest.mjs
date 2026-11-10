@@ -6,8 +6,9 @@
 // 读取。清单格式：
 //   { "version": "1.2.3", "notes": "<Release 说明>", "pub_date": "<RFC 3339>",
 //     "platforms": { "windows-x86_64-msi": { "url": "...", "signature": "<.sig 内容>" }, ... } }
-// platforms 含 windows-x86_64-msi / windows-x86_64-nsis / windows-aarch64-msi / windows-aarch64-nsis，url 指向本次
-// Release 的附件（Primus_<ver>_<x64|arm64>_zh-CN.msi、Primus_<ver>_<x64|arm64>-setup.exe），signature 为同名 .sig 的内容。
+// platforms 含 windows-x86_64-msi / windows-aarch64-msi（只发 MSI，ADR 0007），url 指向本次 Release 的附件
+// （Primus_<ver>_<x64|arm64>_zh-CN.msi），signature 为同名 .sig 的内容。旧 NSIS 版只认 windows-<arch>-nsis，
+// 收不到这些更新，需手动安装一次 MSI（MSI 会静默卸载 NSIS 版并沿用其 data）。
 //
 // 通道规则：正式版同时写 stable.json 与 beta.json；预发布（版本含 '-'）只写 beta.json。已有清单的版本更高时不覆盖
 // （重新构建旧标签不会让通道回退；Beta 用户在正式版高于当前 Beta 时也收到正式版）；同一版本允许覆盖（重跑发布）。
@@ -15,7 +16,7 @@
 // 用法：node scripts/gen-update-manifest.mjs --version <SemVer> --tag <标签> --repo <owner/name> --assets <目录>
 //         --out-dir <目录> [--notes-file <文件>] [--existing-stable <文件>] [--existing-beta <文件>]
 //         [--pub-date <RFC 3339>] [--verify]
-//   --assets           含 4 个安装包与 4 个 .sig 的目录（发布作业从构建 artifact 下载；.sig 不作为 Release 附件）
+//   --assets           含 2 个安装包与 2 个 .sig 的目录（发布作业从构建 artifact 下载；.sig 不作为 Release 附件）
 //   --existing-*       update-feed 中现有的清单（不存在时省略或指向不存在的文件）
 //   --verify           用 TAURI_SIGNING_PUBLIC_KEY 按 updater 规则校验每个 .sig（含绑定的版本）
 // 输出：写入 out-dir 的清单文件名逐行打印到 stdout（没有要更新的清单时不打印）。
@@ -25,12 +26,10 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { verifyUpdaterSignature } from "./updater-signature.mjs";
 
-/** 清单平台键 → 安装包文件名（与 build-msi.mjs / build-nsis.mjs 的交付物命名一致） */
+/** 清单平台键 → 安装包文件名（与 build-msi.mjs 的交付物命名一致） */
 export const PLATFORMS = {
   "windows-x86_64-msi": (v) => `Primus_${v}_x64_zh-CN.msi`,
-  "windows-x86_64-nsis": (v) => `Primus_${v}_x64-setup.exe`,
   "windows-aarch64-msi": (v) => `Primus_${v}_arm64_zh-CN.msi`,
-  "windows-aarch64-nsis": (v) => `Primus_${v}_arm64-setup.exe`,
 };
 
 const SEMVER =

@@ -55,23 +55,12 @@ def main() -> None:
     a = p.parse_args()
     fonts = (ImageFont.truetype(a.cjk, 22 * S), ImageFont.truetype(a.latin, 13 * S))
 
-    # NSIS 欢迎 / 完成页侧栏 164×314
-    img = canvas(164, 314, SIDEBAR_BG)
-    sidebar(img, 164, 314, fonts)
-    finish(img, 164, 314, "nsis-sidebar.bmp")
-
     # MSI 欢迎 / 完成页背景 493×312：左 164 像素为侧栏，其余白色（WixUI 在右侧绘制文字）
     img = canvas(493, 312, WHITE)
     side = canvas(164, 312, SIDEBAR_BG)
     sidebar(side, 164, 312, fonts)
     img.alpha_composite(side, (0, 0))
     finish(img, 493, 312, "wix-dialog.bmp")
-
-    # NSIS 页眉 150×57：白底，标志靠左、垂直居中（页眉文字由 NSIS 绘制在右侧）
-    img = canvas(150, 57, WHITE)
-    mark = logo(38 * S)
-    img.alpha_composite(mark, (14 * S, (57 * S - mark.height) // 2))
-    finish(img, 150, 57, "nsis-header.bmp")
 
     # MSI 页眉 493×58：白底，标志靠右（WixUI 在左侧绘制标题）
     img = canvas(493, 58, WHITE)

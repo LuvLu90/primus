@@ -89,7 +89,6 @@ pub fn run() {
     let updater = Arc::new(
         updater::Updater::new(
             current_version,
-            &paths::exe_dir().unwrap_or_default(),
             data_paths.updates_dir(),
             &data_paths.app_dir(),
             updater::compiled_pubkey(),
@@ -248,7 +247,21 @@ pub fn run() {
         .run(|app, event| {
             // 正常退出时主动结束 Core；异常退出由 Job Object 兜底
             if let tauri::RunEvent::Exit = event {
+                // 退出时安装已下载的更新（ADR 0007）：自动更新开启、有待装包、没有运行中的 Agent 时，结束 Core 后交给
+                // 更新服务静默安装（不重新打开）；有 Agent 在跑就留到下次（下次退出或启动）
+                let updater = app.state::<Arc<updater::Updater>>();
+                let sessions = app.state::<sessions::AppSessions>();
+                let hold = if updater.wants_install_on_exit() {
+                    sessions.hold_for_update(false)
+                } else {
+                    None
+                };
                 app.state::<supervisor::Supervisor>().shutdown();
+                if let Some(hold) = hold {
+                    updater::install_on_exit(&updater);
+                    // 进程随即退出：不放开“安装中”标记，不再接受新的 prompt
+                    std::mem::forget(hold);
+                }
             }
         });
 }

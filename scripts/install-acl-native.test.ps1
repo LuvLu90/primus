@@ -7,8 +7,8 @@ $parseTokens = $null; $parseErrors = $null
 $sourceAst = [Management.Automation.Language.Parser]::ParseInput($source, [ref]$parseTokens, [ref]$parseErrors)
 $native = $sourceAst.Find({ param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Add-Type' }, $true)
 if (-not $native) { throw 'native helper missing' }
-# NSIS has a native System.dll in its plugin working directory. Compile the exact production command
-# there so a relative .NET framework reference cannot accidentally pick up that plugin.
+# A working directory may contain a native System.dll (as installer plugin directories do). Compile the exact
+# production command there so a relative .NET framework reference cannot accidentally pick it up.
 $pluginDir = Join-Path $Scratch 'plugins'
 $null = New-Item -ItemType Directory -Path $pluginDir
 Copy-Item -LiteralPath (Join-Path ([Environment]::SystemDirectory) 'version.dll') -Destination (Join-Path $pluginDir 'System.dll')

@@ -2847,6 +2847,7 @@ dependencies = [
  "image",
  "minisign-verify",
  "notify",
+ "primus-update",
  "reqwest",
  "rusqlite",
  "rustls",
@@ -2861,6 +2862,18 @@ dependencies = [
  "tauri-plugin-updater",
  "webview2-com",
  "windows",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "primus-update"
+version = "0.0.8"
+dependencies = [
+ "base64 0.23.1",
+ "minisign-verify",
+ "semver",
+ "serde",
+ "serde_json",
  "windows-sys 0.61.2",
 ]
 

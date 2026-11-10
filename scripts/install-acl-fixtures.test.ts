@@ -16,8 +16,8 @@ describe("installer trusted directory fixtures", () => {
     expect(fixture).toContain("(Get-InstallAclAceSet $actual) -ne (Get-InstallAclAceSet $acl)");
   });
 
-  it.each(["msi", "nsis"])("%s hard-link fixture uses the verified complete ACL", (kind) => {
-    const smoke = read(`./${kind}-smoke.ps1`);
+  it("MSI hard-link fixture uses the verified complete ACL", () => {
+    const smoke = read("./msi-smoke.ps1");
     expect(smoke).toContain(". (Join-Path $PSScriptRoot 'install-acl-fixtures.ps1')");
     const setup = smoke.indexOf("Set-TrustedInstallDirectoryAcl $linkDir");
     expect(setup).toBeGreaterThanOrEqual(0);
@@ -27,23 +27,9 @@ describe("installer trusted directory fixtures", () => {
     expect(smoke).toContain("(Get-Acl -LiteralPath $linkTarget).Sddl -eq $linkSddl");
   });
 
-  it("NSIS installs into a trusted existing directory before layout and uninstall checks", () => {
-    const smoke = read("./nsis-smoke.ps1");
-    const order = [
-      "New-Item -ItemType Directory -Path $InstallDir",
-      "Set-TrustedInstallDirectoryAcl $InstallDir",
-      '$code = Invoke-Nsis $Exe "/S /D=$InstallDir"',
-      "Assert-True ($code -eq 0)",
-      "$manifest = Get-Content",
-      '$code = Invoke-Nsis $uninstaller "/S _?=$InstallDir"',
-    ].map((text) => smoke.indexOf(text));
-    expect(order.every((index) => index >= 0)).toBe(true);
-    expect(order).toEqual([...order].sort((a, b) => a - b));
-  });
-
   it("copies the shared fixture alongside the smoke script for VM runs", () => {
     expect(read("./vm/Reset-PrimusTestVM.ps1")).toContain(
-      "foreach ($name in @('smoke-core-rpc.mjs', 'core-dist.mjs', 'install-acl-fixtures.ps1'))",
+      "foreach ($name in @('smoke-core-rpc.mjs', 'core-dist.mjs', 'install-acl-fixtures.ps1', 'update-service-checks.ps1', 'update-service-smoke.ps1'))",
     );
   });
 

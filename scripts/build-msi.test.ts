@@ -20,6 +20,7 @@ import {
   msiFileName,
   msiProductVersion,
   pubkeyFingerprint,
+  REMOVE_NSIS_PS1,
   resolveSigntool,
   signingConfig,
   signtoolArgs,
@@ -162,7 +163,7 @@ describe("build-msi", () => {
     expect(code.trimEnd().endsWith("exit 0")).toBe(true);
     // 路径只从命令行标记读取，必须是本地盘符下的规范绝对路径
     expect(code).toContain(
-      "[regex]::Matches([Environment]::CommandLine, '#\\|(lock|reset|nsis)\\|([^|\"]+)\\|')",
+      "[regex]::Matches([Environment]::CommandLine, '#\\|(lock|reset)\\|([^|\"]+)\\|')",
     );
     expect(code).toContain("if ($dir -cne $raw) { throw");
     // 安装目录及每一级祖先、直接子项：重解析点即失败
@@ -197,7 +198,9 @@ describe("build-msi", () => {
     }
     // 程序文件：先确认不是重解析点，不合格才 setowner + reset，之后才把子项入栈
     const repair = body("Repair-ProgramFiles");
-    expect(repair).toContain("foreach ($name in 'Primus.exe', 'uninstall.exe', 'resources')");
+    expect(repair).toContain(
+      "foreach ($name in 'Primus.exe', 'PrimusUpdate.exe', 'uninstall.exe', 'resources')",
+    );
     expect(repair).toContain("if (Test-Exists $item) { $stack.Push($item) }");
     expect(body("Get-LinkCount")).toContain("& $Fsutil hardlink list $Path");
     const order = [
@@ -230,7 +233,7 @@ describe("build-msi", () => {
     expect(body("Test-Locked")).toContain("$null -eq $rawSec.DiscretionaryAcl");
     const scan = body("Freeze-ProgramTree");
     expect(scan).toContain(
-      "[IO.Path]::GetFileName($child) -in @('Primus.exe', 'uninstall.exe', 'resources')",
+      "[IO.Path]::GetFileName($child) -in @('Primus.exe', 'PrimusUpdate.exe', 'uninstall.exe', 'resources')",
     );
     expect(scan.indexOf("Freeze-Directory $item")).toBeLessThan(
       scan.indexOf("GetFileSystemEntries($item)"),
@@ -243,7 +246,7 @@ describe("build-msi", () => {
       expect(call).toContain("'/L', '/Q'");
       expect(call).not.toContain("/T");
     }
-    // nsis 模式的安装目录 ACL 与 Primus.wxs InstallDirAcl 一致
+    // lock 模式新建的安装目录 ACL 与 Primus.wxs InstallDirAcl 一致
     expect(code).toContain(
       "O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)(A;OICI;0x1200a9;;;AC)",
     );
@@ -268,11 +271,9 @@ describe("build-msi", () => {
     );
     // Windows CreateProcess 的命令行上限为 32767 UTF-16 字符，为安装路径和调用包装预留空间。
     expect(encodeInstallAclScript(source).length).toBeLessThan(30000);
-    for (const script of ["msi-smoke.ps1", "nsis-smoke.ps1"]) {
-      const smoke = readFileSync(new URL(script, import.meta.url), "utf8");
-      expect(smoke).not.toContain("$linkTarget /inheritance:d");
-      expect(smoke).toContain("(Get-Acl -LiteralPath $linkTarget).Sddl -eq $linkSddl");
-    }
+    const smoke = readFileSync(new URL("msi-smoke.ps1", import.meta.url), "utf8");
+    expect(smoke).not.toContain("$linkTarget /inheritance:d");
+    expect(smoke).toContain("(Get-Acl -LiteralPath $linkTarget).Sddl -eq $linkSddl");
   });
 
   it("wix build 参数与技术方案第 3.3.1 节一致", () => {
@@ -283,6 +284,7 @@ describe("build-msi", () => {
       shellDir: "C:/r/apps/desktop/src-tauri",
       webview2Setup: "C:/r/w/MicrosoftEdgeWebview2Setup.exe",
       productVersion: "1.2.399.0",
+      primusVersion: "1.2.3",
       out: "C:/r/out/Primus_1.2.3_x64_zh-CN.msi",
     });
     expect(args).toEqual([
@@ -311,7 +313,11 @@ describe("build-msi", () => {
       "-d",
       "WebView2Setup=C:/r/w/MicrosoftEdgeWebview2Setup.exe",
       "-d",
+      "PrimusVersion=1.2.3",
+      "-d",
       `InstallAclScript=${encodeInstallAclScript(readFileSync(INSTALL_ACL_PS1, "utf8"))}`,
+      "-d",
+      `RemoveNsisScript=${encodeInstallAclScript(readFileSync(REMOVE_NSIS_PS1, "utf8"))}`,
       "-o",
       "C:/r/out/Primus_1.2.3_x64_zh-CN.msi",
     ]);
@@ -458,6 +464,7 @@ describe("build-msi", () => {
       coreDir: "c",
       runtimeDir: "r",
       productVersion: "1",
+      primusVersion: "1.0.0",
       out: "o",
     });
     const valuesAfter = (flag: string) =>
@@ -483,7 +490,8 @@ describe("build-msi", () => {
       expect(permission).not.toContain(right);
     // 安装目录本身：受保护的 DACL，Users 只读和执行（装在 D:\primus 等自选目录时不继承盘根的“修改”）
     expect(wxs).toContain('<ComponentRef Id="InstallDirAcl" />');
-    const sddl = /<PermissionEx Sddl="([^"]+)"/.exec(wxs)?.[1] ?? "";
+    const sddl =
+      /<Component Id="InstallDirAcl"[\s\S]*?<PermissionEx Sddl="([^"]+)"/.exec(wxs)?.[1] ?? "";
     // 所有者为 Administrators：用户预先建好的目录，原所有者不再保有隐式的更改权限
     expect(sddl).toMatch(/^O:BA/);
     // DACL 段精确比较：受保护，Users 与应用包只读和执行（0x1200a9），不含任何写入
@@ -560,6 +568,62 @@ describe("build-msi", () => {
     expect(authenticodeEnv({ PSMODULEPATH: "x" }, "f")).toEqual({ PRIMUS_VERIFY_FILE: "f" });
   });
 
+  it("Primus.wxs 安装更新服务、暂存目录与版本记录（ADR 0007）", () => {
+    const wxs = readFileSync(WXS, "utf8");
+    // 服务：LocalSystem、按需启动，只以 --service 运行；交互用户只能查询与启动，不能停止、改配置或删除
+    const service =
+      /<ServiceInstall Id="PrimusUpdateService"[^>]*>[\s\S]*?<\/ServiceInstall>/.exec(wxs)?.[0] ??
+      "";
+    expect(service).toContain('Name="PrimusUpdate"');
+    expect(service).toContain('Account="LocalSystem"');
+    expect(service).toContain('Start="demand"');
+    expect(service).toContain('Arguments="--service"');
+    const serviceDacl = /<PermissionEx Sddl="([^"]+)"/.exec(service)?.[1] ?? "";
+    expect(serviceDacl).toContain("(A;;CCLCSWLORPRC;;;IU)");
+    expect(serviceDacl.match(/\(A;;[A-Z]+;;;(\w+)\)/g)?.map((ace) => ace.slice(-3, -1))).toEqual([
+      "SY",
+      "BA",
+      "IU",
+    ]);
+    expect(wxs).toContain(
+      '<ServiceControl Id="PrimusUpdateControl" Name="PrimusUpdate" Stop="both" Remove="uninstall" Wait="yes" />',
+    );
+    expect(wxs).toContain('Source="!(bindpath.app)\\PrimusUpdate.exe"');
+    // 暂存目录：所有者 SYSTEM，受保护的 DACL 只有 SYSTEM 与 Administrators；完全卸载（非升级）时删除
+    for (const id of ["ProgramDataDir", "UpdateStagingDir"]) {
+      const component =
+        new RegExp(`<Component Id="${id}"[\\s\\S]*?</Component>`).exec(wxs)?.[0] ?? "";
+      expect(component).toContain(
+        '<PermissionEx Sddl="O:SYG:SYD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)" />',
+      );
+      expect(wxs).toContain(`<ComponentRef Id="${id}" />`);
+    }
+    expect(wxs).toContain('Condition="REMOVE~=&quot;ALL&quot; AND NOT UPGRADINGPRODUCTCODE"');
+    // 已安装版本（SemVer）：服务据此拒绝降级
+    expect(wxs).toMatch(
+      /<RegistryValue Root="HKLM" Key="Software\\Primus" Name="Version" Type="string"\s+Value="\$\(PrimusVersion\)"/,
+    );
+    for (const id of ["VersionRegistry", "UpdateService"])
+      expect(wxs).toContain(`<ComponentRef Id="${id}" />`);
+    // 旧 NSIS 版：沿用其安装目录，在检查安装目录之前以 SYSTEM 静默卸载
+    expect(wxs).toMatch(
+      /<CustomAction Id="RemoveNsis"[^>]*DllEntry="WixQuietExec"[^>]*Execute="deferred" Impersonate="no" Return="check"/,
+    );
+    expect(wxs).toContain(
+      '<Custom Action="RemoveNsis" Before="CheckInstallDir"\n              Condition="NSIS_UNINSTALLER AND NSIS_INSTALLDIR AND NOT PREVIOUS_INSTALLFOLDER AND NOT REMOVE" />',
+    );
+    expect(wxs).toContain("#|[NSIS_INSTALLDIR]|");
+    const remove = readFileSync(REMOVE_NSIS_PS1, "utf8");
+    expect(remove).toContain("Assert-Trusted $dir");
+    expect(remove).toContain("Assert-Trusted $uninstaller");
+    expect(remove.indexOf("Assert-Trusted $uninstaller")).toBeLessThan(
+      remove.indexOf("Start-Process"),
+    );
+    expect(remove).toContain("@('/S', \"_?=$dir\")");
+    expect(remove).not.toMatch(/<#|@'|@"/);
+    expect(encodeInstallAclScript(remove).length).toBeLessThan(30000);
+  });
+
   it.skipIf(process.platform === "win32")("非 Windows 上拒绝真实构建，--dry-run 列出命令", () => {
     const real = spawnSync(process.execPath, [SCRIPT], { encoding: "utf8" });
     expect(real.status).toBe(1);
@@ -574,6 +638,11 @@ describe("build-msi", () => {
     expect(dry.stdout).toContain("-acceptEula wix7");
     expect(dry.stdout).toContain(`-arch ${HOST_ARCH} `);
     expect(dry.stdout).toContain(`Primus_1.3.0-beta.2_${HOST_ARCH}_zh-CN.msi`);
+    // 更新服务随后编译（同一 target 目录），版本写进 -d PrimusVersion
+    expect(dry.stdout).toMatch(
+      /cargo build --release --locked -p primus-update --manifest-path \S+Cargo\.toml/,
+    );
+    expect(dry.stdout).toContain("PrimusVersion=1.3.0-beta.2 ");
     // 覆盖版本同步给 tauri build，Primus.exe 与 MSI 同一版本
     expect(dry.stdout).toMatch(
       /tauri build --no-bundle --config \S*tauri\.version\.json -- --locked/,
@@ -607,6 +676,9 @@ describe("build-msi", () => {
       });
       expect(dry.status).toBe(0);
       expect(dry.stdout).toContain(`tauri build --no-bundle --target ${triple} -- --locked`);
+      expect(dry.stdout).toMatch(
+        new RegExp(`-p primus-update --manifest-path \\S+ --target ${triple}`),
+      );
       expect(dry.stdout).toMatch(new RegExp(`app=\\S*target[/\\\\]${triple}[/\\\\]release `));
       expect(dry.stdout).toContain(`-arch ${other} `);
       expect(dry.stdout).toMatch(new RegExp(`Primus_\\S+_${other}_zh-CN\\.msi`));
@@ -643,22 +715,29 @@ describe("build-msi", () => {
       );
       expect(dry.status).toBe(0);
       const out = dry.stdout;
-      const at = (needle: string) => {
-        const i = out.indexOf(needle);
+      const at = (needle: string, from = 0) => {
+        const i = out.indexOf(needle, from);
         expect(i, needle).toBeGreaterThanOrEqual(0);
         return i;
       };
       const signExe = at("st.exe sign /fd sha256 /tr http://ts.example /td sha256 /sha1 ABCD ");
+      const signService = at(
+        "st.exe sign /fd sha256 /tr http://ts.example /td sha256 /sha1 ABCD ",
+        signExe + 1,
+      );
       const wix = at("wix build");
-      const signMsi = out.indexOf("st.exe sign", signExe + 1);
+      const signMsi = out.indexOf("st.exe sign", wix);
       const sig = at("tauri signer sign --app-version 1.2.3 ");
       const verifyExe = at("st.exe verify /pa /all ");
-      expect(signExe).toBeLessThan(wix);
+      expect(signExe).toBeLessThan(signService);
+      expect(out.slice(signService)).toMatch(/^st\.exe sign .*PrimusUpdate\.exe/);
+      expect(signService).toBeLessThan(wix);
       expect(wix).toBeLessThan(signMsi);
       expect(signMsi).toBeLessThan(sig);
       expect(sig).toBeLessThan(verifyExe);
-      expect(out.match(/st\.exe verify \/pa \/all /g)).toHaveLength(3);
+      expect(out.match(/st\.exe verify \/pa \/all /g)).toHaveLength(4);
       expect(out).toMatch(/verify \/pa \/all \S*Primus\.exe/);
+      expect(out).toMatch(/verify \/pa \/all \S*PrimusUpdate\.exe/);
       expect(out).toMatch(/verify \/pa \/all \S*node\.exe/);
       expect(out).toMatch(/verify \/pa \/all \S*Primus_1\.2\.3_\w+_zh-CN\.msi/);
     },

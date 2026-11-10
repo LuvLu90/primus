@@ -44,7 +44,8 @@
 | `apps/desktop/src/` | 前端（Next.js 16 App Router，静态导出） | 见第 4 节 |
 | `apps/desktop/src/components/ui/` | Liquid Glass 基础组件（lore-glass，MIT；Radix 原语） | 第三方文件的改动登记在该目录 README.md；长列表不套玻璃 |
 | `apps/desktop/src-tauri/` | 薄壳（Rust） | 目标 ≤ 约 4000 行；只做 Core 做不了的事 |
-| `apps/desktop/src-tauri/windows/` | `Primus.wxs`（WiX 7）、WebView2 引导、NSIS 备用 | `UpgradeCode` 永不改变 |
+| `apps/desktop/src-tauri/update-service/` | 更新服务 PrimusUpdate（LocalSystem，ADR 0007）与薄壳共用的协议 / 验签库 | 只接受“安装已签名、版本更高的 MSI”一种请求；改协议要加 `PROTOCOL_VERSION` |
+| `apps/desktop/src-tauri/windows/` | `Primus.wxs`（WiX 7，只发 MSI）、WebView2 引导、安装目录 ACL 与 NSIS 迁移脚本 | `UpgradeCode` 永不改变 |
 | `packages/extensions/` | 第一方 Core 扩展 → `primus-bundle.js` | 只依赖 Core 公开扩展 API |
 | `packages/protocol/` | RPC 记录与 `primus:*` 数据的 TS 类型 | 与锁定版本的 Core RPC 文档逐项对照 |
 | `packages/ui/` | 共享 UI 组件（Radix，shadcn 方式） | |

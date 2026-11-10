@@ -7,7 +7,7 @@
 - Agent 的全部能力来自 **Agent Core**（上游开源 Agent 内核源码，位于 `agent-core/`）
 - 桌面端负责界面、进程管理、配置与打包
 - 首发平台：**Windows 11 x64**，随后 macOS、Linux
-- 交付形态：一个安装包，首选 **MSI**（WiX 7），备选 NSIS
+- 交付形态：一个 **MSI** 安装包（WiX 7，x64 / ARM64），按机器安装；附带按需启动的更新服务，应用内静默升级（ADR 0007）
 
 > 完整设计见 [docs/技术方案-V5.3.md](docs/技术方案-V5.3.md)。参与开发（包括 AI 编码 Agent）前请先读 [AGENTS.md](AGENTS.md)。
 
@@ -47,7 +47,8 @@ primus/
 │  └─ src-tauri/           薄壳（Rust）
 │     ├─ src/              supervisor、rpc_bridge、job、paths、core_config、vault、
 │     │                    session_index、fs_watch、git、shell_detect、tray、updater、platform
-│     ├─ windows/          Primus.wxs（WiX 7）、WebView2 引导程序、NSIS 备用脚本
+│     ├─ update-service/   更新服务 PrimusUpdate（LocalSystem，静默安装已验签的新版 MSI）
+│     ├─ windows/          Primus.wxs（WiX 7）、WebView2 引导程序、安装目录 ACL 与 NSIS 迁移脚本
 │     ├─ icons/            应用与安装包图标（由 assets/logo.png 生成，见 assets/README.md）
 │     ├─ capabilities/     Tauri 权限声明
 │     └─ tauri.conf.json
@@ -92,8 +93,8 @@ cargo nextest run                # Rust 单测（在 apps/desktop/src-tauri 下�
 
 ## CI 与依赖升级
 
-- GitHub Actions（`.github/workflows/ci.yml`）：每次推送 `dev` / `main` 与每个指向 `main` 的 PR，先在 Linux 上做版本基线检查、lint、单测、前端构建，并构建 Core、组装 `dist/` 后用当前 node 冒烟；再在 Windows（MSVC、Rust 1.99.1、Node 24 LTS、pnpm 12、WiX 7）上分 x64（`windows-2025`）与 ARM64（`windows-11-arm`）两个作业，各自用 `build-msi.mjs --arch` 编译 `Primus.exe` 并构建 MSI、`build-nsis.mjs --arch` 打包 NSIS 安装程序（上传为制品 `primus-installers-windows-x64` / `-arm64`），`scripts/check-installers.ps1` 核对文件名、大小、MSI 平台与 exe 架构，再用 `scripts/msi-smoke.ps1`、`scripts/nsis-smoke.ps1` 静默安装、检查布局并卸载，并用 `dist/runtime/node.exe` 冒烟 `dist/agent-core`、检查 `node.exe` 官方签名。Windows 作业依赖 Linux 检查通过后才启动；`pnpm check:forbidden-sdk` 检查依赖图、导入图（从前端、扩展与 Core 入口实际遍历）与 CycloneDX SBOM（`pnpm build:sbom`）中的被禁 SDK，构建后以 `--strict` 再查一遍并做负向自检（规则在 `scripts/forbidden-sdk.json`，第 6.2 节）。
-- 发布（`.github/workflows/release.yml`）：推送 `v*` 标签时在 Windows x64 与 ARM64 运行器上分别构建该标签的 MSI 与 NSIS 安装程序（先校验标签与 `tauri.conf.json` 版本一致；SBOM、被禁 SDK 检查、安装包检查与静默安装 / 卸载冒烟照常运行），两个架构都成功后发布到 GitHub Releases。附件只有 4 个安装包：`Primus_<ver>_<x64|arm64>_zh-CN.msi` 与 `Primus_<ver>_<x64|arm64>-setup.exe`，SHA-256 写在正文的「校验」表。只有含预发布标识（含 `-`）的版本标为预发布，正式版设为 Latest。Release 不存在则创建（正文为自动生成的变更说明加已知限制、安装包说明与校验表）；已存在则覆盖同名附件（失败回滚）、删除不在清单中的旧附件、更新正文校验表并按上述规则更正预发布 / Latest。也可手动触发（`workflow_dispatch`，输入已有标签，例如 `v0.0.1`；标签中须已有多架构打包脚本）。Node/pnpm、Rust、WiX 与依赖安装与 CI 的 Windows 作业共用 composite action `.github/actions/setup-windows-build`；发布构建不使用缓存，第三方 action 固定到提交 SHA。
+- GitHub Actions（`.github/workflows/ci.yml`）：每次推送 `dev` / `main` 与每个指向 `main` 的 PR，先在 Linux 上做版本基线检查、lint、单测、前端构建，并构建 Core、组装 `dist/` 后用当前 node 冒烟；再在 Windows（MSVC、Rust 1.99.1、Node 24 LTS、pnpm 12、WiX 7）上分 x64（`windows-2025`）与 ARM64（`windows-11-arm`）两个作业，各自用 `build-msi.mjs --arch` 编译 `Primus.exe` 与 `PrimusUpdate.exe` 并构建 MSI（上传为制品 `primus-installers-windows-x64` / `-arm64`），`scripts/check-installers.ps1` 核对文件名、大小、MSI 平台、更新服务与 exe 架构，再用 `scripts/msi-smoke.ps1` 静默安装、检查布局并卸载，用 `scripts/update-service-smoke.ps1` 以普通用户身份经更新服务静默升级到两个更高版本的测试 MSI，并用 `dist/runtime/node.exe` 冒烟 `dist/agent-core`、检查 `node.exe` 官方签名。Windows 作业依赖 Linux 检查通过后才启动；`pnpm check:forbidden-sdk` 检查依赖图、导入图（从前端、扩展与 Core 入口实际遍历）与 CycloneDX SBOM（`pnpm build:sbom`）中的被禁 SDK，构建后以 `--strict` 再查一遍并做负向自检（规则在 `scripts/forbidden-sdk.json`，第 6.2 节）。
+- 发布（`.github/workflows/release.yml`）：推送 `v*` 标签时在 Windows x64 与 ARM64 运行器上分别构建该标签的 MSI（先校验标签与 `tauri.conf.json` 版本一致；SBOM、被禁 SDK 检查、安装包检查与静默安装 / 卸载冒烟照常运行），两个架构都成功后发布到 GitHub Releases。附件只有 2 个安装包：`Primus_<ver>_<x64|arm64>_zh-CN.msi`，SHA-256 写在正文的「校验」表。只有含预发布标识（含 `-`）的版本标为预发布，正式版设为 Latest。Release 不存在则创建（正文为自动生成的变更说明加已知限制、安装包说明与校验表）；已存在则覆盖同名附件（失败回滚）、删除不在清单中的旧附件、更新正文校验表并按上述规则更正预发布 / Latest。也可手动触发（`workflow_dispatch`，输入已有标签，例如 `v0.0.1`；标签中须已有多架构打包脚本）。Node/pnpm、Rust、WiX 与依赖安装与 CI 的 Windows 作业共用 composite action `.github/actions/setup-windows-build`；发布构建不使用缓存，第三方 action 固定到提交 SHA。
 - Renovate（`renovate.json`）：每月 1 日把纳入 Renovate 的稳定版升级合成一个 PR 提到 `dev`，锁定精确版本；`agent-core/` 不在升级范围内（随上游版本手动同步）；需要在 GitHub 上为本仓库安装 Renovate 应用。
 
 ### Core 产物与内置运行时（dist/）
@@ -120,7 +121,7 @@ dist/
 - `--skip-build` 只用已有构建产物重新组装；`--platform current` 不下载运行时（非 Windows 本地调试用，冒烟改用当前 node）。例：`pnpm build:core --skip-build --platform current`。
 - `node.exe` 的 Authenticode 签名在 Windows CI 上用 `Get-AuthenticodeSignature` 检查；CI 会上传 `dist/` 产物（保留 7 天），可拿到干净的 Windows 上直接 `runtime\node.exe agent-core\rpc-entry.js` 验收。
 
-安装包：`node scripts/build-core.mjs --platform win-<arch> && pnpm build:extensions && node scripts/build-msi.mjs --arch <arch> && node scripts/build-nsis.mjs --arch <arch>`（`<arch>` 为 `x64` 或 `arm64`，默认 x64；仅 Windows，MSI 需 WiX 7 .NET 工具与 UI、Util 扩展，NSIS 由 Tauri CLI 自动下载），输出 `out/Primus_<ver>_<arch>_zh-CN.msi` 与 `out/Primus_<ver>_<arch>-setup.exe`，流程见 `scripts/build-msi.mjs`、`scripts/build-nsis.mjs` 与技术方案第 3.3、3.4 节；`scripts/msi-smoke.ps1`、`scripts/nsis-smoke.ps1` 做静默安装 / 卸载冒烟。
+安装包：`node scripts/build-core.mjs --platform win-<arch> && pnpm build:extensions && node scripts/build-msi.mjs --arch <arch>`（`<arch>` 为 `x64` 或 `arm64`，默认 x64；仅 Windows，需 WiX 7 .NET 工具与 UI、Util 扩展），输出 `out/Primus_<ver>_<arch>_zh-CN.msi`，流程见 `scripts/build-msi.mjs` 与技术方案第 3.3 节；`scripts/msi-smoke.ps1` 做静默安装 / 卸载冒烟，`scripts/update-service-smoke.ps1` 做更新服务静默升级冒烟（ADR 0007）。
 
 ## 路线图
 

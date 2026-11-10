@@ -5,6 +5,12 @@ edition = "2024"
 rust-version = "1.99"
 description = "乾元（Primus）薄壳"
 
+# 薄壳与更新服务（update-service，ADR 0007）同一个工作区：共用 Cargo.lock 与 target；
+# default-members 含两者，src-tauri 下的 cargo test / clippy / fmt 同时覆盖服务
+[workspace]
+members = [".", "update-service"]
+default-members = [".", "update-service"]
+
 [lib]
 name = "primus_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
@@ -18,13 +24,15 @@ tauri = { version = "=2.12.5", features = [] }
 tauri-plugin-single-instance = "=2.5.4"
 # 系统文件/文件夹对话框（dialog_pick_folder / dialog_pick_files，附录 B）
 tauri-plugin-dialog = "=2.8.3"
-# 自动更新（第 3.6 节、ADR 0007）：只在 Rust 侧使用（不给 WebView 开插件权限）；只用到 Windows 的 MSI / NSIS 安装包，不要 zip
+# 自动更新（第 3.6 节、ADR 0007）：只在 Rust 侧使用（不给 WebView 开插件权限）；只用到 Windows 的 MSI 安装包，不要 zip
 tauri-plugin-updater = { version = "=2.14.1", default-features = false, features = ["rustls-tls", "system-proxy"] }
 # 模型渠道的模型列表获取（providers.rs）：与 updater 插件依赖树中的版本与特性一致（rustls、系统代理），不引入新的 HTTP 栈
 reqwest = { version = "=0.13.5", default-features = false, features = ["rustls-no-provider", "system-proxy"] }
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 # 待装包二次校验（安装前从磁盘重读，按 updater 插件同一套 minisign 规则校验）：与插件依赖树中的版本一致
 minisign-verify = "=0.3.0"
+# 与更新服务共用的协议、验签、版本比较与管道客户端（update-service 的库）
+primus-update = { path = "update-service" }
 base64 = "=0.23.1"
 # 更新版本比较（SemVer，含预发布）：与 Tauri 依赖树中的版本一致
 semver = "=1.0.28"

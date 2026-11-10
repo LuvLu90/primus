@@ -55,18 +55,14 @@ describe("gen-update-manifest", () => {
       pubDate: "2026-11-05T12:00:00Z",
       signatures: signaturesFor("0.0.7"),
     });
-    expect(Object.keys(m.platforms).sort()).toEqual([
-      "windows-aarch64-msi",
-      "windows-aarch64-nsis",
-      "windows-x86_64-msi",
-      "windows-x86_64-nsis",
-    ]);
+    // 只发 MSI（ADR 0007）：旧 NSIS 版的 windows-<arch>-nsis 不再出现在清单中
+    expect(Object.keys(m.platforms).sort()).toEqual(["windows-aarch64-msi", "windows-x86_64-msi"]);
     expect(m.platforms["windows-x86_64-msi"]).toEqual({
       url: "https://github.com/skaduv/primus/releases/download/v0.0.7/Primus_0.0.7_x64_zh-CN.msi",
       signature: sigFor("Primus_0.0.7_x64_zh-CN.msi"),
     });
-    expect(m.platforms["windows-aarch64-nsis"].url).toBe(
-      "https://github.com/skaduv/primus/releases/download/v0.0.7/Primus_0.0.7_arm64-setup.exe",
+    expect(m.platforms["windows-aarch64-msi"].url).toBe(
+      "https://github.com/skaduv/primus/releases/download/v0.0.7/Primus_0.0.7_arm64_zh-CN.msi",
     );
     expect(m).toMatchObject({
       version: "0.0.7",
@@ -83,8 +79,8 @@ describe("gen-update-manifest", () => {
       pubDate: "2026-11-05T12:00:00Z",
     };
     const partial = signaturesFor("0.0.7");
-    delete partial["Primus_0.0.7_arm64-setup.exe"];
-    expect(() => buildManifest({ ...base, signatures: partial })).toThrow("arm64-setup.exe");
+    delete partial["Primus_0.0.7_arm64_zh-CN.msi"];
+    expect(() => buildManifest({ ...base, signatures: partial })).toThrow("arm64_zh-CN.msi");
     expect(() =>
       buildManifest({
         ...base,
@@ -175,9 +171,9 @@ describe("gen-update-manifest", () => {
     expect(v.status).toBe(1);
     expect(v.stderr).toContain("TAURI_SIGNING_PUBLIC_KEY");
     // 缺少 .sig 时失败
-    rmSync(join(assets, "Primus_1.1.0_x64-setup.exe.sig"));
+    rmSync(join(assets, "Primus_1.1.0_x64_zh-CN.msi.sig"));
     const missing = run();
     expect(missing.status).toBe(1);
-    expect(missing.stderr).toContain("Primus_1.1.0_x64-setup.exe.sig");
+    expect(missing.stderr).toContain("Primus_1.1.0_x64_zh-CN.msi.sig");
   });
 });
