@@ -1043,13 +1043,13 @@ Function CreateOrUpdateStartMenuShortcut
     Return
   ${EndIf}
 
-  ; Skip creating shortcut if in update mode or no shortcut mode
-  ; but always create if migrating from wix
+  ; /NS 总是不创建（包括从 MSI 迁移）；更新模式不创建，但从 MSI 迁移时仍创建
+  ${If} $NoShortcutMode = 1
+    Return
+  ${EndIf}
   ${If} $WixMode = 0
-    ${If} $UpdateMode = 1
-    ${OrIf} $NoShortcutMode = 1
-      Return
-    ${EndIf}
+  ${AndIf} $UpdateMode = 1
+    Return
   ${EndIf}
 
   !if "${STARTMENUFOLDER}" != ""

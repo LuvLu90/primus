@@ -107,17 +107,21 @@ export function promptScenario(prompt: string, now: number): ScenarioResult {
   const records: CoreRecord[] = [];
   const messages: AgentMessage[] = [];
   const toolCallId = `call_mock_${now}`;
-  const thinking = "用户发来了一条消息。先看看工作区里有什么，再回答。";
-  const firstText = "我先查看一下工作区的文件。";
   const writes = prompt.includes(WRITE_TAG);
+  const thinking = writes
+    ? "用户发来了一条消息。先把笔记写进工作区，再回答。"
+    : "用户发来了一条消息。先看看工作区里有什么，再回答。";
+  const firstText = writes ? "我先把笔记写入 notes.md。" : "我先查看一下工作区的文件。";
   const toolName = writes ? "write" : "read";
   const toolArgs = writes ? { path: "notes.md", content: "# 笔记" } : { path: "README.md" };
-  const toolOutput = "# 示例工作区\n\n这是 mock 平台返回的假文件内容。";
+  const toolOutput = writes
+    ? "已写入 notes.md。"
+    : "# 示例工作区\n\n这是 mock 平台返回的假文件内容。";
   const answer = prompt.includes(TYPOGRAPHY_TAG)
     ? TYPOGRAPHY_ANSWER
     : prompt.includes(REFERENCES_TAG)
       ? REFERENCES_ANSWER
-      : `这是来自 mock 平台的模拟回答（浏览器预览模式，没有连接真实内核）。\n\n你刚才说：「${prompt}」\n\n工作区里有一个 README.md，内容是示例文本。`;
+      : `这是来自 mock 平台的模拟回答（浏览器预览模式，没有连接真实内核）。\n\n你刚才说：「${prompt}」\n\n${writes ? "已在工作区写入 notes.md。" : "工作区里有一个 README.md，内容是示例文本。"}`;
 
   const user: AgentMessage = { role: "user", content: prompt, timestamp: now };
   messages.push(user);
