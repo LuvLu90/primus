@@ -10,6 +10,7 @@ import {
   GlassDialogTitle,
 } from "@/components/ui/glass-dialog";
 import { Switch } from "@/components/ui/switch";
+import { Tooltip } from "@/components/ui/tooltip";
 import {
   getPlatform,
   type ProviderApi,
@@ -170,9 +171,9 @@ export function ProviderSettings() {
                     <span className="truncate font-medium">{p.name}</span>
                     <Badge>{protocols[p.api] ?? p.api}</Badge>
                   </p>
-                  <p className="mt-0.5 truncate text-xs text-muted" title={p.baseUrl}>
-                    {p.baseUrl}
-                  </p>
+                  <Tooltip content={p.baseUrl}>
+                    <p className="mt-0.5 truncate text-xs text-muted">{p.baseUrl}</p>
+                  </Tooltip>
                   <p className="mt-0.5 text-xs text-muted">{providerMeta(p)}</p>
                 </div>
                 <Switch
@@ -181,26 +182,28 @@ export function ProviderSettings() {
                   disabled={busy !== null}
                   onCheckedChange={(enabled) => void toggle(p, enabled)}
                 />
-                <button
-                  type="button"
-                  aria-label={fill(t.editLabel, { name: p.name })}
-                  title={t.edit}
-                  disabled={busy !== null}
-                  onClick={() => setEditing(p)}
-                  className={iconButtonClass}
-                >
-                  <Icon name="pen" />
-                </button>
-                <button
-                  type="button"
-                  aria-label={fill(t.deleteLabel, { name: p.name })}
-                  title={t.delete}
-                  disabled={busy !== null}
-                  onClick={() => setPendingDelete(p)}
-                  className={cn(iconButtonClass, "hover:text-danger")}
-                >
-                  <Icon name="trash" />
-                </button>
+                <Tooltip content={t.edit}>
+                  <button
+                    type="button"
+                    aria-label={fill(t.editLabel, { name: p.name })}
+                    disabled={busy !== null}
+                    onClick={() => setEditing(p)}
+                    className={iconButtonClass}
+                  >
+                    <Icon name="pen" />
+                  </button>
+                </Tooltip>
+                <Tooltip content={t.delete}>
+                  <button
+                    type="button"
+                    aria-label={fill(t.deleteLabel, { name: p.name })}
+                    disabled={busy !== null}
+                    onClick={() => setPendingDelete(p)}
+                    className={cn(iconButtonClass, "hover:text-danger")}
+                  >
+                    <Icon name="trash" />
+                  </button>
+                </Tooltip>
               </li>
             ))}
           </ul>

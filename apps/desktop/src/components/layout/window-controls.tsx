@@ -2,6 +2,7 @@
 
 import { type ReactNode, useEffect, useState } from "react";
 import { Icon } from "@/components/icons";
+import { Tooltip } from "@/components/ui/tooltip";
 import { type WindowControls as Controls, getWindowControls } from "@/lib/platform";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
@@ -28,23 +29,24 @@ function CaptionButton({
   children: ReactNode;
 }) {
   return (
-    <button
-      type="button"
-      aria-label={label}
-      title={label}
-      onClick={onClick}
-      className={cn(
-        // Windows 11 标题栏按钮：46px 宽、贴边、无圆角；关闭按钮悬停为系统红
-        "flex h-9 w-[46px] items-center justify-center text-fg transition-colors duration-100",
-        "focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent",
-        danger
-          ? "hover:bg-caption-close hover:text-on-danger active:bg-caption-close-pressed active:text-on-danger"
-          : "hover:bg-hover active:bg-[var(--color-border)]",
-        className,
-      )}
-    >
-      {children}
-    </button>
+    <Tooltip content={label}>
+      <button
+        type="button"
+        aria-label={label}
+        onClick={onClick}
+        className={cn(
+          // Windows 11 标题栏按钮：46px 宽、贴边、无圆角；关闭按钮悬停为系统红
+          "flex h-9 w-[46px] items-center justify-center text-fg transition-colors duration-100",
+          "focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent",
+          danger
+            ? "hover:bg-caption-close hover:text-on-danger active:bg-caption-close-pressed active:text-on-danger"
+            : "hover:bg-hover active:bg-[var(--color-border)]",
+          className,
+        )}
+      >
+        {children}
+      </button>
+    </Tooltip>
   );
 }
 

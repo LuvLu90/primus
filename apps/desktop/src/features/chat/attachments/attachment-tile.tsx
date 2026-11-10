@@ -5,6 +5,7 @@
 // 读取失败：环变红并抖动一次，保留删除键，悬停看原因。移除：先缩小淡出，再收起宽度让邻居滑过来。
 import { type CSSProperties, useEffect } from "react";
 import { FileIcon, Icon } from "@/components/icons";
+import { Tooltip } from "@/components/ui/tooltip";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 import { fileIconForName } from "../file-ref";
@@ -55,68 +56,65 @@ export function AttachmentTile({
           onRemoved(id);
       }}
     >
-      <div
-        className="att-tile"
-        data-status={item.status}
-        data-busy={item.busy || undefined}
-        title={title}
-      >
-        <div className="att-body">
-          <div className="att-inner">
-            {isImage && item.thumb ? (
-              // biome-ignore lint/performance/noImgElement: 静态导出，缩略图是内存里的 data URL
-              <img src={item.thumb} alt={item.name} draggable={false} />
-            ) : isImage ? (
-              <FileIcon name="image" size="xl" />
-            ) : (
-              <>
-                <FileIcon name={fileIconForName(item.name)} size="xl" />
-                <span className="max-w-12 truncate text-3xs text-muted">{item.name}</span>
-              </>
-            )}
-            {item.byPath && <span className="att-warn">{t.attachments.byPath}</span>}
-          </div>
-          {isImage && <ProgressRing progress={item.progress ?? 0} />}
-          {isImage && (
-            <span aria-hidden className="att-badge att-spinner">
-              {item.status === "queued" ? (
-                <svg aria-hidden width="10" height="10" viewBox="0 0 10 10">
-                  <circle cx="5" cy="5" r="1.6" className="fill-muted" />
-                </svg>
+      <Tooltip content={title}>
+        <div className="att-tile" data-status={item.status} data-busy={item.busy || undefined}>
+          <div className="att-body">
+            <div className="att-inner">
+              {isImage && item.thumb ? (
+                // biome-ignore lint/performance/noImgElement: 静态导出，缩略图是内存里的 data URL
+                <img src={item.thumb} alt={item.name} draggable={false} />
+              ) : isImage ? (
+                <FileIcon name="image" size="xl" />
               ) : (
-                <svg aria-hidden width="12" height="12" viewBox="0 0 12 12" data-spinning>
-                  <circle
-                    cx="6"
-                    cy="6"
-                    r="4.2"
-                    fill="none"
-                    strokeWidth="1.6"
-                    className="stroke-track-strong"
-                  />
-                  <path
-                    d="M6 1.8A4.2 4.2 0 0 1 10.2 6"
-                    fill="none"
-                    strokeWidth="1.6"
-                    strokeLinecap="round"
-                    className="stroke-accent"
-                  />
-                </svg>
+                <>
+                  <FileIcon name={fileIconForName(item.name)} size="xl" />
+                  <span className="max-w-12 truncate text-3xs text-muted">{item.name}</span>
+                </>
               )}
-            </span>
-          )}
-          <button
-            type="button"
-            aria-label={`${t.removeAttachment} ${item.name}`}
-            onClick={() => onRemove(id)}
-            className={cn(
-              "att-badge att-remove",
-              isImage && item.thumb ? "att-remove-frost" : "att-remove-solid",
+              {item.byPath && <span className="att-warn">{t.attachments.byPath}</span>}
+            </div>
+            {isImage && <ProgressRing progress={item.progress ?? 0} />}
+            {isImage && (
+              <span aria-hidden className="att-badge att-spinner">
+                {item.status === "queued" ? (
+                  <svg aria-hidden width="10" height="10" viewBox="0 0 10 10">
+                    <circle cx="5" cy="5" r="1.6" className="fill-muted" />
+                  </svg>
+                ) : (
+                  <svg aria-hidden width="12" height="12" viewBox="0 0 12 12" data-spinning>
+                    <circle
+                      cx="6"
+                      cy="6"
+                      r="4.2"
+                      fill="none"
+                      strokeWidth="1.6"
+                      className="stroke-track-strong"
+                    />
+                    <path
+                      d="M6 1.8A4.2 4.2 0 0 1 10.2 6"
+                      fill="none"
+                      strokeWidth="1.6"
+                      strokeLinecap="round"
+                      className="stroke-accent"
+                    />
+                  </svg>
+                )}
+              </span>
             )}
-          >
-            <Icon name="x" size="2xs" />
-          </button>
+            <button
+              type="button"
+              aria-label={`${t.removeAttachment} ${item.name}`}
+              onClick={() => onRemove(id)}
+              className={cn(
+                "att-badge att-remove",
+                isImage && item.thumb ? "att-remove-frost" : "att-remove-solid",
+              )}
+            >
+              <Icon name="x" size="2xs" />
+            </button>
+          </div>
         </div>
-      </div>
+      </Tooltip>
     </li>
   );
 }

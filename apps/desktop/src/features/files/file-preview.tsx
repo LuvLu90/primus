@@ -4,6 +4,7 @@
 // 文本走薄壳 preview_file（最多 1 MiB），图片走 attachment_image（内存中缩小，不写文件）。
 import { useEffect, useState } from "react";
 import { FileIcon, Icon } from "@/components/icons";
+import { Tooltip } from "@/components/ui/tooltip";
 import { fileIconForName } from "@/features/chat/file-ref";
 import { FileRefBase } from "@/features/chat/file-ref-actions";
 import { MarkdownText } from "@/features/chat/message-content";
@@ -92,36 +93,34 @@ function PreviewBody({ path, seq, onClose }: { path: string; seq: number; onClos
     <div className="flex min-h-0 flex-1 flex-col">
       <header className="flex h-9 shrink-0 items-center gap-1.5 pr-1 pl-2">
         <FileIcon name={fileIconForName(name)} size="sm" className="shrink-0" />
-        <h2 title={path} className="min-w-0 flex-1 truncate text-sm font-medium">
-          {name}
-        </h2>
-        <button
-          type="button"
-          aria-label={t.openExternal}
-          title={t.openExternal}
-          onClick={() => run((p) => p.openPath(path))}
-          className={iconButton}
-        >
-          <Icon name="external-link" size="sm" />
-        </button>
-        <button
-          type="button"
-          aria-label={t.reveal}
-          title={t.reveal}
-          onClick={() => run((p) => p.revealPath(path))}
-          className={iconButton}
-        >
-          <Icon name="folder-open" size="sm" />
-        </button>
-        <button
-          type="button"
-          aria-label={t.close}
-          title={t.close}
-          onClick={onClose}
-          className={iconButton}
-        >
-          <Icon name="x" size="sm" />
-        </button>
+        <Tooltip content={path}>
+          <h2 className="min-w-0 flex-1 truncate text-sm font-medium">{name}</h2>
+        </Tooltip>
+        <Tooltip content={t.openExternal}>
+          <button
+            type="button"
+            aria-label={t.openExternal}
+            onClick={() => run((p) => p.openPath(path))}
+            className={iconButton}
+          >
+            <Icon name="external-link" size="sm" />
+          </button>
+        </Tooltip>
+        <Tooltip content={t.reveal}>
+          <button
+            type="button"
+            aria-label={t.reveal}
+            onClick={() => run((p) => p.revealPath(path))}
+            className={iconButton}
+          >
+            <Icon name="folder-open" size="sm" />
+          </button>
+        </Tooltip>
+        <Tooltip content={t.close}>
+          <button type="button" aria-label={t.close} onClick={onClose} className={iconButton}>
+            <Icon name="x" size="sm" />
+          </button>
+        </Tooltip>
       </header>
       <section
         aria-label={name}

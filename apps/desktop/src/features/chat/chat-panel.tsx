@@ -21,6 +21,7 @@ import { Icon } from "@/components/icons";
 import { glassButtonClass, useGlassStyle } from "@/components/layout/glass-panel";
 import { useMediaQuery } from "@/components/theme/appearance-controller";
 import { GlassButton } from "@/components/ui/glass-button";
+import { Tooltip } from "@/components/ui/tooltip";
 import { showPreview } from "@/features/files/preview-store";
 import { lastWrittenFile } from "@/features/files/written-file";
 import { type ChatTab, useSessionsStore } from "@/features/sessions/sessions-store";
@@ -873,37 +874,39 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                     </div>
                   )}
                   {(overflowing || expanded) && (
-                    <button
-                      type="button"
-                      aria-label={expanded ? t.collapseInput : t.expandInput}
-                      title={expanded ? t.collapseInput : t.expandInput}
-                      onClick={() => {
-                        setExpanded((v) => !v);
-                        inputRef.current?.focus();
-                      }}
-                      className="absolute top-0 right-0 grid size-7 place-items-center rounded-lg text-muted outline-none transition-colors hover:bg-hover hover:text-fg"
-                    >
-                      {expanded ? (
-                        <Icon name="minimize" size="sm" />
-                      ) : (
-                        <Icon name="maximize" size="sm" />
-                      )}
-                    </button>
+                    <Tooltip content={expanded ? t.collapseInput : t.expandInput}>
+                      <button
+                        type="button"
+                        aria-label={expanded ? t.collapseInput : t.expandInput}
+                        onClick={() => {
+                          setExpanded((v) => !v);
+                          inputRef.current?.focus();
+                        }}
+                        className="absolute top-0 right-0 grid size-7 place-items-center rounded-lg text-muted outline-none transition-colors hover:bg-hover hover:text-fg"
+                      >
+                        {expanded ? (
+                          <Icon name="minimize" size="sm" />
+                        ) : (
+                          <Icon name="maximize" size="sm" />
+                        )}
+                      </button>
+                    </Tooltip>
                   )}
                 </div>
                 <div className="@container/bar flex min-w-0 items-center gap-2.5 text-xs text-muted">
                   {/* 附件：系统文件对话框选文件，只引用本地路径；薄壳未接入对话框时隐藏 */}
                   {canPickFiles && (
-                    <button
-                      type="button"
-                      aria-label={t.attach}
-                      title={t.attach}
-                      disabled={submitting}
-                      onClick={() => void pickFiles()}
-                      className={composerGhostClass({ icon: true })}
-                    >
-                      <Icon name="plus" size="sm" />
-                    </button>
+                    <Tooltip content={t.attach} wrap>
+                      <button
+                        type="button"
+                        aria-label={t.attach}
+                        disabled={submitting}
+                        onClick={() => void pickFiles()}
+                        className={composerGhostClass({ icon: true })}
+                      >
+                        <Icon name="plus" size="sm" />
+                      </button>
+                    </Tooltip>
                   )}
                   <PermissionPicker mode={permissionMode} onChange={setPermissionMode}>
                     {/* 完全访问：文字与图标用警示色；其他档位是普通的弱化幽灵按钮 */}
@@ -968,34 +971,39 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                     />
                   )}
                   {state.running ? (
-                    <button
-                      type="button"
-                      aria-label={stopping ? t.stopping : t.stop}
-                      title={stopping ? t.stopping : t.stop}
-                      aria-busy={stopping}
-                      disabled={stopping}
-                      onClick={stop}
-                      className="grid aspect-square size-8 shrink-0 place-items-center rounded-full bg-fg text-surface transition-opacity disabled:opacity-40"
-                    >
-                      <Icon name="stop" size="xs" />
-                    </button>
+                    <Tooltip content={stopping ? t.stopping : t.stop} wrap>
+                      <button
+                        type="button"
+                        aria-label={stopping ? t.stopping : t.stop}
+                        aria-busy={stopping}
+                        disabled={stopping}
+                        onClick={stop}
+                        className="grid aspect-square size-8 shrink-0 place-items-center rounded-full bg-fg text-surface transition-opacity disabled:opacity-40"
+                      >
+                        <Icon name="stop" size="xs" />
+                      </button>
+                    </Tooltip>
                   ) : (
-                    <button
-                      type="submit"
-                      aria-label={t.send}
-                      title={attachments.pending ? t.attachments.readingBlocksSend : undefined}
-                      disabled={
-                        submitting ||
-                        unresponsive ||
-                        modelConfig.unavailable ||
-                        attachments.pending ||
-                        voice.recording ||
-                        (!draft.trim() && !attachments.hasContent)
-                      }
-                      className="grid aspect-square size-8 shrink-0 place-items-center rounded-full bg-fg text-surface transition-[opacity,transform] active:scale-95 disabled:opacity-20 disabled:active:scale-100"
+                    <Tooltip
+                      content={attachments.pending ? t.attachments.readingBlocksSend : undefined}
+                      wrap
                     >
-                      <Icon name="arrow-up" />
-                    </button>
+                      <button
+                        type="submit"
+                        aria-label={t.send}
+                        disabled={
+                          submitting ||
+                          unresponsive ||
+                          modelConfig.unavailable ||
+                          attachments.pending ||
+                          voice.recording ||
+                          (!draft.trim() && !attachments.hasContent)
+                        }
+                        className="grid aspect-square size-8 shrink-0 place-items-center rounded-full bg-fg text-surface transition-[opacity,transform] active:scale-95 disabled:opacity-20 disabled:active:scale-100"
+                      >
+                        <Icon name="arrow-up" />
+                      </button>
+                    </Tooltip>
                   )}
                 </div>
               </form>

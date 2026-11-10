@@ -21,6 +21,7 @@ import { Icon } from "@/components/icons";
 import { useGlassStyle } from "@/components/layout/glass-panel";
 import { GlassSurface } from "@/components/ui/glass-surface";
 import { Switch } from "@/components/ui/switch";
+import { Tooltip } from "@/components/ui/tooltip";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 import { composerGhostClass } from "./composer-ghost";
@@ -88,37 +89,38 @@ export function ContextButton(props: ContextCardProps) {
   return (
     <Popover.Root onOpenChange={(open) => open && props.onOpen?.()}>
       <Popover.Trigger asChild>
-        <button
-          type="button"
-          aria-label={`${t.context} ${shown}`}
-          title={`${t.context} ${shown}`}
-          className={composerGhostClass({ icon: true })}
-        >
-          <svg aria-hidden width="14" height="14" viewBox="0 0 14 14" className="-rotate-90">
-            <circle
-              cx="7"
-              cy="7"
-              r={r}
-              fill="none"
-              strokeWidth="2"
-              className="stroke-track-strong"
-            />
-            <circle
-              cx="7"
-              cy="7"
-              r={r}
-              fill="none"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeDasharray={circ}
-              strokeDashoffset={circ * (1 - percent / 100)}
-              className={cn(
-                "transition-[stroke-dashoffset] duration-500 ease-out motion-reduce:transition-none",
-                tone(percent).stroke,
-              )}
-            />
-          </svg>
-        </button>
+        <Tooltip content={`${t.context} ${shown}`}>
+          <button
+            type="button"
+            aria-label={`${t.context} ${shown}`}
+            className={composerGhostClass({ icon: true })}
+          >
+            <svg aria-hidden width="14" height="14" viewBox="0 0 14 14" className="-rotate-90">
+              <circle
+                cx="7"
+                cy="7"
+                r={r}
+                fill="none"
+                strokeWidth="2"
+                className="stroke-track-strong"
+              />
+              <circle
+                cx="7"
+                cy="7"
+                r={r}
+                fill="none"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeDasharray={circ}
+                strokeDashoffset={circ * (1 - percent / 100)}
+                className={cn(
+                  "transition-[stroke-dashoffset] duration-500 ease-out motion-reduce:transition-none",
+                  tone(percent).stroke,
+                )}
+              />
+            </svg>
+          </button>
+        </Tooltip>
       </Popover.Trigger>
       <Popover.Portal>
         <Popover.Content
@@ -361,9 +363,9 @@ function ContextGroup({ group, index }: { group: ContextStatsGroup; index: numbe
               className="ctx-item flex h-[20px] items-center text-2xs"
               style={{ "--i": i } as CSSProperties}
             >
-              <span className="min-w-0 truncate text-muted" title={name}>
-                {name}
-              </span>
+              <Tooltip content={name}>
+                <span className="min-w-0 truncate text-muted">{name}</span>
+              </Tooltip>
             </li>
           ))}
         </ul>
@@ -407,9 +409,9 @@ function UsedToolsGroup({ tools, index }: { tools: ContextStatsUsedTool[]; index
               className="ctx-item flex h-[20px] items-center gap-2 text-2xs"
               style={{ "--i": i } as CSSProperties}
             >
-              <span className="min-w-0 truncate text-muted" title={tool.name}>
-                {tool.name}
-              </span>
+              <Tooltip content={tool.name}>
+                <span className="min-w-0 truncate text-muted">{tool.name}</span>
+              </Tooltip>
               <span className="flex-1" />
               <span className="shrink-0 tabular-nums text-muted">
                 {c.callCount.replace("{n}", String(tool.count))}

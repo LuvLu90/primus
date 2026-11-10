@@ -28,6 +28,7 @@ import {
   GlassPopoverContent,
   GlassPopoverTrigger,
 } from "@/components/ui/glass-popover";
+import { Tooltip } from "@/components/ui/tooltip";
 import { formatTokens } from "@/features/settings/account-models";
 import type { ModelSummary } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
@@ -189,16 +190,17 @@ export function ModelPicker({
   return (
     <GlassPopover onOpenChange={onOpenChange}>
       <GlassPopoverTrigger asChild disabled={disabled}>
-        <button
-          type="button"
-          aria-label={`${t.label}：${model?.name ?? name}${level ? `，${t.thinkingDegree}${level}` : ""}`}
-          title={model?.name ?? name}
-          className={composerGhostClass({ className: "min-w-0 max-w-64 shrink!" })}
-        >
-          <span className="truncate">{name}</span>
-          {level && <span className="shrink-0">· {level}</span>}
-          <Icon name="chevron-down" size="xs" />
-        </button>
+        <Tooltip content={model?.name ?? name}>
+          <button
+            type="button"
+            aria-label={`${t.label}：${model?.name ?? name}${level ? `，${t.thinkingDegree}${level}` : ""}`}
+            className={composerGhostClass({ className: "min-w-0 max-w-64 shrink!" })}
+          >
+            <span className="truncate">{name}</span>
+            {level && <span className="shrink-0">· {level}</span>}
+            <Icon name="chevron-down" size="xs" />
+          </button>
+        </Tooltip>
       </GlassPopoverTrigger>
       <GlassPopoverContent
         side="top"
@@ -296,11 +298,12 @@ function ModelList({
                 key={m.key}
                 value={m.key}
                 textValue={m.name}
-                title={m.id === m.name ? undefined : m.id}
                 disabled={locked && m.key !== current}
                 className={rowClass}
               >
-                <span className="min-w-0 flex-1 truncate">{m.name}</span>
+                <Tooltip content={m.id === m.name ? undefined : m.id} side="right">
+                  <span className="min-w-0 flex-1 truncate">{m.name}</span>
+                </Tooltip>
                 <span aria-hidden className="shrink-0 text-xs tabular-nums text-muted">
                   {formatTokens(m.contextWindow)}
                 </span>

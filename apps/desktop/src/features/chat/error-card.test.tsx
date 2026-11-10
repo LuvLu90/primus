@@ -26,7 +26,7 @@ const failed = (errorMessage: string, extra: Partial<AssistantMessage> = {}): As
 afterEach(() => setPlatformForTesting(undefined));
 
 describe("错误卡片", () => {
-  it("连接错误：一行标题与操作，建议在悬停提示里，元信息收在详细信息中", () => {
+  it("连接错误：一行标题与操作，建议在悬停提示里，元信息收在详细信息中", async () => {
     const onRetry = vi.fn();
     const onOpenSettings = vi.fn();
     render(
@@ -43,13 +43,14 @@ describe("错误卡片", () => {
       }),
     ).toBeTruthy();
     expect(screen.queryByText(t.categories.connection.hint)).toBeNull();
-    expect(
-      screen
-        .getByRole("heading", {
-          name: `${strings.chat.replyFailed}：${t.categories.connection.title}`,
-        })
-        .getAttribute("title"),
-    ).toBe(t.categories.connection.hint);
+    // 提示文字放在悬停提示里
+    fireEvent.pointerMove(
+      screen.getByRole("heading", {
+        name: `${strings.chat.replyFailed}：${t.categories.connection.title}`,
+      }),
+      { pointerType: "mouse" },
+    );
+    expect((await screen.findByRole("tooltip")).textContent).toBe(t.categories.connection.hint);
     expect(screen.getByText(t.retried.replace("{n}", "3"))).toBeTruthy();
     expect(screen.queryByText("ioply 网关")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: t.details }));

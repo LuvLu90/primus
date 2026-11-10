@@ -24,6 +24,29 @@ import { initialAppState, useAppStore } from "@/stores/app-store";
 import { ChatPanel } from "./chat-panel";
 import { useChatSession } from "./use-chat-session";
 
+/**
+ * 悬停直到出现统一 Tooltip，返回它（role="tooltip"）。对话区在流式输出时会自动滚动，
+ * Radix 的提示遇到祖先滚动就关闭，所以每轮先移开再悬停，直到提示出现。
+ */
+async function hoverForTooltip(get: () => Element): Promise<HTMLElement> {
+  let tip: HTMLElement | null = null;
+  await waitFor(
+    () => {
+      // 每轮重新取元素：消息列表重渲染时元素可能已被替换
+      const el = get();
+      // 只认这个元素的提示（经 aria-describedby 关联），别处同时打开的提示不算
+      const id = el.closest("[data-state]")?.getAttribute("aria-describedby");
+      tip = id ? document.getElementById(id) : null;
+      if (tip) return;
+      fireEvent.pointerLeave(el, { pointerType: "mouse" });
+      fireEvent.pointerMove(el, { pointerType: "mouse" });
+      throw new Error("tooltip not open yet");
+    },
+    { interval: 400, timeout: 4000 },
+  );
+  return tip as unknown as HTMLElement;
+}
+
 /** 用户消息的 prompt（不含 primus-guard 的 /primus-mode 等扩展命令） */
 const isUserPrompt = (r: { type: string; message?: unknown }) =>
   r.type === "prompt" && !String(r.message ?? "").startsWith("/primus-");
@@ -451,7 +474,9 @@ describe("对话区（mock 事件流）", () => {
     expect(sessionOpen.mock.calls[0]?.slice(0, 2)).toEqual(["C:\\work\\demo", entry.path]);
     // 历史会话的工作区锁定显示，不出现选择文件夹条
     expect(screen.queryByRole("button", { name: new RegExp(t.chooseFolder) })).toBeNull();
-    expect(screen.getByTitle(new RegExp(t.workspaceLocked)).textContent).toContain("demo");
+    expect((await hoverForTooltip(() => screen.getByText("demo"))).textContent).toContain(
+      t.workspaceLocked,
+    );
   });
 
   it("历史会话打开失败后，下一次发送前重新打开并加载历史", async () => {
@@ -580,7 +605,10 @@ describe("对话区（mock 事件流）", () => {
       key: "Enter",
     });
     fireEvent.click(await screen.findByRole("menuitem", { name: /示例工作区/ }));
-    expect(await screen.findByTitle(`${t.lip.branch}：main`)).toBeTruthy();
+    await screen.findByText("main");
+    expect((await hoverForTooltip(() => screen.getByText("main"))).textContent).toBe(
+      `${t.lip.branch}：main`,
+    );
     // 换到不是仓库的文件夹：分支消失
     useAppStore.setState({
       workspace: {
@@ -590,7 +618,7 @@ describe("对话区（mock 事件流）", () => {
         needsTrust: false,
       },
     });
-    await waitFor(() => expect(screen.queryByTitle(new RegExp(t.lip.branch))).toBeNull());
+    await waitFor(() => expect(screen.queryByText("main")).toBeNull());
     expect(screen.getByRole("button", { name: "新项目" })).toBeTruthy();
   });
 
@@ -1125,7 +1153,9 @@ describe("对话区（mock 事件流）", () => {
     const files = await screen.findByRole("list", { name: t.attachments.sent });
     expect(bubble.contains(files)).toBe(true);
     expect(screen.getByLabelText(`说明.md（${t.attachments.inlined}）`)).toBeTruthy();
-    expect(screen.getByLabelText("表.xlsx").getAttribute("title")).toBe("C:\\a\\表.xlsx");
+    expect((await hoverForTooltip(() => screen.getByLabelText("表.xlsx"))).textContent).toBe(
+      "C:\\a\\表.xlsx",
+    );
     expect(bubble.textContent).toContain("看看这些");
     expect(bubble.textContent).not.toContain("很长的内容");
     expect(bubble.textContent).not.toContain("<file");

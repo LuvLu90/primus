@@ -18,6 +18,7 @@ import {
   GlassPopoverSeparator,
   GlassPopoverTrigger,
 } from "@/components/ui/glass-popover";
+import { Tooltip } from "@/components/ui/tooltip";
 import { getPlatform } from "@/lib/platform";
 import type { SessionSummary } from "@/lib/platform/types";
 import { strings } from "@/lib/strings";
@@ -447,16 +448,17 @@ function ProjectRow({
   }, [shellHidden]);
   return (
     <li className="group absolute inset-x-0 flex items-center" style={{ top, height: ROW_HEIGHT }}>
-      <button
-        type="button"
-        aria-expanded={expanded}
-        onClick={onToggle}
-        title={path}
-        className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-[10px] pr-16 pl-2 text-left text-sm outline-none hover:bg-hover focus-visible:bg-hover"
-      >
-        <Icon name={expanded ? "folder-open" : "folder"} size="md" className="shrink-0" />
-        <span className="truncate">{name}</span>
-      </button>
+      <Tooltip content={path}>
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={onToggle}
+          className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-[10px] pr-16 pl-2 text-left text-sm outline-none hover:bg-hover focus-visible:bg-hover"
+        >
+          <Icon name={expanded ? "folder-open" : "folder"} size="md" className="shrink-0" />
+          <span className="truncate">{name}</span>
+        </button>
+      </Tooltip>
       <span className="absolute right-1.5 flex items-center gap-0.5">
         <GlassPopover open={moreOpen} onOpenChange={setMoreOpen}>
           <GlassPopoverTrigger asChild>
@@ -481,15 +483,16 @@ function ProjectRow({
             />
           </GlassPopoverContent>
         </GlassPopover>
-        <button
-          type="button"
-          aria-label={`${t.newInProject}：${name}`}
-          title={t.newInProject}
-          onClick={onNewSession}
-          className={hoverButtonClass}
-        >
-          <Icon name="compose" size="sm" />
-        </button>
+        <Tooltip content={t.newInProject}>
+          <button
+            type="button"
+            aria-label={`${t.newInProject}：${name}`}
+            onClick={onNewSession}
+            className={hoverButtonClass}
+          >
+            <Icon name="compose" size="sm" />
+          </button>
+        </Tooltip>
       </span>
     </li>
   );
@@ -563,33 +566,34 @@ function SessionRow({
         setMenuAt({ x: e.clientX - box.left, y: e.clientY - box.top });
       }}
     >
-      <button
-        type="button"
-        onClick={onOpen}
-        disabled={deleting}
-        aria-busy={deleting ? "true" : undefined}
-        aria-current={active ? "true" : undefined}
-        title={title}
-        className={cn(
-          "flex h-8 min-w-0 flex-1 items-center gap-1.5 rounded-[10px] pr-2 text-left outline-none hover:bg-hover focus-visible:bg-hover",
-          nested ? "pl-8" : "pl-2",
-          active && "bg-hover",
-          deleting && "pointer-events-none opacity-50",
-        )}
-      >
-        {running && (
-          <span
-            role="img"
-            aria-label={t.running}
-            className="size-1.5 shrink-0 rounded-full bg-accent"
-          />
-        )}
-        <span className="min-w-0 flex-1 truncate text-sm">{title}</span>
-        <span className="shrink-0 text-2xs text-muted tabular-nums group-hover:invisible">
-          {session.archived ? `${t.archived} · ` : ""}
-          {relativeTime(session.updatedAt, now)}
-        </span>
-      </button>
+      <Tooltip content={title}>
+        <button
+          type="button"
+          onClick={onOpen}
+          disabled={deleting}
+          aria-busy={deleting ? "true" : undefined}
+          aria-current={active ? "true" : undefined}
+          className={cn(
+            "flex h-8 min-w-0 flex-1 items-center gap-1.5 rounded-[10px] pr-2 text-left outline-none hover:bg-hover focus-visible:bg-hover",
+            nested ? "pl-8" : "pl-2",
+            active && "bg-hover",
+            deleting && "pointer-events-none opacity-50",
+          )}
+        >
+          {running && (
+            <span
+              role="img"
+              aria-label={t.running}
+              className="size-1.5 shrink-0 rounded-full bg-accent"
+            />
+          )}
+          <span className="min-w-0 flex-1 truncate text-sm">{title}</span>
+          <span className="shrink-0 text-2xs text-muted tabular-nums group-hover:invisible">
+            {session.archived ? `${t.archived} · ` : ""}
+            {relativeTime(session.updatedAt, now)}
+          </span>
+        </button>
+      </Tooltip>
       <GlassPopover open={moreOpen} onOpenChange={setMoreOpen}>
         <GlassPopoverTrigger asChild>
           <button

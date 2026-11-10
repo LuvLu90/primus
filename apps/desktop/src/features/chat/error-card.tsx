@@ -7,6 +7,7 @@
 import type { AssistantMessage } from "@primus/protocol";
 import { type ReactNode, useEffect, useId, useState } from "react";
 import { Icon, type IconName } from "@/components/icons";
+import { Tooltip } from "@/components/ui/tooltip";
 import { getPlatform } from "@/lib/platform";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
@@ -143,9 +144,11 @@ export function ErrorCard({
           size="sm"
           className={cn("shrink-0", warning ? "text-warning" : "text-danger")}
         />
-        <h3 id={titleId} title={copy.hint} className="min-w-0 flex-1 truncate font-medium text-fg">
-          {strings.chat.replyFailed}：{copy.title}
-        </h3>
+        <Tooltip content={copy.hint}>
+          <h3 id={titleId} className="min-w-0 flex-1 truncate font-medium text-fg">
+            {strings.chat.replyFailed}：{copy.title}
+          </h3>
+        </Tooltip>
         {info.reason && (
           <span className="min-w-0 truncate rounded-full bg-danger/10 px-1.5 py-px text-2xs text-danger">
             {t.reasons[info.reason]}
@@ -173,24 +176,25 @@ export function ErrorCard({
             {probe.state === "running" ? t.probing : t.probe}
           </button>
         )}
-        <button
-          type="button"
-          aria-expanded={open}
-          aria-controls={detailsId}
-          aria-label={open ? t.hideDetails : t.details}
-          title={open ? t.hideDetails : t.details}
-          onClick={() => setOpen((o) => !o)}
-          className="grid size-6 shrink-0 place-items-center rounded-md text-muted outline-none transition-colors hover:bg-hover hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40"
-        >
-          <Icon
-            name="chevron-right"
-            size="sm"
-            className={cn(
-              "motion-safe:transition-[rotate] motion-safe:duration-200",
-              open && "rotate-90",
-            )}
-          />
-        </button>
+        <Tooltip content={open ? t.hideDetails : t.details}>
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-controls={detailsId}
+            aria-label={open ? t.hideDetails : t.details}
+            onClick={() => setOpen((o) => !o)}
+            className="grid size-6 shrink-0 place-items-center rounded-md text-muted outline-none transition-colors hover:bg-hover hover:text-fg focus-visible:ring-2 focus-visible:ring-accent/40"
+          >
+            <Icon
+              name="chevron-right"
+              size="sm"
+              className={cn(
+                "motion-safe:transition-[rotate] motion-safe:duration-200",
+                open && "rotate-90",
+              )}
+            />
+          </button>
+        </Tooltip>
       </div>
 
       {(probe.state === "ok" || probe.state === "failed") && (
@@ -287,39 +291,40 @@ export function RetryNotice({
   // biome-ignore lint/correctness/useExhaustiveDependencies: 只在新一次重试开始时复位
   useEffect(() => setStopping(false), [retry.at]);
   return (
-    <div
-      role="status"
-      aria-live="polite"
-      title={retry.errorMessage && redactSecrets(retry.errorMessage)}
-      className="step-in flex min-h-7 items-center gap-2 rounded-lg border border-warning/25 bg-warning/[0.06] px-2.5 py-1.5 text-xs"
-    >
-      <Icon
-        name="refresh"
-        size="sm"
-        className={cn("shrink-0 text-warning", left === 0 && "motion-safe:animate-spin")}
-      />
-      <p className="min-w-0 flex-1 truncate text-fg">
-        <span className="font-medium">{t.categories[info.category].title}</span>
-        <span className="text-fg/80">
-          {"，"}
-          {left > 0 ? fill(t.retryIn, values) : `${fill(t.retrying, values)}…`}
-        </span>
-      </p>
-      {onStop && (
-        <button
-          type="button"
-          className={secondaryButton}
-          disabled={stopping}
-          onClick={() => {
-            setStopping(true);
-            void onStop().then((ok) => {
-              if (!ok) setStopping(false);
-            });
-          }}
-        >
-          {stopping ? t.stoppingRetry : t.stopRetry}
-        </button>
-      )}
-    </div>
+    <Tooltip content={retry.errorMessage && redactSecrets(retry.errorMessage)}>
+      <div
+        role="status"
+        aria-live="polite"
+        className="step-in flex min-h-7 items-center gap-2 rounded-lg border border-warning/25 bg-warning/[0.06] px-2.5 py-1.5 text-xs"
+      >
+        <Icon
+          name="refresh"
+          size="sm"
+          className={cn("shrink-0 text-warning", left === 0 && "motion-safe:animate-spin")}
+        />
+        <p className="min-w-0 flex-1 truncate text-fg">
+          <span className="font-medium">{t.categories[info.category].title}</span>
+          <span className="text-fg/80">
+            {"，"}
+            {left > 0 ? fill(t.retryIn, values) : `${fill(t.retrying, values)}…`}
+          </span>
+        </p>
+        {onStop && (
+          <button
+            type="button"
+            className={secondaryButton}
+            disabled={stopping}
+            onClick={() => {
+              setStopping(true);
+              void onStop().then((ok) => {
+                if (!ok) setStopping(false);
+              });
+            }}
+          >
+            {stopping ? t.stoppingRetry : t.stopRetry}
+          </button>
+        )}
+      </div>
+    </Tooltip>
   );
 }

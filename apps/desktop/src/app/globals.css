@@ -232,6 +232,55 @@ html.window-effects.glass-clear body {
 }
 
 /* 浮层进出场（Radix 用 data-state 驱动；动画 scale 属性而不是 transform，避免和 translate 类冲突） */
+/* 统一悬停提示（components/ui/tooltip.tsx）：两种主题都是深底浅字。浅色主题近黑；深色主题比窗口底色亮一档并加细描边，
+ * 叠在深色界面上仍分得清。出现时轻微淡入并朝触发元素反方向挪 2px；关闭直接消失（Radix 关闭即卸载）。 */
+.ui-tooltip {
+  background: rgb(29 29 31 / 0.94);
+  color: #f5f5f7;
+  box-shadow:
+    0 0 0 0.5px rgb(0 0 0 / 0.2),
+    0 4px 14px -4px rgb(0 0 0 / 0.35);
+  animation: tooltip-in 140ms ease-out;
+}
+
+.dark .ui-tooltip {
+  background: rgb(58 58 60 / 0.97);
+  box-shadow:
+    0 0 0 0.5px rgb(255 255 255 / 0.12),
+    0 4px 14px -4px rgb(0 0 0 / 0.55);
+}
+
+.ui-tooltip[data-side="top"] {
+  --tooltip-shift: 0 2px;
+}
+.ui-tooltip[data-side="bottom"] {
+  --tooltip-shift: 0 -2px;
+}
+.ui-tooltip[data-side="left"] {
+  --tooltip-shift: 2px 0;
+}
+.ui-tooltip[data-side="right"] {
+  --tooltip-shift: -2px 0;
+}
+
+@keyframes tooltip-in {
+  from {
+    opacity: 0;
+    translate: var(--tooltip-shift, 0 2px);
+  }
+}
+
+/* 禁用按钮收不到指针事件：由外层包装接收悬停（Tooltip 的 wrap） */
+.ui-tooltip-wrap > :disabled {
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-tooltip {
+    animation: none;
+  }
+}
+
 /*
  * 弹出菜单只在外层做缩放；淡入淡出放到玻璃的每一层上。
  * 外层 opacity < 1 会让 Chromium 把它当作 backdrop root，动画期间磨砂失效、菜单先透明再突然变实，

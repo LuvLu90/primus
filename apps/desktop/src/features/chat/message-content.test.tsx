@@ -70,7 +70,9 @@ describe("回复中的文件引用与网页链接", () => {
         .replace("{end}", "58"),
     });
     expect(ref.textContent).toBe("chat-panel.tsx:42–58");
-    expect(ref.getAttribute("title")).toBe("apps/desktop/src/chat-panel.tsx:42–58");
+    // 悬停提示走统一 Tooltip（data-tooltip），不用原生 title
+    expect(ref.getAttribute("title")).toBeNull();
+    expect(ref.getAttribute("data-tooltip")).toBe("apps/desktop/src/chat-panel.tsx:42–58");
     expect(ref.dataset.path).toBe("apps/desktop/src/chat-panel.tsx");
     expect(ref.querySelector('[data-file-icon="react-ts"]')).not.toBeNull();
     expect(screen.queryByRole("link")).toBeNull();
