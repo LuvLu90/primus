@@ -177,6 +177,30 @@ describe("会话 store：流式消息重建（第 7.4 节）", () => {
     expect(fixed.running).toBe(false);
   });
 
+  it("set_auto_compaction 在途时忽略 get_state 的旧开关值，没有在途切换时照常采用", () => {
+    const getState = (enabled: boolean): CoreRecord => ({
+      type: "response",
+      id: "g",
+      command: "get_state",
+      success: true,
+      data: {
+        thinkingLevel: "off",
+        isStreaming: false,
+        isCompacting: false,
+        steeringMode: "one-at-a-time",
+        followUpMode: "one-at-a-time",
+        sessionId: "x",
+        autoCompactionEnabled: enabled,
+        messageCount: 0,
+        pendingMessageCount: 0,
+      },
+    });
+    const toggling = { ...initialSessionState, autoCompaction: false, autoCompactionPending: 1 };
+    expect(applyChunks(toggling, [chunk([getState(true)])]).autoCompaction).toBe(false);
+    const settled = { ...toggling, autoCompactionPending: 0 };
+    expect(applyChunks(settled, [chunk([getState(true)])]).autoCompaction).toBe(true);
+  });
+
   it("失败响应记入 lastError，新一轮开始时清除", () => {
     const s = applyChunks(initialSessionState, [
       chunk([{ type: "response", id: "x", command: "prompt", success: false, error: "忙" }]),

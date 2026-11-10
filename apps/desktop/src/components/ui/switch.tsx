@@ -12,7 +12,8 @@ interface SwitchProps {
 
 /**
  * 开关（自绘）：原生 checkbox（role="switch"）负责语义与键盘，外观是凹槽轨道 + 液态玻璃水滴滑块。
- * 打开时轨道变强调色、水滴带一点回弹滑到右侧；按住时水滴横向鼓大（iOS 的按压反馈）。
+ * 打开时轨道变强调色、水滴平滑滑到右侧。不用过冲缓动、按压时也不变宽：
+ * 两者叠加会让点击瞬间滑块先鼓一下再回弹，看起来像“先弹一下”。
  */
 export function Switch({ ariaLabel, checked, onCheckedChange, disabled, className }: SwitchProps) {
   return (
@@ -47,9 +48,8 @@ export function Switch({ ariaLabel, checked, onCheckedChange, disabled, classNam
         aria-hidden
         className={cn(
           "glass-knob pointer-events-none absolute top-[2px] left-[2px] h-[22px] w-[22px] rounded-full",
-          "transition-[transform,width] duration-300 ease-[cubic-bezier(0.3,1.5,0.6,1)] motion-reduce:transition-none",
+          "transition-transform duration-200 ease-[cubic-bezier(0.2,0,0,1)] motion-reduce:transition-none",
           "peer-checked:translate-x-[20px]",
-          "peer-enabled:peer-active:w-[28px] peer-checked:peer-enabled:peer-active:translate-x-[14px]",
         )}
       />
     </label>

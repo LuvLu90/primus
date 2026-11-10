@@ -95,6 +95,11 @@ export interface SessionState {
   contextStats?: ContextStatsData;
   /** 自动压缩开关（get_state 的 autoCompactionEnabled；切换时乐观更新，set_auto_compaction 失败回滚）。Core 的全局持久设置 */
   autoCompaction?: boolean;
+  /**
+   * 还没有响应的 set_auto_compaction 个数。大于 0 时忽略 get_state 带来的 autoCompactionEnabled：
+   * 切换前发出的 get_state 在切换期间到达会带着旧值，若采用就会让开关先跳回旧位置再跳回来。
+   */
+  autoCompactionPending?: number;
   /** 正在压缩（compaction_start 到 compaction_end） */
   compacting: boolean;
   /**
@@ -309,7 +314,7 @@ function applyRecord(draft: SessionState, record: CoreRecord): void {
           setCaps(draft, model);
         }
         if (thinkingLevel) draft.thinkingLevel = thinkingLevel;
-        draft.autoCompaction = r.data.autoCompactionEnabled;
+        if (!draft.autoCompactionPending) draft.autoCompaction = r.data.autoCompactionEnabled;
         draft.compacting = r.data.isCompacting;
         // 会话已空闲：缺号时可能错过了 auto_retry_end，清掉过期的重试提示（否则会一直显示并盖住最终错误卡片）
         if (!draft.running) draft.retry = undefined;

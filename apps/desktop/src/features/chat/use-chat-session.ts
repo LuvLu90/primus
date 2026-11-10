@@ -573,7 +573,8 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
   }, [fail]);
 
   // 自动压缩：先乐观更新 store（开关立即停在新位置），set_auto_compaction 失败再回滚到切换前的值。
-  // 不再用 get_state 读回：成功响应即表示 Core 已写入设置（compaction.enabled，全局持久）
+  // 不再用 get_state 读回：成功响应即表示 Core 已写入设置（compaction.enabled，全局持久）。
+  // 请求在途期间 store 记着 autoCompactionPending，期间到达的旧 get_state 不改开关（见 session-store）。
   const autoCompactionSeq = useRef(0);
   const setAutoCompaction = useCallback(
     async (enabled: boolean): Promise<boolean> => {
@@ -581,19 +582,33 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
       if (!c) return false;
       const previous = store.getState().autoCompaction;
       const seq = ++autoCompactionSeq.current;
-      store.setState((s) => ({ ...s, autoCompaction: enabled }), true);
+      store.setState(
+        (s) => ({
+          ...s,
+          autoCompaction: enabled,
+          autoCompactionPending: (s.autoCompactionPending ?? 0) + 1,
+        }),
+        true,
+      );
+      const settle = (value?: boolean) =>
+        store.setState(
+          (s) => ({
+            ...s,
+            // 只有最后一次切换决定最终值（连续切换时较早那次的结果不覆盖之后的选择）
+            autoCompaction:
+              value !== undefined && seq === autoCompactionSeq.current ? value : s.autoCompaction,
+            autoCompactionPending: Math.max(0, (s.autoCompactionPending ?? 1) - 1),
+          }),
+          true,
+        );
       try {
         const res = await c.client.request("set_auto_compaction", { enabled });
         if (!res.success)
           throw new Error(`${strings.chat.contextCard.autoCompactFailed}：${res.error}`);
-        // 期间到达的旧 get_state 可能把值改回去：以最后一次成功的切换为准
-        if (seq === autoCompactionSeq.current)
-          store.setState((s) => ({ ...s, autoCompaction: enabled }), true);
+        settle(enabled);
         return true;
       } catch (e) {
-        // 只回滚最后一次切换（连续切换时较早那次的失败不覆盖之后的选择）
-        if (seq === autoCompactionSeq.current)
-          store.setState((s) => ({ ...s, autoCompaction: previous }), true);
+        settle(previous);
         fail(e);
         return false;
       }
