@@ -24,7 +24,9 @@ function Assert-UpdateServiceInstalled([string] $InstallDir, [string] $Version) 
   # 交互用户只有查询配置 / 状态、枚举依赖、询问、启动、读取（CC LC SW LO RP RC），没有停止（WP）、
   # 暂停（DT）、改配置（DC）、删除（SD）、改权限（WD）、取得所有权（WO）
   $iu = @([regex]::Matches($sddl, '\(A;;([A-Z]+);;;IU\)') | ForEach-Object { $_.Groups[1].Value })
-  Assert-True ($iu.Count -eq 1 -and $iu[0] -ceq 'CCLCSWLORPRC') "交互用户对更新服务只能查询与启动（实际 $($iu -join ',')）"
+  # 系统按自己的顺序输出权限缩写（如 CCLCSWRPLORC），按两字母一组排序后比较
+  $rights = { param($text) (($text -split '(..)' | Where-Object { $_ }) | Sort-Object) -join '' }
+  Assert-True ($iu.Count -eq 1 -and (& $rights $iu[0]) -ceq (& $rights 'CCLCSWLORPRC')) "交互用户对更新服务只能查询与启动（实际 $($iu -join ',')）"
   $others = [regex]::Matches($sddl, '\(A;;[A-Z]+;;;([A-Z]{2}|S-[\d-]+)\)') | ForEach-Object { $_.Groups[1].Value } |
     Where-Object { $_ -notin 'SY', 'BA', 'IU' }
   Assert-True (@($others).Count -eq 0) "更新服务的 DACL 只给 SYSTEM、Administrators、交互用户（多出 $($others -join ',')）"
