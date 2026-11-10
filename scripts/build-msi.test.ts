@@ -486,7 +486,9 @@ describe("build-msi", () => {
     // 开始菜单与桌面快捷方式
     expect(wxs).toContain('<ComponentRef Id="StartMenuShortcut" />');
     expect(wxs).toContain('<ComponentRef Id="DesktopShortcut" />');
-    expect(wxs).toMatch(/<StandardDirectory Id="DesktopFolder">\s*<Component Id="DesktopShortcut">/);
+    expect(wxs).toMatch(
+      /<StandardDirectory Id="DesktopFolder">\s*<Component Id="DesktopShortcut">/,
+    );
     const sddl = /<PermissionEx Sddl="([^"]+)"/.exec(wxs)?.[1] ?? "";
     // 所有者为 Administrators：用户预先建好的目录，原所有者不再保有隐式的更改权限
     expect(sddl).toMatch(/^O:BA/);
