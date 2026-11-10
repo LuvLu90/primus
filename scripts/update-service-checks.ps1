@@ -17,8 +17,11 @@ function Assert-UpdateServiceInstalled([string] $InstallDir, [string] $Version) 
   Assert-True ($null -ne $service) "已安装更新服务 $UpdateServiceName"
   Assert-True ($service.StartName -eq 'LocalSystem') "更新服务以 LocalSystem 运行（实际 $($service.StartName)）"
   Assert-True ($service.StartMode -eq 'Manual') "更新服务按需启动（实际 $($service.StartMode)）"
-  $expected = '"' + (Join-Path $InstallDir 'PrimusUpdate.exe') + '" --service'
-  Assert-True ($service.PathName -ieq $expected) "更新服务的命令行为 $expected（实际 $($service.PathName)）"
+  # Windows Installer 只在路径含空格时给映像路径加引号；不含空格时不加引号同样不会被错误解析
+  $image = Join-Path $InstallDir 'PrimusUpdate.exe'
+  $expected = @("`"$image`" --service")
+  if ($image -notmatch '\s') { $expected += "$image --service" }
+  Assert-True ($expected -icontains $service.PathName) "更新服务的命令行为 $($expected[0])（实际 $($service.PathName)）"
   $sddl = ((& sc.exe sdshow $UpdateServiceName) -join '').Trim()
   Assert-True ($LASTEXITCODE -eq 0) "读取更新服务的安全描述符（$sddl）"
   # 交互用户只有查询配置 / 状态、枚举依赖、询问、启动、读取（CC LC SW LO RP RC），没有停止（WP）、
