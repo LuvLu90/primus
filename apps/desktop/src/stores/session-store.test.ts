@@ -438,6 +438,30 @@ describe("会话 store：流式消息重建（第 7.4 节）", () => {
     expect(warn2).toHaveBeenCalled();
     warn2.mockRestore();
   });
+
+  it("primus:preview 记下最近一次预览请求；缺字段或未知版本忽略", () => {
+    const widget = (data: unknown, v = 1) =>
+      ({
+        type: "extension_ui_request",
+        id: "p",
+        method: "setWidget",
+        widgetKey: "primus:preview",
+        widgetLines: [JSON.stringify({ v, type: "preview", data })],
+      }) as CoreRecord;
+    const req = { id: "call-1", path: "/w/out", kind: "folder" };
+    const s1 = applyChunks(initialSessionState, [chunk([widget(req)])]);
+    expect(s1.previewRequest).toEqual(req);
+    expect(s1.uiRequests).toEqual([]);
+    const s2 = applyChunks(s1, [
+      chunk([widget({ id: "call-2", path: "/w/a.md", kind: "markdown" })]),
+    ]);
+    expect(s2.previewRequest?.id).toBe("call-2");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(applyChunks(s1, [chunk([widget({ id: "x" })])]).previewRequest).toEqual(req);
+    expect(applyChunks(s1, [chunk([widget(req, 2)])]).previewRequest).toEqual(req);
+    expect(warn).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
+  });
 });
 
 describe("会话 store：自动重试", () => {

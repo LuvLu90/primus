@@ -11,5 +11,6 @@
 | `plan` | `setActiveTools`、自定义工具 `todo` | 计划模式、待办 | `primus:plan`、`primus:todo`；`/primus-plan` |
 | `shell` | `before_agent_start`；`tool_call`（bash/powershell） | 命令工具只有 PowerShell 时往系统提示词追加 PowerShell 写法要点（技术方案第 12.3 节）；Windows 编码修正、环境变量清理 | — |
 | `narrate` | `before_agent_start` | 往系统提示词末尾追加“进度说明”：调用工具前、每个阶段结束时用一两句话说明在做什么，最后一条回复写总结（桌面端按“工作过程 + 总结”展示） | — |
+| `preview` | 自定义工具 `preview`（只读、不联网，guard 不弹确认） | 在右栏打开文件或文件夹的预览；返回结构化状态 `shown` / `unsupported` / `not_found` / `denied` / `too_large` / `no_ui`（`@primus/protocol` 的 `PreviewToolDetails`） | `primus:preview` |
 
 数据格式：`{ "v": 1, "type": "<主题>", "data": { ... } }`，通过 `ctx.ui.setWidget("primus:<主题>", [JSON])` 发送。

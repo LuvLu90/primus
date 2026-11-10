@@ -22,6 +22,7 @@ import { glassButtonClass, useGlassStyle } from "@/components/layout/glass-panel
 import { useMediaQuery } from "@/components/theme/appearance-controller";
 import { GlassButton } from "@/components/ui/glass-button";
 import { Tooltip } from "@/components/ui/tooltip";
+import { usePreviewRequest } from "@/features/files/preview-request";
 import { showPreview } from "@/features/files/preview-store";
 import { lastWrittenFile } from "@/features/files/written-file";
 import { type ChatTab, useSessionsStore } from "@/features/sessions/sessions-store";
@@ -599,6 +600,9 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     const path = written && resolveFileRefPath(written, fileRefBase);
     if (path) showPreview(path);
   }, [state.running, activeTabId]);
+
+  // Agent 用预览工具请求在右栏打开的文件 / 文件夹：只在本标签是当前标签时打开，后台标签切回时再打开
+  usePreviewRequest(state.previewRequest, tabId);
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.nativeEvent.isComposing) return;

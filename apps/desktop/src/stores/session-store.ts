@@ -7,11 +7,12 @@ import type {
   CoreRecord,
   ExtensionUiDialogRequest,
   Model,
+  PreviewData,
   RpcResponse,
   SessionStats,
   ToolResult,
 } from "@primus/protocol";
-import { CONTEXT_STATS_WIDGET, isDialogRequest } from "@primus/protocol";
+import { CONTEXT_STATS_WIDGET, isDialogRequest, PREVIEW_WIDGET } from "@primus/protocol";
 import { produce } from "immer";
 import { createStore } from "zustand/vanilla";
 
@@ -93,6 +94,8 @@ export interface SessionState {
   sessionUsage?: Pick<SessionStats, "tokens" | "cost">;
   /** 上下文里已加载的清单（primus-context-stats，只有名称、不含估算；经 setWidget("primus:context-stats") 推送；会话打开后请求一次，之后扩展每轮结束主动重推） */
   contextStats?: ContextStatsData;
+  /** Agent 最近一次请求在右栏打开的预览（primus-preview 的 `preview` 工具，经 setWidget("primus:preview") 推送；按 id 区分每次请求） */
+  previewRequest?: PreviewData;
   /** 自动压缩开关（get_state 的 autoCompactionEnabled；切换时乐观更新，set_auto_compaction 失败回滚）。Core 的全局持久设置 */
   autoCompaction?: boolean;
   /**
@@ -258,8 +261,21 @@ export function parsePrimusData(
   }
 }
 
+/** `primus:preview`：记下请求，由该会话的标签决定何时在右栏打开（features/files/preview-request.ts） */
+function applyPreviewWidget(draft: SessionState, key: string, lines: string[] | undefined): void {
+  if (lines === undefined) return;
+  const data = parsePrimusData(key, lines)?.data as Partial<PreviewData> | undefined;
+  if (data && typeof data.id === "string" && typeof data.path === "string" && data.path)
+    draft.previewRequest = { id: data.id, path: data.path, kind: data.kind ?? "other" };
+  else if (data !== undefined) console.warn(`忽略 ${key}：数据缺少 id 或 path`);
+}
+
 /** 即发即弃的 setWidget：只处理前端认识的 `primus:*` 主题，其余忽略 */
 function applyWidget(draft: SessionState, key: string, lines: string[] | undefined): void {
+  if (key === PREVIEW_WIDGET) {
+    applyPreviewWidget(draft, key, lines);
+    return;
+  }
   if (key !== CONTEXT_STATS_WIDGET) return;
   // 缺省 widgetLines 表示清除
   if (lines === undefined) {
