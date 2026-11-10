@@ -39,6 +39,26 @@ export const ROW_HEIGHT = 34;
 const HEADER_HEIGHT = 32;
 /** 距底部还剩这么多行时加载下一页 */
 const LOAD_MORE_THRESHOLD = 10;
+/** 连续自动加载但可见行没有增长（如“项目”已折叠、新页全是项目会话）最多这么多页，之后等用户滚动 */
+const MAX_IDLE_PAGES = 2;
+
+/** 当前用户未选工作区时的默认目录键：读取中为 undefined，读取失败为 null（只有空工作区算“最近”） */
+function useDefaultWorkspaceKey(): string | null | undefined {
+  const [key, setKey] = useState<string | null>();
+  useEffect(() => {
+    let alive = true;
+    getPlatform()
+      .then((p) => p.sessionDefaultWorkspace())
+      .then(
+        (path) => alive && setKey(workspaceKey(path)),
+        () => alive && setKey(null),
+      );
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return key;
+}
 
 /** 相对时间（刚刚 / n 分钟前 / n 小时前 / n 天前，超过 30 天显示日期） */
 export function relativeTime(ms: number, now: number): string {
@@ -79,6 +99,9 @@ export function SessionList() {
   const [projectsOpen, setProjectsOpen] = useState(true);
   const [toggled, setToggled] = useState<Record<string, boolean>>({});
   const activeWorkspace = tabs.find((x) => x.id === activeTabId)?.workspace;
+  const defaultKey = useDefaultWorkspaceKey();
+  // 默认目录读到之前不分组，避免默认目录的会话先显示成项目再挪到“最近”
+  const grouping = defaultKey !== undefined;
 
   const searching = search.results !== null;
   const sessions = search.results ?? index.items;
@@ -86,12 +109,15 @@ export function SessionList() {
     () =>
       searching
         ? sessions.map((s) => ({ kind: "session", key: s.path, session: s, nested: false }))
-        : buildRows(sessions, {
-            projectsOpen,
-            toggled,
-            activeKey: activeWorkspace ? workspaceKey(activeWorkspace) : null,
-          }),
-    [searching, sessions, projectsOpen, toggled, activeWorkspace],
+        : grouping
+          ? buildRows(sessions, {
+              projectsOpen,
+              toggled,
+              activeKey: activeWorkspace ? workspaceKey(activeWorkspace) : null,
+              defaultKey,
+            })
+          : [],
+    [searching, grouping, sessions, projectsOpen, toggled, activeWorkspace, defaultKey],
   );
   const listError = searching ? search.error : index.error;
   // 相对时间每分钟刷新一次
@@ -114,17 +140,35 @@ export function SessionList() {
   const virtualItems = virtualizer.getVirtualItems();
   const lastIndex = virtualItems.at(-1)?.index ?? -1;
   const { hasMore, loading, loadMore, error: indexError } = index;
+  // 自动加载的上一页加载前的行数，与此后连续未增长的页数：连续几页都没让列表变长时停下，等用户滚动
+  const autoLoad = useRef({ rows: -1, idle: 0 });
   // 加载失败后不自动重试（否则 loading 复位即再次触发，连续请求）：等用户点“重试”
   useEffect(() => {
     if (
-      !searching &&
-      !indexError &&
-      hasMore &&
-      !loading &&
-      lastIndex >= rows.length - LOAD_MORE_THRESHOLD
+      searching ||
+      !grouping ||
+      indexError ||
+      !hasMore ||
+      loading ||
+      lastIndex < rows.length - LOAD_MORE_THRESHOLD
     )
-      loadMore();
-  }, [searching, indexError, hasMore, loading, lastIndex, rows.length, loadMore]);
+      return;
+    const auto = autoLoad.current;
+    auto.idle = rows.length > auto.rows ? 0 : auto.idle + 1;
+    auto.rows = rows.length;
+    if (auto.idle >= MAX_IDLE_PAGES) return;
+    loadMore();
+  }, [searching, grouping, indexError, hasMore, loading, lastIndex, rows.length, loadMore]);
+  /** 用户滚到底部附近：解除“连续未增长”的限制，继续分页 */
+  const onScroll = () => {
+    const el = scrollRef.current;
+    const auto = autoLoad.current;
+    if (!el || auto.idle < MAX_IDLE_PAGES) return;
+    if (el.scrollTop + el.clientHeight < el.scrollHeight - ROW_HEIGHT * 2) return;
+    auto.idle = 0;
+    auto.rows = -1;
+    if (hasMore && !loading && !indexError && !searching) loadMore();
+  };
 
   /** 在项目中新建会话：输入框上方的工作区切到该项目，再开一个空标签 */
   const newInProject = (workspace: string) => {
@@ -132,8 +176,8 @@ export function SessionList() {
     getPlatform()
       .then((p) => p.workspaceOpen(workspace))
       .then((ws) => {
-        useAppStore.getState().setWorkspace(ws);
-        newTab();
+        // 标签已满时 newTab 失败：不动全局工作区，免得当前会话旁显示别的项目
+        if (newTab()) useAppStore.getState().setWorkspace(ws);
       })
       .catch((e) => setActionError(errorText(e)));
   };
@@ -221,7 +265,11 @@ export function SessionList() {
         </p>
       )}
 
-      <div ref={scrollRef} className="scroll-thin -mx-1 min-h-0 flex-1 overflow-y-auto px-1">
+      <div
+        ref={scrollRef}
+        onScroll={onScroll}
+        className="scroll-thin -mx-1 min-h-0 flex-1 overflow-y-auto px-1"
+      >
         {rows.length === 0 ? (
           emptyText && <p className="px-2 py-3 text-xs text-muted">{emptyText}</p>
         ) : (

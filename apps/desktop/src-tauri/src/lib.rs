@@ -214,6 +214,7 @@ pub fn run() {
             commands::workspace_trust,
             commands::dialog_pick_folder,
             commands::dialog_pick_files,
+            commands::session_default_workspace,
             commands::session_list,
             commands::session_search,
             commands::session_watch,

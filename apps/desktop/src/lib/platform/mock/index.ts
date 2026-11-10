@@ -803,6 +803,8 @@ export function createMockPlatform(options: MockOptions = {}): Platform {
       fingerprint: "mock",
     }),
 
+    sessionDefaultWorkspace: async () =>
+      "C:\\Users\\mock\\AppData\\Roaming\\Primus\\users\\mock\\chat",
     sessionList: async (workspace, cursor) => {
       // 键集分页（与薄壳一致）：只返回排在游标那条之后的会话，归档或新增会话不会让后续页漏项或重复
       const after = cursor ? parseCursor(cursor) : undefined;

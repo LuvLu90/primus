@@ -291,6 +291,14 @@ fn workspace_key(paths: &DataPaths, workspace: Option<&str>) -> Option<String> {
     })
 }
 
+/// 未选工作区时会话使用的默认工作目录（`users/<SID>/chat` 的完整路径），左栏据此区分“项目”与“最近”。
+#[tauri::command]
+pub(crate) fn session_default_workspace(paths: State<'_, DataPaths>) -> String {
+    crate::sessions::default_workspace_dir(&paths)
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// 会话列表（第 10.2 节）：最后活动时间倒序、每页 50 条、不含已归档；`cursor` 为上一页的 `nextCursor`。
 #[tauri::command(async)]
 pub(crate) fn session_list(

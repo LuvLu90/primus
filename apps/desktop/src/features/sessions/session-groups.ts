@@ -2,12 +2,12 @@
 // 纯函数，把分组展开成一维行列表，交给虚拟列表渲染。
 import type { SessionSummary } from "@/lib/platform/types";
 
-/** 未选工作区时会话的默认工作目录 `…/users/<SID>/chat`（薄壳 sessions.rs 的 default_workspace_dir） */
-const DEFAULT_WORKSPACE = /[\\/]users[\\/][^\\/]+[\\/]chat[\\/]*$/i;
-
-/** 会话是否属于某个项目：工作区非空且不是未选工作区时的默认目录 */
-export function isProjectWorkspace(workspace: string): boolean {
-  return workspace.trim() !== "" && !DEFAULT_WORKSPACE.test(workspace);
+/**
+ * 会话是否属于某个项目：工作区非空，且不是当前用户未选工作区时的默认目录。
+ * `defaultKey` 是该默认目录完整路径的 {@link workspaceKey}（薄壳 `session_default_workspace`）。
+ */
+export function isProjectWorkspace(workspace: string, defaultKey: string | null): boolean {
+  return workspace.trim() !== "" && workspaceKey(workspace) !== defaultKey;
 }
 
 /** 比较用的工作区键：统一斜杠、去掉末尾斜杠、不区分大小写（Windows 路径） */
@@ -33,6 +33,8 @@ export interface GroupOptions {
   toggled: Readonly<Record<string, boolean>>;
   /** 当前标签所在项目的键：默认展开 */
   activeKey?: string | null;
+  /** 未选工作区时默认目录的键（workspaceKey）；这里的会话归入“最近” */
+  defaultKey?: string | null;
 }
 
 /**
@@ -43,7 +45,7 @@ export function buildRows(sessions: readonly SessionSummary[], options: GroupOpt
   const projects = new Map<string, { workspace: string; sessions: SessionSummary[] }>();
   const recent: SessionSummary[] = [];
   for (const s of sessions) {
-    if (!isProjectWorkspace(s.workspace)) {
+    if (!isProjectWorkspace(s.workspace, options.defaultKey ?? null)) {
       recent.push(s);
       continue;
     }
