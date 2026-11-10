@@ -609,8 +609,9 @@ describe("build-msi", () => {
     expect(wxs).toMatch(
       /<CustomAction Id="RemoveNsis"[^>]*DllEntry="WixQuietExec"[^>]*Execute="deferred" Impersonate="no" Return="check"/,
     );
-    expect(wxs).toContain(
-      '<Custom Action="RemoveNsis" Before="CheckInstallDir"\n              Condition="NSIS_UNINSTALLER AND NSIS_INSTALLDIR AND NOT PREVIOUS_INSTALLFOLDER AND NOT REMOVE" />',
+    // 检出时 .wxs 为 CRLF（.gitattributes），跨行匹配不依赖行尾
+    expect(wxs).toMatch(
+      /<Custom Action="RemoveNsis" Before="CheckInstallDir"\s+Condition="NSIS_UNINSTALLER AND NSIS_INSTALLDIR AND NOT PREVIOUS_INSTALLFOLDER AND NOT REMOVE" \/>/,
     );
     expect(wxs).toContain("#|[NSIS_INSTALLDIR]|");
     const remove = readFileSync(REMOVE_NSIS_PS1, "utf8");
