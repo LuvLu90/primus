@@ -802,6 +802,60 @@ describe("对话区（mock 事件流）", () => {
     expect(records.some((r) => r.type === "set_model")).toBe(false);
   });
 
+  it("思考强度默认为“中”：新会话打开与切换模型后都按它设置，不支持思考的模型才为关闭", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    setPlatformForTesting(platform);
+    const records: { type: string; [k: string]: unknown }[] = [];
+    const coreSend = platform.coreSend.bind(platform);
+    vi.spyOn(platform, "coreSend").mockImplementation((key, record) => {
+      records.push(record as { type: string });
+      return coreSend(key, record);
+    });
+    // 不支持思考的模型：打开后 Core 夹到 off
+    const fast = renderHook(() => useChatSession());
+    await act(async () => {
+      await fast.result.current.selectModel({ model: "ioply/mock-fast" });
+    });
+    expect(fast.result.current.pendingModel).toEqual({ model: "ioply/mock-fast" });
+    await act(async () => {
+      await fast.result.current.send("你好");
+    });
+    await waitFor(() => expect(fast.result.current.state.thinkingLevel).toBe("off"));
+    const types = records.map((r) => r.type);
+    expect(types.indexOf("set_thinking_level")).toBeGreaterThan(types.indexOf("set_model"));
+    expect(records.find((r) => r.type === "set_thinking_level")).toMatchObject({ level: "medium" });
+    fast.unmount();
+
+    // 支持思考的模型：先选不支持的再换回来，仍为“中”（Core 换回后不会自己恢复）
+    records.length = 0;
+    const large = renderHook(() => useChatSession());
+    await act(async () => {
+      await large.result.current.selectModel({ model: "ioply/mock-fast" });
+      await large.result.current.selectModel({ model: "ioply/mock-large" });
+    });
+    await act(async () => {
+      await large.result.current.send("你好");
+    });
+    await waitFor(() => expect(large.result.current.state.thinkingLevel).toBe("medium"));
+    expect(records.filter((r) => r.type === "set_thinking_level").at(-1)).toMatchObject({
+      level: "medium",
+    });
+  });
+
+  it("用户选过的思考强度在切换模型后保持", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    setPlatformForTesting(platform);
+    const { result } = renderHook(() => useChatSession());
+    await act(async () => {
+      await result.current.selectModel({ thinkingLevel: "high" });
+      await result.current.selectModel({ model: "ioply/mock-large" });
+    });
+    await act(async () => {
+      await result.current.send("你好");
+    });
+    await waitFor(() => expect(result.current.state.thinkingLevel).toBe("high"));
+  });
+
   it("直接调用 selectModel：有消息后单独选模型返回 false；组合时不发 set_model 但强度生效", async () => {
     const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
     setPlatformForTesting(platform);

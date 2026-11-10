@@ -41,6 +41,26 @@ const t = strings.chat.model;
 /** 会话打开前（还不知道模型支持哪些档位）对推理模型显示的思考强度 */
 export const DEFAULT_THINKING_LEVELS: ThinkingLevel[] = ["off", "low", "medium", "high", "xhigh"];
 
+/** 全部思考档位，由低到高 */
+const LEVEL_ORDER: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+/** 把想要的强度夹到模型支持的档位里（与 Core 一致：取不超过它的最高档；都更高时取最低档） */
+export function clampLevel(level: string, levels: readonly string[]): string {
+  if (levels.includes(level)) return level;
+  const rank = LEVEL_ORDER.indexOf(level as ThinkingLevel);
+  let best: string | undefined;
+  for (const l of levels) {
+    const r = LEVEL_ORDER.indexOf(l as ThinkingLevel);
+    if (
+      r >= 0 &&
+      r <= rank &&
+      (best === undefined || r > LEVEL_ORDER.indexOf(best as ThinkingLevel))
+    )
+      best = l;
+  }
+  return best ?? levels[0] ?? level;
+}
+
 /** 思考滑杆拇指宽度（px）；刻度与填充都按“拇指中心可达范围”排布 */
 const THUMB_W = 32;
 
@@ -162,9 +182,10 @@ export function ModelPicker({
       : current
         ? modelIdOf(current)
         : t.none;
-  // 按钮上只显示已知的档位；未知（会话还没报告）时不显示“默认”
-  const level =
-    showThinking && thinkingLevel ? (t.levels as Record<string, string>)[thinkingLevel] : undefined;
+  // 按钮上显示实际生效的档位：支持思考的模型按它支持的档位夹取，不支持思考的模型显示“关闭”
+  const shownLevel =
+    empty || !thinkingLevel ? undefined : showThinking ? clampLevel(thinkingLevel, levels) : "off";
+  const level = shownLevel ? (t.levels as Record<string, string>)[shownLevel] : undefined;
   return (
     <GlassPopover onOpenChange={onOpenChange}>
       <GlassPopoverTrigger asChild disabled={disabled}>
@@ -214,7 +235,7 @@ export function ModelPicker({
               <Menu.Separator className={separatorClass} />
               <ThinkingSlider
                 levels={levels}
-                value={thinkingLevel}
+                value={shownLevel}
                 onCommit={(level) => onSelectThinking(level as ThinkingLevel)}
               />
             </div>

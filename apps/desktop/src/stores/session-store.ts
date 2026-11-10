@@ -429,6 +429,10 @@ function applyRecord(draft: SessionState, record: CoreRecord): void {
     case "compaction_end":
       draft.compacting = false;
       return;
+    case "thinking_level_changed":
+      // Core 实际生效的强度（切换模型时夹取等），与 get_state 一致
+      draft.thinkingLevel = record.level;
+      return;
     default:
       // 其余事件（queue_update 等）由后续功能处理
       return;

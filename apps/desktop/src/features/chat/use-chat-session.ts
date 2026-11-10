@@ -45,6 +45,9 @@ function describeError(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/** 新会话与切换模型后默认使用的思考强度（Core 会夹到模型支持的范围，不支持思考的模型为 off） */
+export const DEFAULT_THINKING_LEVEL: ThinkingLevel = "medium";
+
 const nextFrame: (cb: () => void) => void =
   typeof requestAnimationFrame === "function"
     ? (cb) => requestAnimationFrame(() => cb())
@@ -163,6 +166,9 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
   }>({});
   const pendingModelRef = useRef(pendingModel);
   pendingModelRef.current = pendingModel;
+  // 用户想要的思考强度：默认“中”，用户选过即以所选为准。新会话打开与切换模型后都按它设置，
+  // 否则 Core 沿用自己的默认值或上一个模型夹出来的 off（换回支持思考的模型后也还是 off）
+  const preferredThinking = useRef<ThinkingLevel>(DEFAULT_THINKING_LEVEL);
 
   // 只在每个连接（含重启后的新进程）上查一次命令是否注册，结果缓存；之后扩展在每轮结束时主动重推，
   // 打开卡片不再现场串行 get_commands → prompt → setWidget
@@ -213,7 +219,12 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
   /** 会话打开后：应用打开前选的模型与思考强度、同步权限模式，再读取当前模型与可选的思考强度 */
   const applySession = useCallback(
     async (client: RpcClient) => {
-      const { model, thinkingLevel } = pendingModelRef.current;
+      const pending = pendingModelRef.current;
+      const { model } = pending;
+      // 新会话（以及换了模型的会话）按想要的强度设置；历史会话沿用它自己记下的强度
+      const thinkingLevel =
+        pending.thinkingLevel ??
+        (model || !optionsRef.current.sessionPath ? preferredThinking.current : undefined);
       const [provider, ...rest] = model?.split("/") ?? [];
       // 成功应用的才从待应用选择中移除；失败的保留，下一次发送前再试（失败响应同样报错，由调用方提示）
       const failures: string[] = [];
@@ -476,6 +487,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
         if (!choice.thinkingLevel) return false;
         choice = { thinkingLevel: choice.thinkingLevel };
       }
+      if (choice.thinkingLevel) preferredThinking.current = choice.thinkingLevel;
       const c = conn.current;
       if (!c) {
         setPendingModel((p) => ({ ...p, ...choice }));
@@ -490,16 +502,21 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
           });
           if (!res.success) throw new Error(`${strings.chat.model.switchFailed}：${res.error}`);
           setPendingModel((p) => ({ ...p, model: undefined }));
-          await c.client.request("get_available_thinking_levels");
         }
-        if (choice.thinkingLevel) {
-          const res = await c.client.request("set_thinking_level", { level: choice.thinkingLevel });
+        // 换模型后 Core 只会把强度往下夹（换回支持思考的模型时仍是 off）：重新按想要的强度设置
+        const level =
+          choice.thinkingLevel ?? (choice.model ? preferredThinking.current : undefined);
+        if (level) {
+          const res = await c.client.request("set_thinking_level", { level });
           if (!res.success) throw new Error(`${strings.chat.model.switchFailed}：${res.error}`);
           setPendingModel((p) => ({ ...p, thinkingLevel: undefined }));
-          store.setState((s) => withModel(s, undefined, choice.thinkingLevel), true);
-          // Core 会把强度夹到模型支持的范围内：读回实际生效的值
-          await c.client.request("get_state");
+          // 用户亲自选的强度立即显示；随模型切换自动设置的等读回，免得不支持思考的模型先闪一下“中”
+          if (choice.thinkingLevel)
+            store.setState((s) => withModel(s, undefined, choice.thinkingLevel), true);
         }
+        if (choice.model) await c.client.request("get_available_thinking_levels");
+        // Core 会把强度夹到模型支持的范围内：读回实际生效的值
+        if (level) await c.client.request("get_state");
         return !modelRejected;
       } catch (e) {
         fail(e);

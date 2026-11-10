@@ -38,6 +38,13 @@ describe("会话 store：流式消息重建（第 7.4 节）", () => {
     expect(s.messages[0]).toMatchObject({ content: [{ type: "text", text: "你好" }] });
   });
 
+  it("thinking_level_changed 更新当前思考强度", () => {
+    const s = applyChunks({ ...initialSessionState, thinkingLevel: "medium" }, [
+      chunk([{ type: "thinking_level_changed", level: "off" }]),
+    ]);
+    expect(s.thinkingLevel).toBe("off");
+  });
+
   it("message_end 整条替换为最终版本；agent_settled 才解锁", () => {
     const final = msg({
       role: "assistant",

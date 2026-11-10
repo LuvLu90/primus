@@ -52,7 +52,7 @@ import { FileRefBase } from "./file-ref-actions";
 import { ThinkingIndicator } from "./message-content";
 import { type IndexItem, MessageIndex } from "./message-index";
 import { ModelPicker, withCoreCaps } from "./model-picker";
-import { useChatSession } from "./use-chat-session";
+import { DEFAULT_THINKING_LEVEL, useChatSession } from "./use-chat-session";
 import { UserBubble } from "./user-bubble";
 import { SETTINGS_URLS, useVoiceInput } from "./voice/use-voice-input";
 import { VoiceButton } from "./voice/voice-button";
@@ -929,7 +929,9 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                     providerNames={modelConfig.providerNames}
                     onOpenSettings={openModelSettings}
                     current={currentModel}
-                    thinkingLevel={state.thinkingLevel ?? pendingModel.thinkingLevel}
+                    thinkingLevel={
+                      state.thinkingLevel ?? pendingModel.thinkingLevel ?? DEFAULT_THINKING_LEVEL
+                    }
                     thinkingLevels={state.model ? state.thinkingLevels : undefined}
                     modelLocked={conversationStarted || modelLocked}
                     onSelectModel={(model) => void selectModel({ model })}
