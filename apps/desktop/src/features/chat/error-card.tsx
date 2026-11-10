@@ -48,7 +48,7 @@ export interface ErrorActions {
 }
 
 const buttonBase =
-  "inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-2 text-xs font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-50";
+  "inline-flex h-6 shrink-0 items-center whitespace-nowrap gap-1 rounded-md px-2 text-xs font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-accent/40 disabled:opacity-50";
 const primaryButton = cn(buttonBase, "bg-fg text-surface hover:bg-fg/85");
 const secondaryButton = cn(buttonBase, "text-fg ring-1 ring-border ring-inset hover:bg-hover");
 
@@ -136,22 +136,22 @@ export function ErrorCard({
         warning ? "border-warning/25 bg-warning/[0.06]" : "border-danger/25 bg-danger/[0.05]",
       )}
     >
-      <div className="flex min-h-7 flex-wrap items-center gap-x-2 gap-y-1">
+      {/* 标题与操作始终一行：窄屏时标题与标记截断，按钮不换行 */}
+      <div className="flex min-h-7 min-w-0 items-center gap-2">
         <Icon
           name={ICONS[info.category]}
           size="sm"
           className={cn("shrink-0", warning ? "text-warning" : "text-danger")}
         />
-        <h3 id={titleId} title={copy.hint} className="min-w-0 truncate font-medium text-fg">
+        <h3 id={titleId} title={copy.hint} className="min-w-0 flex-1 truncate font-medium text-fg">
           {strings.chat.replyFailed}：{copy.title}
         </h3>
         {info.reason && (
-          <span className="rounded-full bg-danger/10 px-1.5 py-px text-2xs text-danger">
+          <span className="min-w-0 truncate rounded-full bg-danger/10 px-1.5 py-px text-2xs text-danger">
             {t.reasons[info.reason]}
           </span>
         )}
-        {retried && <span className="text-2xs text-muted">{retried}</span>}
-        <span className="flex-1" />
+        {retried && <span className="min-w-0 truncate text-2xs text-muted">{retried}</span>}
         {actions?.onRetry && (
           <button type="button" className={primaryButton} onClick={actions.onRetry}>
             <Icon name="retry" size="sm" />
@@ -217,7 +217,8 @@ export function ErrorCard({
           <div className="absolute top-1 right-1">
             <CopyButton text={report} label={t.copyDetails} size="sm" />
           </div>
-          <dl className="flex flex-wrap gap-x-3 gap-y-0.5 px-2.5 pt-2 pr-9 text-2xs text-muted">
+          <p className="px-2.5 pt-2 pr-9 text-2xs text-fg/80">{copy.hint}</p>
+          <dl className="flex flex-wrap gap-x-3 gap-y-0.5 px-2.5 pt-1 text-2xs text-muted">
             {message.provider && <Meta label={t.provider}>{providerName || message.provider}</Meta>}
             {message.model && (
               <Meta label={t.model} mono>

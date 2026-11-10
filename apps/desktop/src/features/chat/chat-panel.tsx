@@ -207,6 +207,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     selectModel,
     refreshModels,
     pendingModel,
+    modelLocked,
     connected,
     refreshStats,
     requestContextStats,
@@ -573,18 +574,26 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
     setStopping(false);
   }, [state.running]);
 
-  // 一轮结束（运行中 → 空闲）且是当前标签：把 Agent 这一轮最后写出的文件在右栏打开预览
+  // 一轮结束（运行中 → 空闲）：把 Agent 这一轮最后写出的文件在右栏打开预览。
+  // 在后台标签结束的轮次先记下，切回该标签时再预览；新一轮开始时作废。
   const activeTabId = useSessionsStore((s) => s.activeTabId);
   const wasRunning = useRef(false);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: 只在运行状态变化时判断
+  const pendingPreview = useRef(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 只在运行状态或当前标签变化时判断
   useEffect(() => {
     const finished = wasRunning.current && !state.running;
     wasRunning.current = state.running;
-    if (!finished || (tabId !== undefined && tabId !== activeTabId)) return;
+    if (state.running) {
+      pendingPreview.current = false;
+      return;
+    }
+    if (finished) pendingPreview.current = true;
+    if (!pendingPreview.current || (tabId !== undefined && tabId !== activeTabId)) return;
+    pendingPreview.current = false;
     const written = lastWrittenFile(state.messages);
     const path = written && resolveFileRefPath(written, shownWorkspace?.path ?? null);
     if (path) showPreview(path);
-  }, [state.running]);
+  }, [state.running, activeTabId]);
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.nativeEvent.isComposing) return;
@@ -918,7 +927,7 @@ export function ChatPanel({ tab }: { tab?: ChatTab } = {}) {
                     current={currentModel}
                     thinkingLevel={state.thinkingLevel ?? pendingModel.thinkingLevel}
                     thinkingLevels={state.model ? state.thinkingLevels : undefined}
-                    modelLocked={conversationStarted}
+                    modelLocked={conversationStarted || modelLocked}
                     onSelectModel={(model) => void selectModel({ model })}
                     onSelectThinking={(thinkingLevel) => void selectModel({ thinkingLevel })}
                   />

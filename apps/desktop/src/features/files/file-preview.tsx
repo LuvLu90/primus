@@ -29,18 +29,27 @@ const baseName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? 
 const dirName = (path: string) => path.replace(/[\\/][^\\/]*$/, "") || path;
 const reasonOf = (e: unknown) =>
   typeof e === "string" ? e : e instanceof Error ? e.message : String(e);
+/** attachment_image 的超限错误是为“发送图片”写的，预览时换成预览自己的说法；其他错误保留原因 */
+const IMAGE_TOO_LARGE = /^图片超过 \d+ MB/;
+const imageReasonOf = (e: unknown) => {
+  const reason = reasonOf(e);
+  return IMAGE_TOO_LARGE.test(reason) ? t.imageTooLarge : reason;
+};
 
 function useLoaded(path: string, seq: number): Loaded {
   const [loaded, setLoaded] = useState<Loaded>({ state: "loading" });
   // biome-ignore lint/correctness/useExhaustiveDependencies: seq 变化（再次打开同一文件）时重新读取
   useEffect(() => {
+    // 换文件时组件按路径重建、从“读取中”开始；同一文件重新读取期间保留当前内容（与滚动位置），
+    // 只用新结果替换，过期请求的结果丢弃
     let alive = true;
-    setLoaded({ state: "loading" });
     const set = (next: Loaded) => alive && setLoaded(next);
     getPlatform()
       .then(async (p): Promise<Loaded> => {
         if (IMAGE_EXT.test(path)) {
-          const img = await p.attachmentImage(path, IMAGE_EDGE);
+          const img = await p.attachmentImage(path, IMAGE_EDGE).catch((e: unknown) => {
+            throw new Error(imageReasonOf(e));
+          });
           return { state: "image", src: `data:${img.mimeType};base64,${img.data}` };
         }
         const r = await p.previewFile(path);

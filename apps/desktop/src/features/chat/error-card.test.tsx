@@ -53,6 +53,8 @@ describe("错误卡片", () => {
     expect(screen.getByText(t.retried.replace("{n}", "3"))).toBeTruthy();
     expect(screen.queryByText("ioply 网关")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: t.details }));
+    // 提示在详情里也能看到（触屏、键盘用户无需悬停）
+    expect(screen.getByText(t.categories.connection.hint)).toBeTruthy();
     expect(screen.getByText("ioply 网关")).toBeTruthy();
     expect(screen.getByText("mock-large")).toBeTruthy();
     expect(screen.getByText("10.4s")).toBeTruthy();

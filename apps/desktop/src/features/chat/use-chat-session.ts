@@ -94,6 +94,8 @@ export interface ChatSession {
   selectModel: (choice: { model?: string; thinkingLevel?: ThinkingLevel }) => Promise<boolean>;
   /** 会话打开前记下的选择（界面据此显示） */
   pendingModel: { model?: string; thinkingLevel?: ThinkingLevel };
+  /** 模型是否锁定：已有消息，或历史会话的历史还没加载完（思考强度仍可调） */
+  modelLocked: boolean;
   /** 重新读取 Core 的 get_available_models（模型能力以 Core 为准） */
   refreshModels: () => void;
 }
@@ -268,6 +270,8 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
   // 历史会话的历史已显示：任意一次重建（首次加载、缺口重建、重启后重建）成功即为 true；
   // 打开或重建失败时保持 false，下次发送前再加载
   const historyLoaded = useRef(false);
+  // 同上，供界面渲染（锁定模型选择）
+  const [historyReady, setHistoryReady] = useState(false);
 
   const ensureOpen = useCallback((): Promise<void> => {
     if (conn.current) return Promise.resolve();
@@ -319,6 +323,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
         // 重建成功即解除“重启后重建失败”造成的锁定；超时命令造成的锁定仍等其迟到响应
         onResynced: () => {
           historyLoaded.current = true;
+          setHistoryReady(true);
           lock.current.restart = false;
           syncUnresponsive();
           const failures = resyncFailures.current;
@@ -458,15 +463,20 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
 
   const selectModel = useCallback(
     async (choice: { model?: string; thinkingLevel?: ThinkingLevel }): Promise<boolean> => {
-      // 会话已有消息后模型锁定：只接受思考强度
-      if (choice.model && store.getState().messages.length > 0) {
+      // 会话已有消息（或历史会话的历史尚未加载完）时模型锁定：只接受思考强度。
+      // 同时请求模型与强度时强度照常应用，但返回 false，表示请求没有全部生效。
+      const locked =
+        store.getState().messages.length > 0 ||
+        (Boolean(optionsRef.current.sessionPath) && !historyLoaded.current);
+      const modelRejected = Boolean(choice.model) && locked;
+      if (modelRejected) {
         if (!choice.thinkingLevel) return false;
         choice = { thinkingLevel: choice.thinkingLevel };
       }
       const c = conn.current;
       if (!c) {
         setPendingModel((p) => ({ ...p, ...choice }));
-        return true;
+        return !modelRejected;
       }
       try {
         if (choice.model) {
@@ -487,7 +497,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
           // Core 会把强度夹到模型支持的范围内：读回实际生效的值
           await c.client.request("get_state");
         }
-        return true;
+        return !modelRejected;
       } catch (e) {
         fail(e);
         return false;
@@ -623,6 +633,7 @@ export function useChatSession(options: ChatSessionOptions = {}): ChatSession {
     selectModel,
     refreshModels,
     pendingModel,
+    modelLocked: state.messages.length > 0 || (historyPath !== null && !historyReady),
     connected,
     refreshStats,
     requestContextStats,

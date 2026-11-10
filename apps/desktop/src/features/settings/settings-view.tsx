@@ -29,7 +29,7 @@ export type SettingsGroup = keyof typeof t.groups;
 const GROUPS = Object.keys(t.groups) as SettingsGroup[];
 
 /** 启动与通知开关的默认值（第 18 章），settings.toml 接入前只读 */
-const PENDING_DEFAULTS = { reopen: true, tray: false, notify: true } as const;
+const PENDING_DEFAULTS = { tray: false, notify: true } as const;
 
 function GeneralSettings() {
   const theme = useAppearanceStore((s) => s.theme);
@@ -72,9 +72,6 @@ function GeneralSettings() {
         </Row>
       </Section>
       <Section title={t.startup}>
-        <Row label={t.reopenWorkspace}>
-          <Switch ariaLabel={t.reopenWorkspace} checked={pending.reopen} disabled />
-        </Row>
         <Row label={t.minimizeToTray}>
           <Switch ariaLabel={t.minimizeToTray} checked={pending.tray} disabled />
         </Row>

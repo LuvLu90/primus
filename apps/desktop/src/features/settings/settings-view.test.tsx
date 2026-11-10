@@ -40,9 +40,10 @@ describe("设置页", () => {
     );
   });
 
-  it("启动与通知开关在接入 settings.toml 前禁用", () => {
+  it("启动与通知开关在接入 settings.toml 前禁用；未实现的“恢复工作区”不显示", () => {
     render(<SettingsView />);
-    for (const name of [t.reopenWorkspace, t.minimizeToTray, t.notifyEnabled]) {
+    expect(screen.queryByRole("switch", { name: /工作区/ })).toBeNull();
+    for (const name of [t.minimizeToTray, t.notifyEnabled]) {
       expect((screen.getByRole("switch", { name }) as HTMLInputElement).disabled).toBe(true);
     }
   });

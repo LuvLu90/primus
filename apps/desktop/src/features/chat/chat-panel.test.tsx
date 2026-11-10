@@ -1,5 +1,13 @@
 import type { CoreBatch } from "@primus/protocol";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { useRouter } from "next/navigation";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -12,6 +20,7 @@ import { createMockPlatform } from "@/lib/platform/mock";
 import { strings } from "@/lib/strings";
 import { initialAppState, useAppStore } from "@/stores/app-store";
 import { ChatPanel } from "./chat-panel";
+import { useChatSession } from "./use-chat-session";
 
 /** 用户消息的 prompt（不含 primus-guard 的 /primus-mode 等扩展命令） */
 const isUserPrompt = (r: { type: string; message?: unknown }) =>
@@ -772,6 +781,56 @@ describe("对话区（mock 事件流）", () => {
       }),
     );
     expect(records.some((r) => r.type === "set_model")).toBe(false);
+  });
+
+  it("直接调用 selectModel：有消息后单独选模型返回 false；组合时不发 set_model 但强度生效", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    setPlatformForTesting(platform);
+    const records: { type: string; [k: string]: unknown }[] = [];
+    const coreSend = platform.coreSend.bind(platform);
+    vi.spyOn(platform, "coreSend").mockImplementation((key, record) => {
+      records.push(record as { type: string });
+      return coreSend(key, record);
+    });
+    const { result } = renderHook(() => useChatSession());
+    expect(result.current.modelLocked).toBe(false);
+    await act(async () => {
+      await result.current.send("你好");
+    });
+    await waitFor(() => expect(result.current.state.messages.length).toBeGreaterThan(0));
+    expect(result.current.modelLocked).toBe(true);
+    let ok: boolean | undefined;
+    await act(async () => {
+      ok = await result.current.selectModel({ model: "ioply/mock-fast" });
+    });
+    expect(ok).toBe(false);
+    await act(async () => {
+      ok = await result.current.selectModel({ model: "ioply/mock-fast", thinkingLevel: "low" });
+    });
+    expect(ok).toBe(false);
+    expect(records.some((r) => r.type === "set_model")).toBe(false);
+    expect(records.filter((r) => r.type === "set_thinking_level").at(-1)).toMatchObject({
+      level: "low",
+    });
+  });
+
+  it("历史会话的历史加载完成前也锁定模型，思考强度仍可调", async () => {
+    const platform = createMockPlatform({ intervalMs: 1, batchSize: 50 });
+    // 打开一直挂起：历史始终未加载
+    vi.spyOn(platform, "sessionOpen").mockImplementation(() => new Promise(() => {}));
+    setPlatformForTesting(platform);
+    const { result } = renderHook(() => useChatSession({ sessionPath: "/tmp/history.jsonl" }));
+    expect(result.current.modelLocked).toBe(true);
+    let ok: boolean | undefined;
+    await act(async () => {
+      ok = await result.current.selectModel({ model: "ioply/mock-fast" });
+    });
+    expect(ok).toBe(false);
+    await act(async () => {
+      ok = await result.current.selectModel({ thinkingLevel: "high" });
+    });
+    expect(ok).toBe(true);
+    expect(result.current.pendingModel).toEqual({ thinkingLevel: "high" });
   });
 
   it("扩展的操作确认显示在输入框上方，选择后回复 Core 并消失", async () => {

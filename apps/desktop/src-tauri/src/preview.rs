@@ -31,6 +31,10 @@ pub(crate) fn read_preview(path: &Path) -> Result<Preview, String> {
     if meta.is_dir() {
         return Err("文件夹不能预览".into());
     }
+    // 只打开普通文件：FIFO、设备等特殊文件在 open/read 时可能一直阻塞
+    if !meta.is_file() {
+        return Err("只能预览普通文件".into());
+    }
     let size = meta.len();
     let file = std::fs::File::open(path).map_err(|e| format!("读取文件失败：{e}"))?;
     let mut buf = Vec::with_capacity(size.min(MAX_BYTES) as usize);
@@ -127,6 +131,22 @@ mod tests {
         std::fs::write(&file, "# 标题").unwrap();
         assert!(matches!(read_preview(&file), Ok(Preview::Text { .. })));
         assert!(read_preview(&dir).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_fifo_without_blocking() {
+        let dir = std::env::temp_dir().join(format!("primus-preview-fifo-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fifo = dir.join("pipe");
+        let ok = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .is_ok_and(|s| s.success());
+        if ok {
+            assert!(read_preview(&fifo).is_err());
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

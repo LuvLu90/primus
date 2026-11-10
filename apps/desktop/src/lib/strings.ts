@@ -43,6 +43,7 @@ export const strings = {
     close: "关闭预览",
     binary: "无法预览此文件",
     truncated: "仅显示前 1 MB",
+    imageTooLarge: "图片过大，无法预览",
   },
   drawerTabs: {
     terminal: "终端",
@@ -369,7 +370,6 @@ export const strings = {
     language: "语言",
     languageValue: "简体中文",
     startup: "启动与窗口",
-    reopenWorkspace: "启动时打开上次的工作区",
     minimizeToTray: "关闭窗口时最小化到托盘",
     notifications: "通知",
     notifyEnabled: "运行完成、需要确认或出错时发送系统通知",
