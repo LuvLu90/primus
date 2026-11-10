@@ -22,6 +22,8 @@ import {
   pubkeyFingerprint,
   REMOVE_NSIS_PS1,
   resolveSigntool,
+  SCRIPTS_WXI,
+  scriptsInclude,
   signingConfig,
   signtoolArgs,
   signtoolVerifyArgs,
@@ -285,6 +287,7 @@ describe("build-msi", () => {
       webview2Setup: "C:/r/w/MicrosoftEdgeWebview2Setup.exe",
       productVersion: "1.2.399.0",
       primusVersion: "1.2.3",
+      includeDir: "C:/t/wxi",
       out: "C:/r/out/Primus_1.2.3_x64_zh-CN.msi",
     });
     expect(args).toEqual([
@@ -314,10 +317,8 @@ describe("build-msi", () => {
       "WebView2Setup=C:/r/w/MicrosoftEdgeWebview2Setup.exe",
       "-d",
       "PrimusVersion=1.2.3",
-      "-d",
-      `InstallAclScript=${encodeInstallAclScript(readFileSync(INSTALL_ACL_PS1, "utf8"))}`,
-      "-d",
-      `RemoveNsisScript=${encodeInstallAclScript(readFileSync(REMOVE_NSIS_PS1, "utf8"))}`,
+      "-includepath",
+      "C:/t/wxi",
       "-o",
       "C:/r/out/Primus_1.2.3_x64_zh-CN.msi",
     ]);
@@ -465,6 +466,7 @@ describe("build-msi", () => {
       runtimeDir: "r",
       productVersion: "1",
       primusVersion: "1.0.0",
+      includeDir: "i",
       out: "o",
     });
     const valuesAfter = (flag: string) =>
@@ -472,7 +474,13 @@ describe("build-msi", () => {
     const usedBindpaths = new Set([...wxs.matchAll(/!\(bindpath\.(\w+)\)/g)].map((m) => m[1]));
     expect([...usedBindpaths].sort()).toEqual(valuesAfter("-bindpath").sort());
     const usedDefines = new Set([...wxs.matchAll(/\$\((\w+)\)/g)].map((m) => m[1]));
-    expect([...usedDefines].sort()).toEqual(valuesAfter("-d").sort());
+    // 嵌入脚本的两个变量来自 -includepath 下的 primus-scripts.wxi，其余来自 -d
+    const included = [...scriptsInclude().matchAll(/<\?define (\w+) = "/g)].map((m) => m[1]);
+    expect(included).toEqual(["InstallAclScript", "RemoveNsisScript"]);
+    expect(wxs).toContain(`<?include ${SCRIPTS_WXI} ?>`);
+    expect([...usedDefines].sort()).toEqual([...valuesAfter("-d"), ...included].sort());
+    // wix 命令行（不含嵌入脚本）远低于 Windows 32767 字符的上限；脚本放在包含文件里
+    expect(args.join(" ").length).toBeLessThan(4000);
     expect(/UpgradeCode="([^"]+)"/.exec(wxs)?.[1]).toBe("5B4199DD-C352-459A-AEB0-7119A884608F");
   });
 

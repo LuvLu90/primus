@@ -21,6 +21,7 @@ import {
   rustHostTriple,
   WEBVIEW2_BOOTSTRAPPER,
   wixBuildArgs,
+  writeScriptsInclude,
 } from "./build-msi.mjs";
 import { verifyUpdaterSignature } from "./updater-signature.mjs";
 
@@ -75,6 +76,7 @@ run(
     webview2Setup: WEBVIEW2_BOOTSTRAPPER,
     productVersion: msiProductVersion(version),
     primusVersion: version,
+    includeDir: writeScriptsInclude(),
     out: msi,
   }),
 );

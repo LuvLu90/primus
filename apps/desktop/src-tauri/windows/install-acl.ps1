@@ -17,7 +17,7 @@
 # 调用：命令行中带标记 #|<模式>|<安装目录>|，从 [Environment]::CommandLine 读取，不经 cmd.exe，
 # 路径中的 % $ 引号等都按字面处理：
 #   MSI：powershell.exe -Command "& ([ScriptBlock]::Create(<本脚本 Base64>)) #|lock|[INSTALLFOLDER]|"
-#        （build-msi.mjs 去掉整行注释与空行后按 UTF-16LE 编码，-d InstallAclScript 传给 wix）
+#        （build-msi.mjs 去掉整行注释与空行后按 UTF-16LE 编码，写进 primus-scripts.wxi 的 InstallAclScript 交给 wix）
 # 模式：
 #   lock          检查安装路径，建目录，冻结安装目录，冻结并扫描程序树，最后修复程序文件 ACL
 #                 （MSI CreateFolders 之前）；lock 也必须完成扫描，不能等 MSI 的 reset 阶段

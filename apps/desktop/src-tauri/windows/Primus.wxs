@@ -6,8 +6,8 @@
       -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext
       -bindpath app=<target/release 或 target/<三元组>/release> -bindpath core=dist/agent-core -bindpath runtime=dist/runtime
       -d ProductVersion=<主.次.修订.构建> -d ShellDir=<apps/desktop/src-tauri>
-      -d WebView2Setup=<MicrosoftEdgeWebview2Setup.exe> -d InstallAclScript=<Base64> -d RemoveNsisScript=<Base64>
-      -d PrimusVersion=<SemVer>
+      -d WebView2Setup=<MicrosoftEdgeWebview2Setup.exe> -d PrimusVersion=<SemVer>
+      -includepath <含 primus-scripts.wxi 的目录>
 
   同一份定义构建 x64 与 arm64 两个 MSI（第 3.1 节），平台只由 -arch 决定（Package 的 Platform 随之为 x64 / arm64）：
     ProgramFiles64Folder 在两种架构上都是 C:\Program Files；Bitness="always64" 的注册表项在 ARM64 上同样写入 64 位视图；
@@ -28,6 +28,9 @@
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui"
      xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <!-- 嵌入的 PowerShell 脚本（InstallAclScript、RemoveNsisScript）：build-msi.mjs 生成，经 -includepath 找到；
+       两段 Base64 加起来超过命令行长度上限，不能用 -d 传 -->
+  <?include primus-scripts.wxi ?>
   <!-- UpgradeCode 一经发布永不改变：MajorUpgrade 靠它识别旧版本（第 3.3.2 节）。 -->
   <Package Name="乾元 Primus" Manufacturer="乾元 Primus" Version="$(ProductVersion)"
            UpgradeCode="5B4199DD-C352-459A-AEB0-7119A884608F" Language="2052" Scope="perMachine">
@@ -202,7 +205,7 @@
     <CustomAction Id="InstallWebView2" BinaryRef="WebView2Setup" ExeCommand="/silent /install"
                   Execute="deferred" Impersonate="no" Return="check" />
     <!-- 安装目录可能由普通用户预先建好（约束 C2：可装到其他盘），两步处理，逻辑都在 windows/install-acl.ps1
-         （build-msi.mjs 以 -d InstallAclScript 传入其 Base64），任一步失败即回滚：
+         （build-msi.mjs 把其 Base64 写进 primus-scripts.wxi 的 InstallAclScript），任一步失败即回滚：
          1. CheckInstallDir（CreateFolders 之前，install-acl.ps1 的 lock 模式）：安装目录及其每一级祖先、已有的直接子项都不能是
             重解析点（联接、符号链接），否则下面的 ACL 操作会顺着它改到别处；已存在的祖先须是普通用户不能改名、删除子项、
             改权限的；然后建好安装目录并设为与 InstallDirAcl 相同的受保护 DACL，再确认它不是重解析点且已锁好。

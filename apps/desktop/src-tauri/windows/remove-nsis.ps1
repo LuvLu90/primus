@@ -2,7 +2,7 @@
 # 排在 CheckInstallDir 之前；MSI 已把 INSTALLFOLDER 设为 NSIS 版的安装目录，卸载后在原目录安装、继续使用原来的 data。
 #
 # 调用：powershell.exe -Command "& ([ScriptBlock]::Create(<本脚本 Base64>)) #|<NSIS 安装目录>|"
-#      （build-msi.mjs 与 install-acl.ps1 同样去掉整行注释与空行后按 UTF-16LE 编码，-d RemoveNsisScript 传给 wix）
+#      （build-msi.mjs 与 install-acl.ps1 同样去掉整行注释与空行后按 UTF-16LE 编码，写进 primus-scripts.wxi 的 RemoveNsisScript 交给 wix）
 #
 # - NSIS 卸载程序以 /S（静默）与 _?=<目录>（就地运行并等待结束）运行；静默时不勾选“删除应用数据”，data 保留
 #   （hooks.nsh 的卸载只删自己安装的文件）。就地运行的卸载程序删不掉自身，结束后由本脚本删除 uninstall.exe。

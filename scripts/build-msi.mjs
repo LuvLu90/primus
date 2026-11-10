@@ -10,7 +10,8 @@
 //      -bindpath app / core / runtime，-d ProductVersion=<主.次.修订.构建>，
 //      -d ShellDir=<src-tauri>（图标与许可 RTF），-d WebView2Setup=<WebView2 引导程序>，
 //      -d PrimusVersion=<SemVer>（写入 HKLM\Software\Primus\Version，更新服务据此拒绝降级），
-//      -d InstallAclScript / RemoveNsisScript=<嵌入的 PowerShell 脚本 Base64>）
+//      -includepath <临时目录>：其中的 primus-scripts.wxi 定义 InstallAclScript / RemoveNsisScript（嵌入的
+//      PowerShell 脚本 Base64；两段加起来超过 Windows 命令行 32767 字符的上限，不能用 -d 传））
 //   4. signtool 签名 MSI（配置了证书时），写 SHA-256 校验文件
 //   5. tauri signer sign --app-version <版本> 生成 updater 签名 .sig（配置了 updater 私钥时），
 //      随即按 tauri-plugin-updater 的规则用 TAURI_SIGNING_PUBLIC_KEY 校验（scripts/updater-signature.mjs）
@@ -71,10 +72,37 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const tauriDir = join(root, "apps/desktop/src-tauri");
 export const WXS = join(tauriDir, "windows/Primus.wxs");
 export const CULTURE = "zh-CN";
-// 安装目录 ACL 处理脚本，以 -d InstallAclScript 嵌入 Primus.wxs 的 CheckInstallDir / ResetProgramAcl
+// 安装目录 ACL 处理脚本，以预处理变量 InstallAclScript 嵌入 Primus.wxs 的 CheckInstallDir / ResetProgramAcl
 export const INSTALL_ACL_PS1 = join(tauriDir, "windows/install-acl.ps1");
-// 从旧 NSIS 版迁移时静默卸载 NSIS 版，以 -d RemoveNsisScript 嵌入 Primus.wxs 的 RemoveNsis
+// 从旧 NSIS 版迁移时静默卸载 NSIS 版，以预处理变量 RemoveNsisScript 嵌入 Primus.wxs 的 RemoveNsis
 export const REMOVE_NSIS_PS1 = join(tauriDir, "windows/remove-nsis.ps1");
+// 嵌入脚本的 WiX 包含文件名（Primus.wxs 的 <?include?>，由 scriptsInclude 生成到 -includepath 指定的目录）
+export const SCRIPTS_WXI = "primus-scripts.wxi";
+
+/**
+ * primus-scripts.wxi 的内容：两个嵌入脚本的预处理变量。Base64 不含引号，可直接放进 <?define?>。
+ */
+export function scriptsInclude({
+  installAclScript = encodeInstallAclScript(readFileSync(INSTALL_ACL_PS1, "utf8")),
+  removeNsisScript = encodeInstallAclScript(readFileSync(REMOVE_NSIS_PS1, "utf8")),
+} = {}) {
+  return [
+    '<?xml version="1.0" encoding="utf-8"?>',
+    "<!-- 由 scripts/build-msi.mjs 生成，勿手改 -->",
+    "<Include>",
+    `  <?define InstallAclScript = "${installAclScript}" ?>`,
+    `  <?define RemoveNsisScript = "${removeNsisScript}" ?>`,
+    "</Include>",
+    "",
+  ].join("\n");
+}
+
+/** 把 primus-scripts.wxi 写到新建的临时目录，返回该目录（作为 wix build -includepath） */
+export function writeScriptsInclude() {
+  const dir = mkdtempSync(join(tmpdir(), "primus-wxi-"));
+  writeFileSync(join(dir, SCRIPTS_WXI), scriptsInclude());
+  return dir;
+}
 
 /**
  * install-acl.ps1 / remove-nsis.ps1 → powershell -Command 用的 Base64：去掉 BOM、整行注释与空行（缩短命令行），按 UTF-16LE 编码。
@@ -215,9 +243,8 @@ export function wixBuildArgs({
   webview2Setup = WEBVIEW2_BOOTSTRAPPER,
   productVersion,
   primusVersion,
+  includeDir,
   out,
-  installAclScript = encodeInstallAclScript(readFileSync(INSTALL_ACL_PS1, "utf8")),
-  removeNsisScript = encodeInstallAclScript(readFileSync(REMOVE_NSIS_PS1, "utf8")),
 }) {
   archInfo(arch);
   return [
@@ -244,10 +271,8 @@ export function wixBuildArgs({
     `WebView2Setup=${webview2Setup}`,
     "-d",
     `PrimusVersion=${primusVersion}`,
-    "-d",
-    `InstallAclScript=${installAclScript}`,
-    "-d",
-    `RemoveNsisScript=${removeNsisScript}`,
+    "-includepath",
+    includeDir,
     "-o",
     out,
   ];
@@ -663,6 +688,7 @@ async function main() {
       webview2Setup,
       productVersion,
       primusVersion: version,
+      includeDir: dryRun ? join(tmpdir(), "primus-wxi") : writeScriptsInclude(),
       out: msi,
     }),
   );

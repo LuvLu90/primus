@@ -1,7 +1,7 @@
 # windows
 
 - `Primus.wxs`：WiX 7 安装包定义（第 3.3 节；只发 MSI，ADR 0007）。`UpgradeCode` 固定为 `5B4199DD-C352-459A-AEB0-7119A884608F`，**永不改变**（MajorUpgrade 靠它识别旧版本）；`data` 目录组件的 GUID 同样固定。
-- `remove-nsis.ps1`：从旧 NSIS 版迁移时由 `Primus.wxs` 的 `RemoveNsis`（SYSTEM、`CheckInstallDir` 之前）运行：确认 NSIS 卸载程序与其目录可信后 `/S _?=<目录>` 静默卸载，`data` 保留，再删除 `uninstall.exe` 与 NSIS 记录安装目录的注册表项；MSI 沿用 NSIS 版的安装目录。与 `install-acl.ps1` 一样去掉注释后以 Base64 嵌入（`-d RemoveNsisScript`）。
+- `remove-nsis.ps1`：从旧 NSIS 版迁移时由 `Primus.wxs` 的 `RemoveNsis`（SYSTEM、`CheckInstallDir` 之前）运行：确认 NSIS 卸载程序与其目录可信后 `/S _?=<目录>` 静默卸载，`data` 保留，再删除 `uninstall.exe` 与 NSIS 记录安装目录的注册表项；MSI 沿用 NSIS 版的安装目录。与 `install-acl.ps1` 一样去掉注释后以 Base64 嵌入（`build-msi.mjs` 生成的 `primus-scripts.wxi`，两段脚本超过命令行长度上限，不能用 `-d`）。
 - `webview2/`：WebView2 Evergreen 引导程序 `MicrosoftEdgeWebview2Setup.exe`（约 1.8MB）。不入库：`build-msi.mjs` 缺失时从微软官方地址下载，校验 Authenticode 签名有效且签名者为 Microsoft Corporation 后作为 `Binary` 打进 MSI；安装时注册表中查不到按机器安装的 WebView2（HKLM 32 位视图的 `pv` 为空或 `0.0.0.0`；MSI 面向所有用户，安装者 HKCU 下的按用户运行时不算）才以 SYSTEM 身份静默运行，失败则回滚安装。
 - `Privacy.rtf`：安装界面的隐私政策页（MSI 的 `WixUILicenseRtf`），中文以 RTF `\uN\'3f` 转义（Unicode 码点 + `?` 回退字符的十六进制形式，各解析器一致）；改文案时保持 RTF 有效（可用写字板打开另存）。
 - `art/`：安装界面图片（24 位 BMP，由 `assets/logo.png` 经 `scripts/render-installer-art.py` 4 倍超采样生成（先 `python3 -m pip install -r scripts/requirements.txt` 安装锁定版本的 Pillow），白底 / 浅灰侧栏 + 标志与“乾元 Primus”字样）：`wix-banner.bmp`（493×58）、`wix-dialog.bmp`（493×312，左 164 像素为侧栏）给 MSI。
