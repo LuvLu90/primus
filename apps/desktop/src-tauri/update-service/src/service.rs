@@ -21,7 +21,9 @@ use std::time::Duration;
 use primus_update::pipe::{
     Handle, event, finish_overlapped, last_error, read_message, write_message,
 };
-use primus_update::protocol::{InstallRequest, MAX_REQUEST_BYTES, Response, ResponseCode};
+use primus_update::protocol::{
+    InstallRequest, MAX_REQUEST_BYTES, PROTOCOL_VERSION, Response, ResponseCode, peek_protocol,
+};
 use primus_update::verify::{is_newer, parse_version, verify_signature};
 use primus_update::{MAX_PACKAGE_BYTES, PIPE_NAME, SERVICE_NAME, compiled_pubkey};
 use windows_sys::Win32::Foundation::{
@@ -35,14 +37,14 @@ use windows_sys::Win32::Security::{
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CREATE_NEW, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_FIRST_PIPE_INSTANCE,
-    FILE_FLAG_OVERLAPPED, FILE_FLAG_SEQUENTIAL_SCAN, FILE_SHARE_READ, FlushFileBuffers,
-    OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
+    FILE_FLAG_OVERLAPPED, FILE_FLAG_SEQUENTIAL_SCAN, FILE_SHARE_READ, OPEN_EXISTING,
+    PIPE_ACCESS_DUPLEX,
 };
 use windows_sys::Win32::System::IO::OVERLAPPED;
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId,
-    ImpersonateNamedPipeClient, PIPE_READMODE_MESSAGE, PIPE_REJECT_REMOTE_CLIENTS,
-    PIPE_TYPE_MESSAGE, PIPE_WAIT,
+    GetNamedPipeClientSessionId, ImpersonateNamedPipeClient, PIPE_READMODE_MESSAGE,
+    PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_MESSAGE, PIPE_WAIT,
 };
 use windows_sys::Win32::System::Services::{
     RegisterServiceCtrlHandlerExW, SERVICE_ACCEPT_SHUTDOWN, SERVICE_ACCEPT_STOP,
@@ -52,8 +54,9 @@ use windows_sys::Win32::System::Services::{
     StartServiceCtrlDispatcherW,
 };
 use windows_sys::Win32::System::Threading::{
-    GetCurrentThread, OpenProcess, OpenThreadToken, PROCESS_QUERY_LIMITED_INFORMATION,
-    PROCESS_SYNCHRONIZE, SetEvent, WaitForMultipleObjects, WaitForSingleObject,
+    GetCurrentProcessId, GetCurrentThread, OpenProcess, OpenThreadToken,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, SetEvent, WaitForMultipleObjects,
+    WaitForSingleObject,
 };
 
 use crate::win::{self, wide};
@@ -253,12 +256,13 @@ fn serve(stop: &Handle) -> io::Result<()> {
             &dir,
             &format!("应答 {:?}：{}", response.code, response.message),
         );
-        let _ = write_message(&pipe, &response.encode(), IO_TIMEOUT);
-        // SAFETY: 管道有效；等客户端读完再断开
-        unsafe {
-            FlushFileBuffers(pipe.0);
-            DisconnectNamedPipe(pipe.0);
+        if write_message(&pipe, &response.encode(), IO_TIMEOUT).is_ok() {
+            // 等客户端读完应答并关闭（再读会得到 ERROR_BROKEN_PIPE）：DisconnectNamedPipe 会丢掉没读走的数据。
+            // 不用 FlushFileBuffers：它没有超时，客户端不读应答就会让服务永远卡住
+            let _ = read_message(&pipe, 1, IO_TIMEOUT);
         }
+        // SAFETY: 管道有效
+        unsafe { DisconnectNamedPipe(pipe.0) };
     }
     win::log(&dir, "服务停止（空闲或收到停止请求）");
     Ok(())
@@ -495,6 +499,16 @@ fn install_dir() -> io::Result<PathBuf> {
 fn handle_request(pipe: &Handle) -> Result<Response, Response> {
     let body = read_message(pipe, MAX_REQUEST_BYTES, IO_TIMEOUT)
         .map_err(|e| fail(ResponseCode::Invalid, format!("读取请求失败：{e}")))?;
+    // 协议版本不同（薄壳与服务版本错配）：按服务不可用应答，薄壳回退到 UAC 并保留待装包
+    match peek_protocol(&body) {
+        Some(v) if v != u64::from(PROTOCOL_VERSION) => {
+            return Err(fail(
+                ResponseCode::Unavailable,
+                format!("协议版本 {v} 不受支持（服务为 {PROTOCOL_VERSION}）"),
+            ));
+        }
+        _ => {}
+    }
     let request = InstallRequest::decode(&body).map_err(|e| fail(ResponseCode::Invalid, e))?;
     let pubkey = compiled_pubkey().ok_or_else(|| {
         fail(
@@ -536,6 +550,29 @@ fn handle_request(pipe: &Handle) -> Result<Response, Response> {
         ));
     }
 
+    // 其他 Windows 会话里还有安装目录下的程序在运行（另一个用户开着 Primus）：现在装只会在等待后放弃，
+    // 而“立即重启更新”与启动时安装还会重新打开 Primus、再次请求，形成循环。直接应答忙，薄壳保留待装包照常运行
+    let install_dir = install_dir().map_err(|e| fail(ResponseCode::Failed, e.to_string()))?;
+    let mut client_session = 0u32;
+    // SAFETY: 输出参数有效
+    if unsafe { GetNamedPipeClientSessionId(pipe.0, &mut client_session) } == 0 {
+        return Err(fail(
+            ResponseCode::Failed,
+            format!("无法确定请求者会话：{}", last_error()),
+        ));
+    }
+    let others = win::processes_under(&install_dir.to_string_lossy())
+        .map_err(|e| fail(ResponseCode::Failed, format!("无法枚举进程：{e}")))?
+        .into_iter()
+        .filter(|p| p.session != client_session)
+        .count();
+    if others > 0 {
+        return Err(fail(
+            ResponseCode::Busy,
+            "其他 Windows 用户正在使用 Primus，等他们退出后再更新",
+        ));
+    }
+
     let (source, token) = open_as_client(pipe.0, &request)?;
     let bytes = read_package(&source)?;
     drop(source);
@@ -548,7 +585,6 @@ fn handle_request(pipe: &Handle) -> Result<Response, Response> {
     drop(bytes);
 
     // 安装进程从暂存目录里的副本运行：MSI 升级时会停止服务并替换安装目录里的 PrimusUpdate.exe
-    let install_dir = install_dir().map_err(|e| fail(ResponseCode::Failed, e.to_string()))?;
     let worker = dir.join(win::WORKER_FILE);
     let _ = fs::remove_file(&worker);
     fs::copy(install_dir.join("PrimusUpdate.exe"), &worker)
@@ -563,10 +599,12 @@ fn handle_request(pipe: &Handle) -> Result<Response, Response> {
             .map_err(|e| fail(ResponseCode::Failed, format!("无法传递句柄：{e}")))?;
     }
     let mut command = format!(
-        "\"{}\" --worker --package {} --client {} --install-dir \"{}\" --version {}",
+        "\"{}\" --worker --package {} --client {} --service-pid {} --install-dir \"{}\" --version {}",
         worker.display(),
         win::handle_arg(&package),
         win::handle_arg(&client),
+        // SAFETY: 无参数
+        unsafe { GetCurrentProcessId() },
         install_dir.display(),
         request.version,
     );

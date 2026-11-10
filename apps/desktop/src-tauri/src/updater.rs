@@ -948,8 +948,9 @@ fn request_service(updater: &Updater, package: &VerifiedPackage, relaunch: bool)
     match response.code {
         ResponseCode::Accepted => ServiceOutcome::Accepted,
         ResponseCode::Unavailable => ServiceOutcome::Unavailable(response.message),
+        // 上一次更新仍在安装，或其他 Windows 用户正开着 Primus：待装包保留，稍后（下次退出或启动）再试
         ResponseCode::Busy => {
-            ServiceOutcome::Rejected(UpdateError::new("failed", "上一次更新仍在安装，请稍后再试"))
+            ServiceOutcome::Rejected(UpdateError::new("failed", response.message))
         }
         ResponseCode::Signature | ResponseCode::NotNewer | ResponseCode::Invalid => {
             // 服务按同一规则复核不通过：这个待装包不能再用

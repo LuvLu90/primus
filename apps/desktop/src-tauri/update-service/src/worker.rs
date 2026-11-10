@@ -33,6 +33,9 @@ const BUSY_DELAY: Duration = Duration::from_secs(15);
 struct Args {
     package: Handle,
     client: Handle,
+    /// 拉起本进程的服务：服务应答后还会空闲运行一段时间，它的映像也在安装目录下，不算“仍在运行的程序”
+    /// （msiexec 的 ServiceControl 会先停止它）
+    service_pid: u32,
     install_dir: String,
     version: String,
     token: Option<Handle>,
@@ -42,6 +45,7 @@ struct Args {
 fn parse(args: &[OsString]) -> Result<Args, String> {
     let mut package = None;
     let mut client = None;
+    let mut service_pid = None;
     let mut install_dir = None;
     let mut version = None;
     let mut token = None;
@@ -54,6 +58,9 @@ fn parse(args: &[OsString]) -> Result<Args, String> {
         match key {
             "--package" => package = Some(handle()?),
             "--client" => client = Some(handle()?),
+            "--service-pid" => {
+                service_pid = Some(value.parse().map_err(|_| "--service-pid 不是进程 ID")?);
+            }
             "--relaunch-token" => token = Some(handle()?),
             "--install-dir" => {
                 validate_local_path(value, None).map_err(|e| format!("安装目录{e}"))?;
@@ -70,6 +77,7 @@ fn parse(args: &[OsString]) -> Result<Args, String> {
     Ok(Args {
         package: package.ok_or("缺少 --package")?,
         client: client.ok_or("缺少 --client")?,
+        service_pid: service_pid.ok_or("缺少 --service-pid")?,
         install_dir: install_dir.ok_or("缺少 --install-dir")?,
         version: version.ok_or("缺少 --version")?,
         token,
@@ -133,13 +141,18 @@ fn install(dir: &Path, args: &Args) -> i32 {
     }
     let deadline = Instant::now() + OTHERS_TIMEOUT;
     loop {
-        match win::processes_under(&args.install_dir) {
+        let running = win::processes_under(&args.install_dir).map(|list| {
+            list.into_iter()
+                .filter(|p| p.pid != args.service_pid)
+                .collect::<Vec<_>>()
+        });
+        match running {
             Ok(running) if running.is_empty() => break,
             Ok(running) => {
                 if Instant::now() > deadline {
                     let list: Vec<String> = running
                         .iter()
-                        .map(|(pid, image)| format!("{pid} {image}"))
+                        .map(|p| format!("{} {}（会话 {}）", p.pid, p.image, p.session))
                         .collect();
                     win::log(
                         dir,

@@ -44,14 +44,15 @@
 ### 更新服务 PrimusUpdate（静默安装）
 - 新 crate `apps/desktop/src-tauri/update-service`（与薄壳同一 Cargo 工作区）：库 `primus_update` 放协议、验签、版本比较、路径校验、msiexec 参数与 Windows 管道客户端，薄壳与服务共用（`verify_signature` / `is_newer` 从薄壳移到这里，规则不变）；二进制 `PrimusUpdate.exe` 是服务本体。`build-msi.mjs` 用同一个 `TAURI_SIGNING_PUBLIC_KEY` 编译两个 exe，服务没有内置公钥时拒绝一切请求。
 - MSI 以 `ServiceInstall` 安装：LocalSystem、按需启动（`--service`）、空闲 60 秒自行停止；服务对象的 DACL 只给交互用户（IU）查询与启动（`CCLCSWLORPRC`），不能停止、改配置或删除。`ServiceControl` 在升级与卸载时先停止服务，卸载时删除。MSI 另写 `HKLM\Software\Primus\Version`（SemVer；MSI 的四段 ProductVersion 表达不了预发布）。
-- 通信：命名管道 `\\.\pipe\PrimusUpdate`，消息模式、单实例（服务运行期间复用同一个实例，不留可被抢注的空档）、`PIPE_REJECT_REMOTE_CLIENTS`，管道 DACL 拒绝网络登录、只给交互用户读写。请求只有一种（`InstallRequest`，JSON，拒绝未知字段，≤ 16 KiB）：协议版本、安装包路径、版本、签名、是否重开、`--data-dir`。路径只接受普通的本地绝对路径（`X:\…`），拒绝 UNC、设备路径、相对段、备用数据流与保留设备名；服务不执行请求里的任何命令或参数。读写都有超时，客户端连上不发数据也卡不住服务。
+- 通信：命名管道 `\\.\pipe\PrimusUpdate`，消息模式、单实例（服务运行期间复用同一个实例，不留可被抢注的空档）、`PIPE_REJECT_REMOTE_CLIENTS`，管道 DACL 拒绝网络登录、只给交互用户读写。请求只有一种（`InstallRequest`，JSON，拒绝未知字段，≤ 16 KiB）：协议版本、安装包路径、版本、签名、是否重开、`--data-dir`。路径只接受普通的本地绝对路径（`X:\…`），拒绝 UNC、设备路径、相对段、备用数据流与保留设备名；服务不执行请求里的任何命令或参数。读写都有超时（应答后等客户端读完并断开也限时，不用没有超时的 `FlushFileBuffers`），客户端连上不发数据或不读应答都卡不住服务。协议版本不同的请求按“服务不可用”应答（薄壳回退到 UAC、保留待装包），其他格式错误按“请求无效”应答。
 - 客户端（薄壳）先经 SCM 启动服务并取得服务进程 ID，连上管道后用 `GetNamedPipeServerProcessId` 核对：服务没运行时任何人都能抢先建同名管道，核对不一致就当作服务不可用，不把请求（以及允许对方模拟的身份）交给冒充者。
 - 服务处理一个请求：
-  1. 以客户端身份（`ImpersonateNamedPipeClient`）打开安装包：请求者只能让服务读到他自己能读的文件；需要重开时同时取得请求者的令牌（复制为主令牌；提权的完整令牌换成关联的受限令牌）。随即恢复为 SYSTEM，恢复失败直接终止进程。
-  2. 读入安装包（≤ 512 MB），用编译进服务的公钥按与插件相同的规则验签（含签名绑定的版本），版本须严格高于 `HKLM\Software\Primus\Version`（拒绝降级与重装）。
-  3. 暂存目录 `%ProgramData%\Primus\Update`：MSI 用 `PermissionEx` 设为所有者 SYSTEM、受保护的 DACL（只有 SYSTEM 与 Administrators 完全控制），目录若由普通用户预先建好，所有者与 DACL 都会被替换；服务每次使用前仍以不跟随重解析点的方式打开并复查（不是联接、所有者可信、没有其他主体可写），不安全就拒绝（不去修它）。服务把**已经验签的字节**以 `CREATE_NEW` 写成 `package.msi`（不打开任何已存在的文件或硬链接），再以只共享读的方式重新打开：从验签到 msiexec 读完，安装包不可能被替换（防 TOCTOU；薄壳那边的副本此后与安装无关）。
-  4. 把自身复制为暂存目录里的 `PrimusUpdateWorker.exe` 并启动（只继承暂存安装包、请求者进程与令牌三个句柄），应答 `accepted`。安装进程不在安装目录里运行：msiexec 停止并替换服务、删除安装目录里的文件都不影响它。
-- 安装进程：等请求者退出（最多 2 分钟，否则放弃）→ 等安装目录下的进程全部结束（最多 30 秒；其他 Windows 用户还开着 Primus、Core 还没退干净时放弃本次安装，下次再试）→ `msiexec /i package.msi /quiet /norestart REBOOT=ReallySuppress MSIRESTARTMANAGERCONTROL=Disable /l*v msiexec.log`（另一个安装正在进行（1618）时稍后重试）→ 删除暂存安装包 → 需要重开时以请求者令牌在其会话的默认桌面上打开新的 `Primus.exe`（用户自己的环境变量；安装失败也打开，回到旧版本）。全过程记在 `%ProgramData%\Primus\Update\service.log`（超过 1 MB 重写），完全卸载时整个 `%ProgramData%\Primus` 删除（升级时保留）。
+  1. 其他 Windows 会话里有映像在安装目录下的进程（另一个用户开着 Primus）时直接应答“忙”：现在装只会等待后放弃，而“立即重启更新”与启动时安装还会重新打开 Primus、再次请求，形成循环。薄壳保留待装包照常运行，下次退出或启动时再试。
+  2. 以客户端身份（`ImpersonateNamedPipeClient`）打开安装包：请求者只能让服务读到他自己能读的文件；需要重开时同时取得请求者的令牌（复制为主令牌；提权的完整令牌换成关联的受限令牌）。随即恢复为 SYSTEM，恢复失败直接终止进程。
+  3. 读入安装包（≤ 512 MB），用编译进服务的公钥按与插件相同的规则验签（含签名绑定的版本），版本须严格高于 `HKLM\Software\Primus\Version`（拒绝降级与重装）。
+  4. 暂存目录 `%ProgramData%\Primus\Update`：MSI 用 `PermissionEx` 设为所有者 SYSTEM、受保护的 DACL（只有 SYSTEM 与 Administrators 完全控制），目录若由普通用户预先建好，所有者与 DACL 都会被替换；服务每次使用前仍以不跟随重解析点的方式打开并复查（不是联接、所有者可信、没有其他主体可写），不安全就拒绝（不去修它）。服务把**已经验签的字节**以 `CREATE_NEW` 写成 `package.msi`（不打开任何已存在的文件或硬链接），再以只共享读的方式重新打开：从验签到 msiexec 读完，安装包不可能被替换（防 TOCTOU；薄壳那边的副本此后与安装无关）。
+  5. 把自身复制为暂存目录里的 `PrimusUpdateWorker.exe` 并启动（只继承暂存安装包、请求者进程与令牌三个句柄），应答 `accepted`。安装进程不在安装目录里运行：msiexec 停止并替换服务、删除安装目录里的文件都不影响它。
+- 安装进程：等请求者退出（最多 2 分钟，否则放弃）→ 等安装目录下的进程全部结束（不算拉起它的服务进程；最多 30 秒，Core 还没退干净或期间有人又打开了 Primus 时放弃本次安装，下次再试）→ `msiexec /i package.msi /quiet /norestart REBOOT=ReallySuppress MSIRESTARTMANAGERCONTROL=Disable /l*v msiexec.log`（另一个安装正在进行（1618）时稍后重试）→ 删除暂存安装包 → 需要重开时以请求者令牌在其会话的默认桌面上打开新的 `Primus.exe`（用户自己的环境变量；安装失败也打开，回到旧版本）。全过程记在 `%ProgramData%\Primus\Update\service.log`（超过 1 MB 重写），完全卸载时整个 `%ProgramData%\Primus` 删除（升级时保留）。
 - 威胁模型：服务以 SYSTEM 运行，本机任何交互用户都能请求它。它能做的只有“安装一个由发布方私钥签名、版本更高的 Primus MSI”——这正是发布方本来就会让每台机器装上的东西，所以普通用户能达到的最坏结果是**提前**装上一个正式发布过的新版本，或让服务白跑一趟。拿不到私钥就无法让服务安装任何其他内容；降级（用旧版本的合法包配高版本号）被签名绑定的版本与注册表版本双重拒绝；请求者能控制的只有自己可读的文件路径与“装完是否以他自己的身份重开”。剩下的风险集中在服务本身的实现缺陷，所以服务保持很小、只做一件事，并由 CI 的 `update-service-smoke.ps1` 以普通用户身份覆盖拒绝路径。安装目录里的 `PrimusUpdate.exe` 与 `Primus.exe` 一样由 `install-acl.ps1` 纳入程序文件检查（预先建好的目录里放的同名文件不能保留普通用户的写权限，否则就是本地提权）。
 
 ### 何时安装、能否回退到 UAC

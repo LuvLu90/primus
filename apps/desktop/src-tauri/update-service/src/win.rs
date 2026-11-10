@@ -33,6 +33,7 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
 use windows_sys::Win32::System::Registry::{
     HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RRF_SUBKEY_WOW6464KEY, RegGetValueW,
 };
+use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
 use windows_sys::Win32::System::Threading::{
     CREATE_NO_WINDOW, CreateProcessW, DeleteProcThreadAttributeList, EXTENDED_STARTUPINFO_PRESENT,
@@ -366,8 +367,16 @@ pub fn process_image(process: HANDLE) -> Option<String> {
     (ok != 0).then(|| String::from_utf16_lossy(&buf[..len as usize]))
 }
 
-/// 映像位于 `dir` 之内的进程（不含本进程）：返回 `(pid, 路径)`。查询不了的进程（受保护进程等）跳过。
-pub fn processes_under(dir: &str) -> io::Result<Vec<(u32, String)>> {
+/// 映像位于某目录之内的进程。
+pub struct DirProcess {
+    pub pid: u32,
+    pub image: String,
+    /// 所在的 Windows 会话（查不到时为 `u32::MAX`）
+    pub session: u32,
+}
+
+/// 映像位于 `dir` 之内的进程（不含本进程）。查询不了映像的进程（受保护进程等）跳过。
+pub fn processes_under(dir: &str) -> io::Result<Vec<DirProcess>> {
     // SAFETY: 快照所有进程
     let snapshot = Handle(unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) });
     if !snapshot.is_valid() {
@@ -391,7 +400,14 @@ pub fn processes_under(dir: &str) -> io::Result<Vec<(u32, String)>> {
                 && let Some(image) = process_image(process.0)
                 && primus_update::protocol::path_is_under(&image, dir)
             {
-                found.push((pid, image));
+                let mut session = u32::MAX;
+                // SAFETY: 输出参数有效；失败时保持 u32::MAX
+                unsafe { ProcessIdToSessionId(pid, &mut session) };
+                found.push(DirProcess {
+                    pid,
+                    image,
+                    session,
+                });
             }
         }
         // SAFETY: 同上

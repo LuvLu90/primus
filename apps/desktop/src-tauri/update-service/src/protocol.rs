@@ -223,8 +223,23 @@ pub fn path_is_under(path: &str, dir: &str) -> bool {
     if dir.is_empty() || path.len() <= dir.len() {
         return false;
     }
-    let (head, tail) = path.split_at(dir.len());
+    // 按字节偏移切分：偏移落在多字节字符中间时 get 返回 None（不是同一目录），不会 panic
+    let (Some(head), Some(tail)) = (path.get(..dir.len()), path.get(dir.len()..)) else {
+        return false;
+    };
     head.to_lowercase() == dir.to_lowercase() && tail.starts_with('\\')
+}
+
+/// 请求里的协议版本（不做其他校验）：格式对不上之前先看版本，版本不同的请求按“服务不可用”处理
+/// （客户端回退到 UAC、保留待装包），而不是当作格式错误（客户端会删除待装包）。读不出版本时为 None。
+pub fn peek_protocol(bytes: &[u8]) -> Option<u64> {
+    if bytes.len() > MAX_REQUEST_BYTES {
+        return None;
+    }
+    serde_json::from_slice::<serde_json::Value>(bytes)
+        .ok()?
+        .get("protocol")?
+        .as_u64()
 }
 
 #[cfg(test)]
@@ -361,6 +376,32 @@ mod tests {
         assert!(!path_is_under(r"C:\Program Files\Primus", dir));
         assert!(!path_is_under(r"C:\Windows\System32\msiexec.exe", dir));
         assert!(!path_is_under(r"C:\x", ""));
+        // 偏移落在多字节字符中间：不 panic、不算同一目录
+        assert!(!path_is_under(
+            r"C:\Program Files\a中文\x.exe",
+            r"C:\Program Files\Pri"
+        ));
+        assert!(!path_is_under(r"C:\Program Files\中文目录\x.exe", dir));
+        assert!(path_is_under(
+            r"D:\乾元 Primus\Primus.exe",
+            r"D:\乾元 Primus"
+        ));
+    }
+
+    #[test]
+    fn protocol_peek() {
+        let mut value = serde_json::to_value(request()).unwrap();
+        assert_eq!(
+            peek_protocol(&serde_json::to_vec(&value).unwrap()),
+            Some(u64::from(PROTOCOL_VERSION))
+        );
+        value["protocol"] = 2.into();
+        value["future"] = true.into();
+        let bytes = serde_json::to_vec(&value).unwrap();
+        assert_eq!(peek_protocol(&bytes), Some(2));
+        assert!(InstallRequest::decode(&bytes).is_err());
+        assert_eq!(peek_protocol(b"not json"), None);
+        assert_eq!(peek_protocol(br#"{"protocol":"1"}"#), None);
     }
 
     #[test]
