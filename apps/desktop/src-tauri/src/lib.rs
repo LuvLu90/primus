@@ -121,6 +121,7 @@ pub fn run() {
             let webview_dir = data_paths.webview_dir();
             let sessions_dir = data_paths.sessions_dir();
             let index_db = data_paths.app_dir().join("index.db");
+            let window_state_file = data_paths.app_dir().join("window-state.json");
             move |app| {
                 // 待装的更新（第 3.6 节）：插件（含单实例）已初始化，到这里已确认是主实例；在创建窗口、写入模型配置
                 // 与拉起 Core 之前处理。版本更高时校验后经 UAC 拉起安装器并立即退出（安装器结束后以普通权限重新打开）；
@@ -171,9 +172,9 @@ pub fn run() {
                     .find(|w| w.label == "main")
                     .cloned()
                     .ok_or("tauri.conf.json 缺少 main 窗口配置")?;
-                // 先隐藏创建，按光标所在显示器摆好位置与大小再显示（window_placement）；
-                // 不用配置里的 center（只按主显示器、按逻辑像素居中，窗口大于工作区时会出屏）
-                let size = (config.width, config.height);
+                // 先隐藏创建，摆好位置与大小再显示（window_placement）：有上次保存的位置就恢复，
+                // 否则在光标所在显示器上居中、宽高各取工作区一半。不用配置里的 center
+                // （只按主显示器、按逻辑像素居中，窗口大于工作区时会出屏）
                 let min = (
                     config.min_width.unwrap_or(0.0),
                     config.min_height.unwrap_or(0.0),
@@ -184,7 +185,43 @@ pub fn run() {
                 let window = tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?
                     .data_directory(webview_dir)
                     .build()?;
-                place_main_window(app.handle(), &window, size, min);
+                let state_file = window_state_file;
+                let saved = window_placement::load(&state_file);
+                let restored = saved.filter(|s| restore_main_window(app.handle(), &window, s, min));
+                if restored.is_none() {
+                    place_main_window(app.handle(), &window, min);
+                }
+                let tracker = Arc::new(window_placement::PlacementTracker::new(
+                    state_file, restored,
+                ));
+                app.manage(tracker.clone());
+                let observe = {
+                    let tracker = tracker.clone();
+                    move |w: &tauri::WebviewWindow| {
+                        if let (Ok(pos), Ok(size)) = (w.outer_position(), w.outer_size()) {
+                            tracker.observe(
+                                window_placement::Bounds {
+                                    x: pos.x,
+                                    y: pos.y,
+                                    width: size.width,
+                                    height: size.height,
+                                },
+                                w.is_maximized().unwrap_or(false),
+                                w.is_minimized().unwrap_or(false),
+                            );
+                        }
+                    }
+                };
+                // 记下摆好后的初始外框：用户没动过窗口时下次也按这次的位置打开
+                observe(&window);
+                let tracked = window.clone();
+                window.on_window_event(move |event| match event {
+                    tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
+                        observe(&tracked)
+                    }
+                    tauri::WindowEvent::CloseRequested { .. } => tracker.flush(),
+                    _ => {}
+                });
                 // App 自己的页面直接授予麦克风权限（语音输入的波形），不弹 WebView2 权限框
                 platform::auto_grant_microphone(&window);
                 if visible {
@@ -251,18 +288,65 @@ pub fn run() {
         .run(|app, event| {
             // 正常退出时主动结束 Core；异常退出由 Job Object 兜底
             if let tauri::RunEvent::Exit = event {
+                if let Some(tracker) = app.try_state::<Arc<window_placement::PlacementTracker>>() {
+                    tracker.flush();
+                }
                 app.state::<supervisor::Supervisor>().shutdown();
             }
         });
 }
 
-/// 主窗口首次摆放：光标所在显示器（取不到时为主显示器）的工作区内居中，默认尺寸放不下时缩小（window_placement）。
-fn place_main_window(
+/// 按上次保存的位置恢复主窗口；保存的位置已不在任何显示器上时返回 false（改用首次摆法）。
+fn restore_main_window(
     app: &tauri::AppHandle,
     window: &tauri::WebviewWindow,
-    size: (f64, f64),
+    saved: &window_placement::SavedPlacement,
     min: (f64, f64),
-) {
+) -> bool {
+    let monitors: Vec<_> = app
+        .available_monitors()
+        .unwrap_or_default()
+        .iter()
+        .map(|m| {
+            let area = m.work_area();
+            (
+                window_placement::WorkArea {
+                    x: area.position.x,
+                    y: area.position.y,
+                    width: area.size.width,
+                    height: area.size.height,
+                },
+                m.scale_factor(),
+            )
+        })
+        .collect();
+    let Some(bounds) = window_placement::restore_bounds(saved, &monitors, min) else {
+        return false;
+    };
+    if !set_bounds_twice(window, bounds) {
+        return false;
+    }
+    if saved.maximized {
+        let _ = window.maximize();
+    }
+    true
+}
+
+/// 设两次：第一次把窗口移到目标显示器，跨缩放比例时系统会按新 DPI 调整窗口大小；第二次定下最终的物理尺寸与位置。
+fn set_bounds_twice(window: &tauri::WebviewWindow, bounds: window_placement::Bounds) -> bool {
+    for _ in 0..2 {
+        if let Err(e) =
+            platform::set_window_bounds(window, bounds.x, bounds.y, bounds.width, bounds.height)
+        {
+            eprintln!("主窗口摆放失败：{e}");
+            return false;
+        }
+    }
+    true
+}
+
+/// 主窗口首次摆放：光标所在显示器（取不到时为主显示器）的工作区内居中，宽高各为工作区一半（window_placement）。
+fn place_main_window(app: &tauri::AppHandle, window: &tauri::WebviewWindow, min: (f64, f64)) {
     let monitor = app
         .cursor_position()
         .ok()
@@ -273,7 +357,7 @@ fn place_main_window(
         return;
     };
     let area = monitor.work_area();
-    let bounds = window_placement::centered_bounds(
+    let bounds = window_placement::first_run_bounds(
         window_placement::WorkArea {
             x: area.position.x,
             y: area.position.y,
@@ -281,17 +365,9 @@ fn place_main_window(
             height: area.size.height,
         },
         monitor.scale_factor(),
-        size,
         min,
     );
-    // 设两次：第一次把窗口移到目标显示器，跨缩放比例时系统会按新 DPI 调整窗口大小；第二次定下最终的物理尺寸与位置
-    for _ in 0..2 {
-        if let Err(e) =
-            platform::set_window_bounds(window, bounds.x, bounds.y, bounds.width, bounds.height)
-        {
-            eprintln!("主窗口摆放失败，改用系统居中：{e}");
-            let _ = window.center();
-            return;
-        }
+    if !set_bounds_twice(window, bounds) {
+        let _ = window.center();
     }
 }
