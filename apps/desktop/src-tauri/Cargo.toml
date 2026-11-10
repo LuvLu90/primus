@@ -20,7 +20,8 @@ tauri-build = { version = "=2.7.4", features = [] }
 
 [dependencies]
 # 依赖随对应模块落地时加入（其余如 tokio、gix、windows 等以后再加），版本以技术方案第 2.4 节为准。
-tauri = { version = "=2.12.5", features = [] }
+# tray-icon：托盘（tray.rs，第 5.5 节）
+tauri = { version = "=2.12.5", features = ["tray-icon"] }
 tauri-plugin-single-instance = "=2.5.4"
 # 系统文件/文件夹对话框（dialog_pick_folder / dialog_pick_files，附录 B）
 tauri-plugin-dialog = "=2.8.3"

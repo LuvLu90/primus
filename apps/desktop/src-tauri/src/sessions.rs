@@ -357,6 +357,25 @@ impl<S: BatchSink + Clone> Sessions<S> {
         entries.keys().any(|key| is_busy(&entries, key))
     }
 
+    /// 正在运行一轮（或正在打开 / 重启）的会话数：托盘的提示文字与菜单、关闭窗口时是否留在托盘（第 5.5 节）。
+    pub(crate) fn running_count(&self) -> usize {
+        let entries = self.entries();
+        entries.keys().filter(|key| is_busy(&entries, key)).count()
+    }
+
+    /// 托盘“退出”确认后：给每个正在运行一轮的会话发一条 `abort`（第 5.5 节），不等待；返回发出的条数。
+    /// 只写入路由层的停止命令，不解析回复；之后由调用方等待会话空闲（最多 3 秒）再结束进程。
+    pub(crate) fn abort_running(&self) -> usize {
+        let abort = serde_json::json!({ "type": "abort" });
+        let entries = self.entries();
+        entries
+            .values()
+            .filter(|e| !e.evicted)
+            .filter_map(|e| e.bridge.as_ref())
+            .filter(|bridge| bridge.is_busy() && bridge.send(&abort).is_ok())
+            .count()
+    }
+
     /// 进入“安装更新”状态：在同一次加锁内检查忙碌并置位，之后的 prompt 写入与会话拉起被拒绝（[`SessionError::Updating`]），
     /// 不会有新的一轮夹在检查与停掉 Core 之间。`force` 为假且有会话忙碌时返回 None（前端确认后带 force 再来）。
     /// 返回的守卫释放时（取消 UAC、拉起失败）恢复正常。
@@ -1587,6 +1606,10 @@ process.stdin.on("data", (chunk) => {
             .unwrap();
         sink.wait_for(1, |r| r["type"] == "agent_start");
         assert!(sessions.any_busy(), "运行中的会话让自动更新先确认");
+        assert_eq!(sessions.running_count(), 1, "托盘显示的运行中会话数");
+        // 托盘退出：只给运行中的会话发 abort（假 Core 原样回显）
+        assert_eq!(sessions.abort_running(), 1);
+        sink.wait_for(1, |r| r["type"] == "abort");
         assert!(
             sessions.hold_for_update(false).is_none(),
             "忙碌时不经确认不能进入安装"
@@ -1613,6 +1636,8 @@ process.stdin.on("data", (chunk) => {
             .unwrap();
         sink.wait_for(1, |r| r["type"] == "agent_settled");
         assert!(!sessions.any_busy());
+        assert_eq!(sessions.running_count(), 0);
+        assert_eq!(sessions.abort_running(), 0, "空闲的会话不发 abort");
         let b = sessions
             .open(&supervisor, &paths, "", None, Collect::default())
             .unwrap();

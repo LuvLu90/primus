@@ -2,7 +2,7 @@
 //!
 //! 启动顺序：取令牌模式（`--secret`，无窗口）→ 提权修复模式（`--repair-data-dir`）→ 准备数据目录
 //! （第 4 章，不可写时弹修复引导）→ 单实例 → 安装待装的更新（有则拉起安装器并退出，第 3.6 节）→
-//! 写入内置渠道（仅首次）并按模型渠道生成 Core 配置（第 9.2、9.4 节）→ 主窗口 → 约 10 秒后自动检查更新。
+//! 写入内置渠道（仅首次）并按模型渠道生成 Core 配置（第 9.2、9.4 节）→ 主窗口 → 托盘 → 约 10 秒后自动检查更新。
 //! 各模块随开发计划逐步实现。
 
 mod account;
@@ -104,11 +104,7 @@ pub fn run() {
     tauri::Builder::default()
         // 单实例必须最先注册：第二个实例启动时把已有主窗口带到前台（第 2.2 节）
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+            tray::show_main_window(app);
         }))
         // 系统文件/文件夹对话框（dialog_pick_folder / dialog_pick_files）
         .plugin(tauri_plugin_dialog::init())
@@ -218,7 +214,13 @@ pub fn run() {
                     tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
                         observe(&tracked)
                     }
-                    tauri::WindowEvent::CloseRequested { .. } => tracker.flush(),
+                    tauri::WindowEvent::CloseRequested { api, .. } => {
+                        tracker.flush();
+                        // 有会话正在运行时关闭窗口只隐藏到托盘，Agent 继续运行（第 5.5 节）
+                        if tray::keep_in_tray_on_close(&tracked) {
+                            api.prevent_close();
+                        }
+                    }
                     _ => {}
                 });
                 // App 自己的页面直接授予麦克风权限（语音输入的波形），不弹 WebView2 权限框
@@ -226,6 +228,8 @@ pub fn run() {
                 if visible {
                     window.show()?;
                 }
+                // 托盘：运行中会话数、打开窗口、退出（tray）
+                tray::init(app.handle())?;
                 // 主窗口起来后约 10 秒自动检查更新，之后每 24 小时一次（自动更新关闭时跳过，失败只记日志）
                 updater::start_auto_check(app.handle().clone(), updater);
                 Ok(())
