@@ -228,8 +228,11 @@ pub fn run() {
                 if visible {
                     window.show()?;
                 }
-                // 托盘：运行中会话数、打开窗口、退出（tray）
-                tray::init(app.handle())?;
+                // 托盘：运行中会话数、打开窗口、退出（tray）。创建失败只记日志、不阻止启动：
+                // 托盘没就绪时关闭窗口不隐藏，改为询问是否退出（tray::keep_in_tray_on_close）
+                if let Err(e) = tray::init(app.handle()) {
+                    eprintln!("[tray] 托盘创建失败：{e}");
+                }
                 // 主窗口起来后约 10 秒自动检查更新，之后每 24 小时一次（自动更新关闭时跳过，失败只记日志）
                 updater::start_auto_check(app.handle().clone(), updater);
                 Ok(())

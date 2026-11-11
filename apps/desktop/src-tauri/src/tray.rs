@@ -4,6 +4,7 @@
 //!   有运行中的会话时附上会话数；菜单第一行（不可点）同样显示会话数，之后是“打开乾元”“退出”。
 //! - 左键单击（Windows 上也包括双击）打开并聚焦主窗口；右键弹出菜单。
 //! - 有会话正在运行时关闭主窗口：窗口隐藏到托盘，Agent 继续运行（[`keep_in_tray_on_close`]）；没有运行中的会话时照常退出。
+//!   托盘没有创建成功（只记日志、不阻止启动）时不隐藏，改为按“退出”的流程询问。
 //! - “退出”：没有运行中的会话时直接退出；否则先询问，确认后给运行中的会话发 `abort`，最多等 3 秒再退出。
 //!   退出走 `app.exit`，由 `RunEvent::Exit` 统一保存窗口位置、结束全部 Core（与更新安装的处理）。
 
@@ -40,6 +41,9 @@ const POLL_STEP: Duration = Duration::from_millis(100);
 
 /// 已确认退出、正在等待会话停下：重复点“退出”不再询问或重复发送 `abort`
 static QUITTING: AtomicBool = AtomicBool::new(false);
+
+/// 托盘图标、菜单与刷新线程都已创建：只有这时关闭窗口才隐藏到托盘
+static TRAY_READY: AtomicBool = AtomicBool::new(false);
 
 fn running_status(running: usize) -> String {
     if running == 0 {
@@ -130,6 +134,7 @@ pub(crate) fn init(app: &AppHandle) -> tauri::Result<()> {
                 }
             }
         })?;
+    TRAY_READY.store(true, Ordering::Release);
     Ok(())
 }
 
@@ -143,11 +148,16 @@ pub(crate) fn show_main_window(app: &AppHandle) {
 }
 
 /// 主窗口收到关闭请求时调用：有会话正在运行（且不在退出过程中）时隐藏窗口留在托盘，返回 true（调用方阻止关闭）。
+/// 托盘没有创建成功时不隐藏（否则窗口再也打不开）：保留窗口，按托盘“退出”的流程询问是否退出，同样返回 true。
 pub(crate) fn keep_in_tray_on_close(window: &tauri::WebviewWindow) -> bool {
     if QUITTING.load(Ordering::Acquire) || running_count(window.app_handle()) == 0 {
         return false;
     }
-    let _ = window.hide();
+    if TRAY_READY.load(Ordering::Acquire) {
+        let _ = window.hide();
+    } else {
+        request_quit(window.app_handle());
+    }
     true
 }
 

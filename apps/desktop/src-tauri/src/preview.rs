@@ -14,7 +14,7 @@
 use std::ffi::OsStr;
 use std::fs::Metadata;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
@@ -185,8 +185,8 @@ pub(crate) fn list_dir(
         // 目录项自带的元数据（不跟随链接；Windows 上来自目录枚举本身，不打开文件）
         let Ok(own) = item.metadata() else { continue };
         let target = if own.file_type().is_symlink() {
-            // 链接按指向的目标显示；目标不存在时按文件显示、没有大小
-            std::fs::metadata(item.path()).ok()
+            // 链接按指向的目标显示；目标不存在、或指向网络 / 设备路径时按文件显示、没有大小
+            link_target(&item.path())
         } else {
             Some(own.clone())
         };
@@ -219,6 +219,55 @@ pub(crate) fn list_dir(
         total,
         truncated,
     })
+}
+
+/// 最多沿多少级链接（链接指向链接）检查目标
+const MAX_LINK_HOPS: usize = 8;
+
+/// 链接（含多级链接）最终指向的元数据。任一级指向网络路径（`\\server\share`、`//server/share`、`\\?\UNC\`）
+/// 或设备路径时返回 None，不读取目标元数据：读取 UNC 目标的元数据就会向对方服务器发起 SMB 认证。
+/// 每一级只用 `read_link` / `symlink_metadata` 读链接本身，不跟随到目标。
+fn link_target(path: &Path) -> Option<Metadata> {
+    let mut current = path.to_path_buf();
+    for _ in 0..MAX_LINK_HOPS {
+        let meta = std::fs::symlink_metadata(&current).ok()?;
+        if !meta.file_type().is_symlink() {
+            return std::fs::metadata(&current).ok();
+        }
+        let raw = std::fs::read_link(&current).ok()?;
+        let text = raw.to_string_lossy();
+        let local = local_link_target(&text, cfg!(windows))?;
+        // 没去掉前缀时用原路径（保留非 UTF-8 字符）
+        let next = if local.len() == text.len() {
+            raw.clone()
+        } else {
+            PathBuf::from(local)
+        };
+        current = match current.parent() {
+            Some(parent) => parent.join(next),
+            None => next,
+        };
+    }
+    None
+}
+
+/// 链接目标的本机形式：网络 / 设备路径为 None。Windows 目录联接的目标带 `\\?\` 前缀（`\\?\C:\x`），
+/// 去掉前缀后是本机盘符路径的照常接受；`\\?\UNC\`、`\\?\Volume{…}`、`\\.\` 等一律拒绝。
+fn local_link_target(raw: &str, windows: bool) -> Option<&str> {
+    let unprefixed = if windows {
+        raw.strip_prefix(r"\\?\")
+            .or_else(|| raw.strip_prefix(r"\??\"))
+    } else {
+        None
+    };
+    if let Some(rest) = unprefixed {
+        let b = rest.as_bytes();
+        let drive = b.len() >= 2 && b[0].is_ascii_alphabetic() && b[1] == b':';
+        return drive.then_some(rest);
+    }
+    let b = raw.as_bytes();
+    let network = b.len() >= 2 && matches!(b[0], b'\\' | b'/') && matches!(b[1], b'\\' | b'/');
+    (!network).then_some(raw)
 }
 
 /// 文件夹在前；同类按名称（不区分大小写，数字按数值比较，与资源管理器一致），相同时按原名
@@ -506,6 +555,47 @@ mod tests {
         assert!(find("link").dir);
         assert!(!find("broken").dir && find("broken").size.is_none());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_to_network_path_is_not_followed() {
+        let dir = std::env::temp_dir().join(format!("primus-preview-unc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("real")).unwrap();
+        // Linux 上 `//tmp` 就是 /tmp：若跟随了链接，会被识别为文件夹
+        std::os::unix::fs::symlink("//tmp", dir.join("unc")).unwrap();
+        std::os::unix::fs::symlink(dir.join("unc"), dir.join("chain")).unwrap();
+        std::os::unix::fs::symlink("real", dir.join("relative")).unwrap();
+        std::os::unix::fs::symlink(dir.join("relative"), dir.join("relative2")).unwrap();
+        std::os::unix::fs::symlink(dir.join("loop"), dir.join("loop")).unwrap();
+        let listing = list_dir(&dir, |_, _| false).unwrap();
+        let find = |n: &str| listing.entries.iter().find(|e| e.name == n).unwrap();
+        for name in ["unc", "chain", "loop"] {
+            assert!(!find(name).dir && find(name).size.is_none(), "{name}");
+        }
+        assert!(find("relative").dir && find("relative2").dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn local_link_targets() {
+        assert_eq!(local_link_target(r"C:\x", true), Some(r"C:\x"));
+        assert_eq!(local_link_target(r"\\?\C:\x", true), Some(r"C:\x"));
+        assert_eq!(local_link_target(r"\??\D:\y", true), Some(r"D:\y"));
+        assert_eq!(local_link_target(r"..\sub", true), Some(r"..\sub"));
+        for raw in [
+            r"\\srv\share",
+            "//srv/share",
+            r"\\?\UNC\srv\share",
+            r"\\?\Volume{0}\",
+            r"\\.\pipe\x",
+            r"\??\UNC\srv\share",
+        ] {
+            assert_eq!(local_link_target(raw, true), None, "{raw}");
+        }
+        assert_eq!(local_link_target("//srv/share", false), None);
+        assert_eq!(local_link_target("/tmp/x", false), Some("/tmp/x"));
     }
 
     #[cfg(unix)]

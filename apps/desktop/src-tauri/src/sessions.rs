@@ -350,29 +350,32 @@ impl<S: BatchSink + Clone> Sessions<S> {
         Ok(())
     }
 
-    /// 测试用：是否有会话正在运行一轮（或正在打开 / 重启）。自动更新用 [`Sessions::hold_for_update`] 在同一把锁内检查并置位。
+    /// 测试用：是否有会话忙碌（正在运行一轮，或正在打开 / 重启）。自动更新用 [`Sessions::hold_for_update`] 在同一把锁内检查并置位。
     #[cfg(test)]
     pub(crate) fn any_busy(&self) -> bool {
         let entries = self.entries();
         entries.keys().any(|key| is_busy(&entries, key))
     }
 
-    /// 正在运行一轮（或正在打开 / 重启）的会话数：托盘的提示文字与菜单、关闭窗口时是否留在托盘（第 5.5 节）。
+    /// 正在运行一轮的会话数（[`is_running_turn`]）：托盘的提示文字与菜单、关闭窗口时是否留在托盘、退出时等待哪些会话停下
+    /// （第 5.5 节）。只在打开 / 重启中（桥尚未装入）的会话不算：它们还没有可停止的一轮，退出时由 `RunEvent::Exit` 直接结束。
     pub(crate) fn running_count(&self) -> usize {
-        let entries = self.entries();
-        entries.keys().filter(|key| is_busy(&entries, key)).count()
+        self.entries()
+            .values()
+            .filter(|e| is_running_turn(e))
+            .count()
     }
 
-    /// 托盘“退出”确认后：给每个正在运行一轮的会话发一条 `abort`（第 5.5 节），不等待；返回发出的条数。
-    /// 只写入路由层的停止命令，不解析回复；之后由调用方等待会话空闲（最多 3 秒）再结束进程。
+    /// 托盘“退出”确认后：给每个正在运行一轮的会话（与 [`Self::running_count`] 同一口径）发一条 `abort`（第 5.5 节），
+    /// 不等待；返回发出的条数。只写入路由层的停止命令，不解析回复；之后由调用方等待会话空闲（最多 3 秒）再结束进程。
     pub(crate) fn abort_running(&self) -> usize {
         let abort = serde_json::json!({ "type": "abort" });
         let entries = self.entries();
         entries
             .values()
-            .filter(|e| !e.evicted)
+            .filter(|e| is_running_turn(e))
             .filter_map(|e| e.bridge.as_ref())
-            .filter(|bridge| bridge.is_busy() && bridge.send(&abort).is_ok())
+            .filter(|bridge| bridge.send(&abort).is_ok())
             .count()
     }
 
@@ -783,6 +786,11 @@ fn is_busy<S>(entries: &HashMap<String, Entry<S>>, key: &str) -> bool {
     entries.get(key).is_some_and(|e| {
         !e.evicted && (e.restarting || e.bridge.as_ref().is_some_and(Bridge::is_busy))
     })
+}
+
+/// 托盘口径的“运行中”：桥已装入、正在工作或已写入 prompt 未响应（可以发 `abort` 停下）。比 [`is_busy`] 少了打开 / 重启中的会话。
+fn is_running_turn<S>(e: &Entry<S>) -> bool {
+    !e.evicted && e.bridge.as_ref().is_some_and(Bridge::is_busy)
 }
 
 /// 把进程已不在的会话（被淘汰或已自行退出）标为未运行：之后的发送得到 NotRunning，重启可恢复。
@@ -1552,6 +1560,10 @@ process.stdin.on("data", (chunk) => {
             },
         );
         assert!(is_busy(&entries, "s1"), "桥尚未装入的会话不能被淘汰");
+        assert!(
+            !is_running_turn(&entries["s1"]),
+            "打开 / 重启中的会话不计入托盘的运行中会话数"
+        );
         entries.get_mut("s1").unwrap().restarting = false;
         assert!(!is_busy(&entries, "s1"));
         assert!(!is_busy(&entries, "s2"));
