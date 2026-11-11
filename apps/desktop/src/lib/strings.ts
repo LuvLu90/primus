@@ -41,6 +41,7 @@ export const strings = {
     openExternal: "用默认程序打开",
     reveal: "在文件夹中显示",
     close: "关闭预览",
+    linkDescription: "这个链接来自文档内容，请确认地址可信后再打开。",
     binary: "无法预览此文件",
     truncated: "仅显示前 1 MB",
     imageTooLarge: "图片过大，无法预览",

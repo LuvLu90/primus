@@ -38,7 +38,7 @@ describe("一轮结束后要预览的文件", () => {
     ).toBeNull();
   });
 
-  it("预览工具成功打开的在写文件之后时以预览为准；预览失败的忽略", () => {
+  it("最后一个目标是预览成功的工具调用时不再自动预览（已在右栏打开，之前写出的文件也不盖掉它）；预览失败的忽略", () => {
     const messages = [
       user,
       assistant(call("1", "write", { path: "a.md" }), call("2", "preview", { path: "out" })),
@@ -47,6 +47,17 @@ describe("一轮结束后要预览的文件", () => {
       assistant(call("3", "preview", { path: "missing.md" })),
       result("3", true),
     ];
-    expect(lastWrittenFile(messages)).toBe("out");
+    expect(lastWrittenFile(messages)).toBeNull();
+  });
+
+  it("预览之后又写出的文件照常自动预览", () => {
+    const messages = [
+      user,
+      assistant(call("1", "preview", { path: "file:///w/out" })),
+      result("1"),
+      assistant(call("2", "edit", { path: "b.md" })),
+      result("2"),
+    ];
+    expect(lastWrittenFile(messages)).toBe("b.md");
   });
 });

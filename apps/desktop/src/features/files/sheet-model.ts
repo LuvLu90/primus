@@ -313,7 +313,7 @@ const isHidden = (state: unknown) => state === "hidden" || state === "veryHidden
 /**
  * 解析 .xlsx / .xlsm 字节为可显示的工作表（隐藏的工作表不显示）；解析库按需加载。
  * 先完整加载（限制每张表最多 MAX_ROWS 行、每行最多 MAX_COLS 格，得到合并单元格、隐藏行列等全部信息）；
- * 超出限制时解析库直接报错（不会截断），改用流式读取：每张表读到第 MAX_ROWS 行就停，不再解析后面的数据，
+ * 超出限制时解析库直接报错（不会截断），改用流式读取：每张表读到第 MAX_ROWS 行就停，后面的数据只读完、不再解析，
  * 这条路径拿不到合并单元格与隐藏行列（大表的预览只求快速显示开头）。
  */
 export async function readWorkbook(data: ArrayBuffer): Promise<Sheet[]> {
@@ -332,6 +332,13 @@ export async function readWorkbook(data: ArrayBuffer): Promise<Sheet[]> {
 }
 
 type Lib = typeof import("@cj-tech-master/excelts");
+
+/** 读完一项的原始数据并丢弃 */
+async function drain(chunks: AsyncIterable<unknown>): Promise<void> {
+  for await (const _ of chunks) {
+    // 只消费
+  }
+}
 
 async function readWorkbookStreaming(
   lib: Lib,
@@ -355,6 +362,9 @@ async function readWorkbookStreaming(
     for await (const row of ws) {
       if (row.number > MAX_ROWS) {
         clipped = true;
+        // 余下的数据不解析，但要读完（只解压不解析 XML）：直接跳出会让压缩包里这一项停在暂停状态，
+        // 背压使读取器无法前进到后面的工作表，整个预览一直停在加载中
+        await drain(ws.iterator);
         break;
       }
       rows.push(row);

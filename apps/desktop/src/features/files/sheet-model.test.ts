@@ -1,4 +1,5 @@
 import { Workbook } from "@cj-tech-master/excelts";
+import { ZipArchive, ZipReader } from "@cj-tech-master/excelts/archive";
 import { describe, expect, it } from "vitest";
 import {
   columnName,
@@ -15,6 +16,21 @@ async function xlsxBytes(build: (wb: Workbook) => void): Promise<ArrayBuffer> {
   const wb = new Workbook();
   build(wb);
   const buf = (await wb.xlsx.writeBuffer()) as Uint8Array;
+  return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+}
+
+/** 重排压缩包：把 xl/sharedStrings.xml 挪到第一张工作表之前 */
+async function sharedStringsFirst(data: ArrayBuffer): Promise<ArrayBuffer> {
+  const items: { path: string; bytes: Uint8Array }[] = [];
+  for await (const entry of new ZipReader(new Uint8Array(data)).entries())
+    items.push({ path: entry.path, bytes: await entry.bytes() });
+  const strings = items.filter((i) => i.path === "xl/sharedStrings.xml");
+  const rest = items.filter((i) => i.path !== "xl/sharedStrings.xml");
+  const at = rest.findIndex((i) => i.path.startsWith("xl/worksheets/"));
+  rest.splice(at, 0, ...strings);
+  const out = new ZipArchive();
+  for (const item of rest) out.add(item.path, item.bytes);
+  const buf = await out.bytes();
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
 }
 
@@ -100,6 +116,23 @@ describe("表格预览数据模型", () => {
     expect(sheet?.cells.get(MAX_ROWS - 1)?.[0]?.text).toBe(String(MAX_ROWS));
     expect(sheet?.cells.get(0)?.[0]?.text).toBe("1");
   });
+
+  it("xlsx：流式读取在第一张表读满 1000 行后跳过它余下的数据，后面的工作表照常显示", async () => {
+    const data = await xlsxBytes((wb) => {
+      const big = wb.addWorksheet("大表");
+      // 余下的数据远大于解压流的缓冲：不排空就会因背压卡住，后面的工作表永远读不到
+      for (let r = 1; r <= MAX_ROWS * 5; r++) {
+        for (let c = 1; c <= 40; c++) big.getCell(r, c).value = r * 1000 + c;
+      }
+      wb.addWorksheet("第二张").getCell("A1").value = "第二张的内容";
+    });
+    // 共享字符串排在工作表前面（不少写出工具如此）：读取器边解压边解析工作表，不先缓冲整项
+    const sheets = await readWorkbook(await sharedStringsFirst(data));
+    expect(sheets.map((s) => s.name)).toEqual(["大表", "第二张"]);
+    expect(sheets[0]?.rows).toBe(MAX_ROWS);
+    expect(sheets[0]?.clipped).toBe(true);
+    expect(sheets[1]?.cells.get(0)?.[0]?.text).toBe("第二张的内容");
+  }, 20_000);
 
   it("xlsx：远处的单元格超出 100 列时只显示前 100 列", async () => {
     const data = await xlsxBytes((wb) => {

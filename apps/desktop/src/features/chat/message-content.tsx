@@ -2,18 +2,10 @@
 
 // 回复正文：Markdown 渲染 + 流式输出时的平滑打字效果，以及“正在思考”提示。
 import MarkdownIt from "markdown-it";
-import { usePathname } from "next/navigation";
 import { type MouseEvent, memo, useEffect, useMemo, useRef, useState } from "react";
+import { useExternalLinkConfirm } from "@/components/external-link-confirm";
 import { Icon } from "@/components/icons";
-import {
-  GlassDialog,
-  GlassDialogClose,
-  GlassDialogContent,
-  GlassDialogDescription,
-  GlassDialogTitle,
-} from "@/components/ui/glass-dialog";
 import { useDelegatedTooltip } from "@/components/ui/tooltip";
-import { getPlatform } from "@/lib/platform";
 import { strings } from "@/lib/strings";
 import { cn } from "@/lib/utils";
 import { useFileRefActions } from "./file-ref-actions";
@@ -114,15 +106,7 @@ export const MarkdownText = memo(function MarkdownText({
 }) {
   const shown = useSmoothText(text, streaming);
   const html = useMemo(() => renderMarkdown(shown), [shown]);
-  const [pendingLink, setPendingLink] = useState<string | null>(null);
-  const [linkError, setLinkError] = useState<string | null>(null);
-  // 主界面隐藏时（如 Alt+← 回到设置页）关掉确认框，否则它会盖在别的页面上
-  const pathname = usePathname();
-  // biome-ignore lint/correctness/useExhaustiveDependencies: pathname 变化即关闭
-  useEffect(() => {
-    setPendingLink(null);
-    setLinkError(null);
-  }, [pathname]);
+  const link = useExternalLinkConfirm();
 
   const fileRefs = useFileRefActions();
   // 文件引用的悬停提示（data-tooltip）：与界面其他地方相同的 Tooltip 样式
@@ -134,21 +118,7 @@ export const MarkdownText = memo(function MarkdownText({
     const anchor = (e.target as HTMLElement).closest?.("a");
     if (!anchor) return;
     e.preventDefault();
-    const href = anchor.getAttribute("href") ?? "";
-    if (/^https?:\/\//i.test(href)) {
-      setLinkError(null);
-      setPendingLink(href);
-    }
-  };
-  const openLink = () => {
-    const url = pendingLink;
-    if (!url) return;
-    getPlatform()
-      .then((platform) => platform.openExternal(url))
-      .then(
-        () => setPendingLink(null),
-        () => setLinkError(strings.chat.linkFailed),
-      );
+    link.confirm(anchor.getAttribute("href") ?? "");
   };
 
   return (
@@ -164,32 +134,7 @@ export const MarkdownText = memo(function MarkdownText({
       />
       {fileRefs.ui}
       {tooltip.ui}
-      {pendingLink !== null && (
-        <GlassDialog open onOpenChange={(open) => !open && setPendingLink(null)}>
-          <GlassDialogContent>
-            <GlassDialogTitle>{strings.chat.linkTitle}</GlassDialogTitle>
-            <GlassDialogDescription>{strings.chat.linkDescription}</GlassDialogDescription>
-            <p className="mt-3 max-h-32 overflow-y-auto break-all font-mono text-xs text-muted">
-              {pendingLink}
-            </p>
-            {linkError && <p className="mt-2 text-sm text-danger">{linkError}</p>}
-            <div className="mt-5 flex justify-end gap-2 text-sm">
-              <GlassDialogClose asChild>
-                <button type="button" className="rounded-full bg-hover px-4 py-1.5">
-                  {strings.chat.linkCancel}
-                </button>
-              </GlassDialogClose>
-              <button
-                type="button"
-                onClick={openLink}
-                className="rounded-full bg-hover px-4 py-1.5 font-medium ring-1 ring-border"
-              >
-                {strings.chat.linkOpen}
-              </button>
-            </div>
-          </GlassDialogContent>
-        </GlassDialog>
-      )}
+      {link.ui}
     </>
   );
 });

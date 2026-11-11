@@ -186,18 +186,18 @@ export function ModelPicker({
   // 按钮上显示实际生效的档位：支持思考的模型按它支持的档位夹取，不支持思考的模型按“off”处理
   const shownLevel =
     empty || !thinkingLevel ? undefined : showThinking ? clampLevel(thinkingLevel, levels) : "off";
+  // 支持思考的模型：无障碍名称总带上档位（含“关闭”，与档位未知区分）；不支持思考的模型不带
+  const ariaLevel =
+    shownLevel && showThinking ? (t.levels as Record<string, string>)[shownLevel] : undefined;
   // 没开思考（off）时按钮上不显示“关闭”二字，只显示模型名
-  const level =
-    shownLevel && shownLevel !== "off"
-      ? (t.levels as Record<string, string>)[shownLevel]
-      : undefined;
+  const level = shownLevel !== "off" ? ariaLevel : undefined;
   return (
     <GlassPopover onOpenChange={onOpenChange}>
       <GlassPopoverTrigger asChild disabled={disabled}>
         <Tooltip content={model?.name ?? name}>
           <button
             type="button"
-            aria-label={`${t.label}：${model?.name ?? name}${level ? `，${t.thinkingDegree}${level}` : ""}`}
+            aria-label={`${t.label}：${model?.name ?? name}${ariaLevel ? `，${t.thinkingDegree}${ariaLevel}` : ""}`}
             className={composerGhostClass({ className: "min-w-0 max-w-64 shrink!" })}
           >
             <span className="truncate">{name}</span>

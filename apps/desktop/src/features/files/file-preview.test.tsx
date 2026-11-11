@@ -42,7 +42,7 @@ function setup() {
   const previewFileBytes = vi.spyOn(platform, "previewFileBytes").mockResolvedValue(bytes);
   const openPath = vi.spyOn(platform, "openPath");
   setPlatformForTesting(platform);
-  return { bytes, previewFile, previewFileBytes, openPath };
+  return { platform, bytes, previewFile, previewFileBytes, openPath };
 }
 
 describe("右栏文件预览：显示打开后的样子", () => {
@@ -122,6 +122,51 @@ describe("右栏文件预览：显示打开后的样子", () => {
     expect(options).toMatchObject({ externalMedia: "block", pdfjs: false, fitMode: "contain" });
     fireEvent.click(screen.getByRole("button", { name: t.close }));
     expect(pptx.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it("Word 里的外部链接不在 App 里导航：确认后用系统浏览器打开；文档内书签照常", async () => {
+    const { platform } = setup();
+    const openExternal = vi.spyOn(platform, "openExternal").mockResolvedValue();
+    docx.renderAsync.mockImplementationOnce(async (_data, body) => {
+      body.innerHTML =
+        '<div class="docx-wrapper"><section class="docx"><a href="https://example.com/x">外链</a><a href="#_Toc1">目录</a><a href="file:///C:/x">本机</a></section></div>';
+    });
+    render(<FilePreview />);
+    act(() => showPreview("/w/链接.docx"));
+    const external = await screen.findByText("外链");
+    const bookmark = new MouseEvent("click", { bubbles: true, cancelable: true });
+    screen.getByText("目录").dispatchEvent(bookmark);
+    expect(bookmark.defaultPrevented).toBe(false);
+    const local = new MouseEvent("click", { bubbles: true, cancelable: true });
+    screen.getByText("本机").dispatchEvent(local);
+    expect(local.defaultPrevented).toBe(true);
+    expect(screen.queryByText(strings.chat.linkTitle)).toBeNull();
+    const click = new MouseEvent("click", { bubbles: true, cancelable: true });
+    external.dispatchEvent(click);
+    expect(click.defaultPrevented).toBe(true);
+    expect(await screen.findByText(t.linkDescription)).toBeTruthy();
+    expect(openExternal).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: strings.chat.linkOpen }));
+    await waitFor(() => expect(openExternal).toHaveBeenCalledWith("https://example.com/x"));
+  });
+
+  it("PowerPoint 形状上的外部超链接走确认框，幻灯片跳转仍交给查看器", async () => {
+    setup();
+    const handleNavigate = vi.fn();
+    const viewer = { destroy: pptx.destroy, handleNavigate };
+    pptx.PptxViewer.open.mockImplementationOnce(async (_data, container) => {
+      container.innerHTML = "<div>第 1 张幻灯片</div>";
+      return viewer;
+    });
+    render(<FilePreview />);
+    act(() => showPreview("/w/链接.pptx"));
+    expect(await screen.findByText("第 1 张幻灯片")).toBeTruthy();
+    await waitFor(() => expect(viewer.handleNavigate).not.toBe(handleNavigate));
+    act(() => viewer.handleNavigate({ slideIndex: 2 }));
+    expect(handleNavigate).toHaveBeenCalledWith({ slideIndex: 2 });
+    act(() => viewer.handleNavigate({ url: "https://example.com/s" }));
+    expect(handleNavigate).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("https://example.com/s")).toBeTruthy();
   });
 
   it("PDF 用 blob URL 交给 WebView2 的查看器，关闭时释放", async () => {

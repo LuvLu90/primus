@@ -157,6 +157,21 @@ describe("模型选择", () => {
     expect(onSelectThinking).toHaveBeenLastCalledWith("high");
   });
 
+  it("支持思考的模型关闭思考：按钮只显示模型名，无障碍名称仍带“思考程度关闭”", () => {
+    render(
+      <ModelPicker
+        models={MODELS}
+        current="p/a"
+        thinkingLevel="off"
+        thinkingLevels={undefined}
+        onSelectModel={vi.fn()}
+        onSelectThinking={vi.fn()}
+      />,
+    );
+    const trigger = screen.getByRole("button", { name: "模型：Fable 5，思考程度关闭" });
+    expect(trigger.textContent).toBe("Fable 5");
+  });
+
   it("不支持思考的模型只显示模型名（不显示“关闭”），不显示思考滑杆", async () => {
     const onSelectModel = vi.fn();
     render(
